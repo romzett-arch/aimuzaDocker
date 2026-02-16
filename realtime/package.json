@@ -1,0 +1,15 @@
+{
+  "name": "aimuza-realtime",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Realtime WebSocket server (Supabase-compatible Phoenix protocol)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "pg": "^8.13.0",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

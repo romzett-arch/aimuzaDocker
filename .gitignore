@@ -1,0 +1,27 @@
+# Secrets — never commit
+.env
+.env.local
+.env.production
+*.pem
+*.key
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+logs/
+
+# Uploads (runtime data)
+uploads/
+data/
+
+# Build artifacts (собираются при деплое)
+frontend/dist/
+
+# Test files
+test_track/
+
+# OS
+.DS_Store
+Thumbs.db

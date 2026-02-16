@@ -1,0 +1,223 @@
+# AI Planet Sound — Docker Compose
+# Все сервисы в изолированной сети, без Docker Hub (кроме первой загрузки base images)
+
+services:
+  # ── PostgreSQL ──────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: aimuza-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-aimuza}
+      POSTGRES_USER: ${DB_USER:-aimuza}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-aimuza_secret}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-aimuza}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - aimuza-net
+
+  # ── API Server (Node.js) ───────────────────
+  api:
+    build: ./api
+    container_name: aimuza-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-aimuza}
+      DB_USER: ${DB_USER:-aimuza}
+      DB_PASSWORD: ${DB_PASSWORD:-aimuza_secret}
+      API_PORT: 3000
+      UPLOADS_DIR: /opt/aimuza/data/uploads
+      DENO_FUNCTIONS_URL: http://deno-functions:8081
+    volumes:
+      - uploads_data:/opt/aimuza/data/uploads
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - aimuza-net
+
+  # ── Deno Functions ─────────────────────────
+  deno-functions:
+    build:
+      context: ./deno-functions
+      dockerfile: Dockerfile
+    image: deploy-deno-functions:latest
+    container_name: aimuza-deno
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      ffmpeg-api:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DENO_PORT: 8081
+      SUPABASE_URL: http://api:3000
+      BASE_URL: ${BASE_URL:-http://localhost}
+      SUPABASE_ANON_KEY: ${ANON_KEY:-placeholder}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      VPS_FFMPEG_URL: http://ffmpeg-api:3001
+      FFMPEG_API_URL: http://ffmpeg-api:3001
+      FFMPEG_API_SECRET: ${FFMPEG_API_KEY:-}
+    working_dir: /app
+    volumes:
+      - ./deno-functions:/app
+      - deno_cache:/deno-dir
+    command: ["run", "--allow-all", "--unstable", "server.ts"]
+    ports:
+      - "127.0.0.1:8081:8081"
+    networks:
+      - aimuza-net
+
+  # ── FFmpeg API ─────────────────────────────
+  ffmpeg-api:
+    build: ./ffmpeg-api
+    container_name: aimuza-ffmpeg
+    restart: unless-stopped
+    environment:
+      PORT: 3001
+      HOST: 0.0.0.0
+      FFMPEG_API_KEY: ${FFMPEG_API_KEY:-}
+      BASE_URL: ${BASE_URL:-http://localhost}
+    volumes:
+      - ffmpeg_tmp:/app/uploads
+    ports:
+      - "127.0.0.1:3100:3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - aimuza-net
+
+  # ── Realtime WebSocket ────────────────────
+  realtime:
+    build: ./realtime
+    container_name: aimuza-realtime
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-aimuza}
+      DB_USER: ${DB_USER:-aimuza}
+      DB_PASSWORD: ${DB_PASSWORD:-aimuza_secret}
+      WS_PORT: 4000
+      JWT_SECRET: ${JWT_SECRET:-aimuza-jwt-secret-change-me}
+    ports:
+      - "127.0.0.1:4000:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "const net=require('net');const c=net.connect(4000,()=>{c.end();process.exit(0)});c.on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - aimuza-net
+
+  # ── Radio Service (Queue Worker) ────────────
+  radio:
+    build:
+      context: .
+      dockerfile: Dockerfile.radio
+    container_name: aimuza-radio
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-aimuza}
+      DB_USER: ${DB_USER:-aimuza}
+      DB_PASSWORD: ${DB_PASSWORD:-password}
+      QUEUE_INTERVAL_MS: ${QUEUE_INTERVAL_MS:-5000}
+      PREDICTION_RESOLVE_INTERVAL_MS: ${PREDICTION_RESOLVE_INTERVAL_MS:-60000}
+      PORT: 3200
+    networks:
+      - aimuza-net
+
+  # ── Frontend (React SPA) ───────────────────
+  # Образ environment-agnostic: URL = window.location.origin
+  # ANON_KEY инжектится при старте через entrypoint
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+      shm_size: '512mb'
+      args:
+        SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
+        SENTRY_ORG: ${SENTRY_ORG:-aimuzaru}
+        SENTRY_PROJECT: ${SENTRY_PROJECT:-aimuza-frontend}
+    container_name: aimuza-frontend
+    restart: unless-stopped
+    environment:
+      ANON_KEY: ${ANON_KEY:-local-anon-key}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    networks:
+      - aimuza-net
+
+  # ── Nginx (Reverse Proxy) ──────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: aimuza-nginx
+    restart: unless-stopped
+    depends_on:
+      - api
+      - frontend
+      - ffmpeg-api
+      - realtime
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - uploads_data:/opt/aimuza/data/uploads:ro
+      - certbot_data:/var/www/certbot:ro
+      - ssl_certs:/etc/letsencrypt:ro
+    networks:
+      - aimuza-net
+
+  # ── Certbot (SSL) ─────────────────────────
+  certbot:
+    image: certbot/certbot
+    container_name: aimuza-certbot
+    volumes:
+      - certbot_data:/var/www/certbot
+      - ssl_certs:/etc/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - aimuza-net
+
+volumes:
+  pg_data:
+  uploads_data:
+  ffmpeg_tmp:
+  deno_cache:
+  certbot_data:
+  ssl_certs:
+
+networks:
+  aimuza-net:
+    driver: bridge
