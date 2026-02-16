@@ -4,6 +4,8 @@
 
 ## Быстрый старт
 
+**Важно:** Frontend собирается из родительской папки (`context: ..`). Для полного стека клонируй aimuzaDocker внутрь aimuza.ru как `deploy/`, либо запускай без frontend.
+
 ```bash
 cp .env.example .env
 # Заполнить .env (DB_PASSWORD, JWT_SECRET, ANON_KEY, SUNO_API_KEY, ...)
