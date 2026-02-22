@@ -1,4 +1,4 @@
-# AI Planet Sound — Docker Compose
+# AIMUZA — Docker Compose
 # Все сервисы в изолированной сети, без Docker Hub (кроме первой загрузки base images)
 
 services:
@@ -140,8 +140,8 @@ services:
   # ── Radio Service (Queue Worker) ────────────
   radio:
     build:
-      context: .
-      dockerfile: Dockerfile.radio
+      context: ..
+      dockerfile: deploy/Dockerfile.radio
     container_name: aimuza-radio
     restart: unless-stopped
     depends_on:
@@ -167,6 +167,8 @@ services:
       dockerfile: deploy/Dockerfile.frontend
       shm_size: '512mb'
       args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:-http://localhost}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY:-${ANON_KEY:-local-anon-key}}
         SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
         SENTRY_ORG: ${SENTRY_ORG:-aimuzaru}
         SENTRY_PROJECT: ${SENTRY_PROJECT:-aimuza-frontend}
