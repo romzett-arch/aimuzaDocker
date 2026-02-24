@@ -35,8 +35,6 @@ export function authMiddleware(req, res, next) {
       id: decoded.sub,
       email: decoded.email,
       role: decoded.role || 'authenticated',
-      app_role: decoded.app_role || null,
-      is_super_admin: decoded.is_super_admin || false,
     };
   } catch (err) {
     // Невалидный токен — продолжаем как anon

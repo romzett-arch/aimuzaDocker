@@ -155,11 +155,11 @@ serve(async (req) => {
       );
     }
 
-    // Call FFmpeg API for metadata cleaning
-    console.log("Calling FFmpeg API for metadata cleaning...");
+    // Call FFmpeg API for loudness normalization + metadata branding
+    console.log("Calling FFmpeg API for normalize + metadata...");
     
     const baseUrl = ffmpegApiUrl!.replace(/\/(clean-metadata|analyze|normalize)\/?$/, "");
-    const ffmpegResponse = await fetch(`${baseUrl}/clean-metadata`, {
+    const ffmpegResponse = await fetch(`${baseUrl}/normalize`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -167,6 +167,9 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         audio_url: track.audio_url,
+        target_lufs: -14,
+        strip_metadata: true,
+        brand_metadata: true,
         metadata: extendedMetadata,
       }),
     });
@@ -185,7 +188,7 @@ serve(async (req) => {
           download_url: track.audio_url,
           filename,
           cleaned: false,
-          warning: "Metadata cleaning unavailable",
+          warning: "Normalization unavailable",
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
@@ -194,8 +197,19 @@ serve(async (req) => {
     const ffmpegResult = await ffmpegResponse.json();
     console.log("FFmpeg API response:", ffmpegResult);
 
-    const outputUrl = ffmpegResult.output_url || track.audio_url;
-    const cleaned = !!ffmpegResult.output_url;
+    let outputUrl = ffmpegResult.output_url || ffmpegResult.normalized_url || track.audio_url;
+    const cleaned = !!(ffmpegResult.output_url || ffmpegResult.normalized_url);
+
+    // FFmpeg API returns public BASE_URL in output_url, but we're inside Docker —
+    // rewrite to internal address so we fetch the actual file, not the React SPA
+    if (outputUrl && outputUrl.includes('/output/')) {
+      const outputFilename = outputUrl.split('/output/').pop();
+      if (outputFilename) {
+        const ffmpegInternal = baseUrl;
+        outputUrl = `${ffmpegInternal}/output/${outputFilename}`;
+        console.log("Rewrote output URL to internal:", outputUrl);
+      }
+    }
 
     // Increment download count
     await supabase.rpc("increment_download_count", { track_id });
@@ -243,23 +257,33 @@ async function proxyFile(
   corsHeaders: Record<string, string>
 ): Promise<Response> {
   try {
-    // Внутри Docker, localhost не доступен — заменяем на nginx hostname
     let internalUrl = url;
     if (url.includes('localhost')) {
       internalUrl = url.replace('http://localhost', 'http://nginx');
+    } else if (/https?:\/\/(?:www\.)?aimuza\.ru\/api\/ffmpeg/.test(url)) {
+      internalUrl = url.replace(/https?:\/\/(?:www\.)?aimuza\.ru\/api\/ffmpeg/, 'http://ffmpeg-api:3001');
+    } else if (/https?:\/\/(?:www\.)?aimuza\.ru/.test(url)) {
+      internalUrl = url.replace(/https?:\/\/(?:www\.)?aimuza\.ru/, 'http://nginx');
     }
+    console.log("Proxy fetch:", internalUrl);
     const fileResponse = await fetch(internalUrl);
     if (!fileResponse.ok) {
       throw new Error(`Failed to fetch file: ${fileResponse.status}`);
     }
 
     const fileData = await fileResponse.arrayBuffer();
+
+    if (fileData.byteLength < 1000) {
+      console.error(`Proxy: suspiciously small file (${fileData.byteLength} bytes)`);
+    }
+
     const encodedFilename = encodeURIComponent(filename);
+    const contentType = filename.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg';
 
     return new Response(fileData, {
       headers: {
         ...corsHeaders,
-        "Content-Type": "audio/mpeg",
+        "Content-Type": contentType,
         "Content-Disposition": `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`,
         "Content-Length": String(fileData.byteLength),
       },

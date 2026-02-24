@@ -7,8 +7,8 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const APP_NAME = "AI Planet Sound";
-const APP_URL = "https://aiplanetsound.lovable.app";
+const APP_NAME = "AIMUZA";
+const APP_URL = "https://aimuza.ru";
 
 function wrapInTemplate(bodyHtml: string, senderType: string, unsubscribeUrl?: string) {
   const senderLabel = senderType === "personal" ? "Личное сообщение от администратора" : APP_NAME;

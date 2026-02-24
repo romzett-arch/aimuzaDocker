@@ -13,7 +13,7 @@ import { pool } from '../db.js';
 
 const router = Router();
 
-const APP_NAME = 'AI Planet Sound';
+const APP_NAME = 'AIMUZA';
 const BASE_URL = process.env.BASE_URL || 'http://localhost';
 
 const SMTP_HOST = process.env.SMTP_HOST;
@@ -65,7 +65,7 @@ function getEmailHtml(type, { code, link, email, username }) {
   if (type === 'welcome') {
     return {
       subject: `Добро пожаловать в ${APP_NAME}! 🎵`,
-      html: `<div style="${baseStyle}">${header}<div style="padding:16px 24px 32px;"><h2 style="color:#e0e0e0;text-align:center;">Привет, ${username || 'музыкант'}! 👋</h2><p style="text-align:center;line-height:1.6;">Добро пожаловать на платформу AI Planet Sound — хаб AI музыкантов!</p><div style="text-align:center;margin:24px 0;"><a href="${BASE_URL}" style="${buttonStyle}">Начать создавать 🚀</a></div><p style="text-align:center;font-size:14px;color:#999;">Ваш аккаунт: <strong>${email}</strong></p></div>${footer}</div>`,
+      html: `<div style="${baseStyle}">${header}<div style="padding:16px 24px 32px;"><h2 style="color:#e0e0e0;text-align:center;">Привет, ${username || 'музыкант'}! 👋</h2><p style="text-align:center;line-height:1.6;">Добро пожаловать на платформу AIMUZA — хаб AI музыкантов!</p><div style="text-align:center;margin:24px 0;"><a href="${BASE_URL}" style="${buttonStyle}">Начать создавать 🚀</a></div><p style="text-align:center;font-size:14px;color:#999;">Ваш аккаунт: <strong>${email}</strong></p></div>${footer}</div>`,
     };
   }
 
@@ -147,9 +147,9 @@ router.post('/send-auth-email', async (req, res) => {
 // ═══════════════════════════════════════════════
 router.post('/send-admin-email', requireAuth, async (req, res) => {
   try {
-    // A5: Проверяем что вызывающий — admin или super_admin
+    // A5: Проверяем что вызывающий — admin или superadmin
     const role = req.user?.app_role || req.user?.role || '';
-    if (!['super_admin', 'superadmin', 'admin', 'service_role'].includes(role)) {
+    if (!['superadmin', 'admin', 'service_role'].includes(role)) {
       return res.status(403).json({ error: 'Forbidden: admin role required' });
     }
 

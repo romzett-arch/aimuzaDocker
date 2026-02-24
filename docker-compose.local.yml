@@ -1,0 +1,82 @@
+# Локальный оверрайд: nginx + локальная сборка frontend + api + Deno из исходников
+# Запуск: docker compose -f docker-compose.prod.yml -f docker-compose.local.yml up -d
+# Сначала: docker compose build frontend api deno-functions (из корня aimuza.ru)
+# На сервере не использовать — там системный nginx
+
+services:
+  api:
+    build: ./api
+    image: deploy-api:latest
+  deno-functions:
+    build:
+      context: ./deno-functions
+      dockerfile: Dockerfile
+    image: deploy-deno-functions:latest
+    volumes:
+      - ./deno-functions:/app
+      - deno_cache:/deno-dir
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        VITE_SUPABASE_URL: http://localhost
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${ANON_KEY}
+    image: deploy-frontend:latest
+  ffmpeg-api:
+    build: ./ffmpeg-api
+    image: deploy-ffmpeg-api:latest
+  realtime:
+    build: ./realtime
+    image: deploy-realtime:latest
+  radio:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.radio
+    image: deploy-radio:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-aimuza}
+      DB_USER: ${DB_USER:-aimuza}
+      DB_PASSWORD: ${DB_PASSWORD}
+      ICECAST_SOURCE_PASS: ${ICECAST_SOURCE_PASS:-changeme}
+      ICECAST_ADMIN_PASS: ${ICECAST_ADMIN_PASS:-admin123}
+      QUEUE_INTERVAL_MS: ${QUEUE_INTERVAL_MS:-30000}
+      PREDICTION_RESOLVE_INTERVAL_MS: ${PREDICTION_RESOLVE_INTERVAL_MS:-60000}
+      BOOST_CHECK_INTERVAL_MS: ${BOOST_CHECK_INTERVAL_MS:-15000}
+      PORT: 3200
+      LOCAL_STORAGE_PATH: /opt/aimuza/data/uploads
+      PUBLIC_BASE_URL: http://localhost
+      STORAGE_BASE_URL: http://localhost/storage/v1/object/public
+      JWT_SECRET: ${JWT_SECRET:-}
+      RADIO_SKIP_SECRET: ${RADIO_SKIP_SECRET:-}
+    volumes:
+      - uploads_data:/opt/aimuza/data/uploads:ro
+    ports:
+      - "127.0.0.1:3200:3200"
+      - "127.0.0.1:8000:8000"
+  nginx:
+    image: nginx:alpine
+    container_name: aimuza-nginx
+    restart: unless-stopped
+    depends_on:
+      - api
+      - frontend
+      - ffmpeg-api
+      - realtime
+      - radio
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - uploads_data:/opt/aimuza/data/uploads:ro
+    networks:
+      - aimuza-net
+
+volumes:
+  deno_cache:

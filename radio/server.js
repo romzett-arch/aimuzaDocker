@@ -1,300 +1,211 @@
 /**
- * Radio Service — Queue Worker, AFK Checker, Prediction Resolver, Ad Scheduler.
- * 
- * Runs in separate Docker container for independent scaling.
- * Connects to PostgreSQL for queue management and RPC calls.
+ * AI Planet Radio Controller v3.0
+ *
+ * Manages: playlist generation, Liquidsoap control, metadata WebSocket,
+ * boost injection, auction slots, predictions, ad scheduling, listener tracking.
+ *
+ * Runs alongside Icecast2 and Liquidsoap in the same container.
  */
 
 const { Pool } = require('pg');
-
-// ─── Config ───────────────────────────────────────────────────
-
-const DB_HOST = process.env.DB_HOST || 'db';
-const DB_PORT = process.env.DB_PORT || 5432;
-const DB_NAME = process.env.DB_NAME || 'aimuza';
-const DB_USER = process.env.DB_USER || 'aimuza';
-const DB_PASSWORD = process.env.DB_PASSWORD || 'password';
-
-const QUEUE_INTERVAL_MS = parseInt(process.env.QUEUE_INTERVAL_MS || '5000');
-const PREDICTION_RESOLVE_INTERVAL_MS = parseInt(process.env.PREDICTION_RESOLVE_INTERVAL_MS || '60000');
+const http = require('http');
+const { MetadataServer } = require('./lib/metadata-ws');
+const liquidsoap = require('./lib/liquidsoap');
+const { injectBoostedTracks } = require('./lib/boost-injector');
+const { refreshPlaylist, resolvePredictions, manageAuctionSlots } = require('./queue');
+const { handleTrackChanged, updateListenerCount, loadRadioConfig, getStats } = require('./stream');
 
 const pool = new Pool({
-  host: DB_HOST,
-  port: DB_PORT,
-  database: DB_NAME,
-  user: DB_USER,
-  password: DB_PASSWORD,
-  max: 5,
+  host: process.env.DB_HOST || 'db',
+  port: parseInt(process.env.DB_PORT || '5432'),
+  database: process.env.DB_NAME || 'aimuza',
+  user: process.env.DB_USER || 'aimuza',
+  password: process.env.DB_PASSWORD || 'password',
+  max: 10,
 });
 
-// ─── Queue Worker ─────────────────────────────────────────────
+const PORT = parseInt(process.env.PORT || '3200');
+const QUEUE_INTERVAL_MS = parseInt(process.env.QUEUE_INTERVAL_MS || '30000');
+const PREDICTION_INTERVAL_MS = parseInt(process.env.PREDICTION_RESOLVE_INTERVAL_MS || '60000');
+const BOOST_INTERVAL_MS = parseInt(process.env.BOOST_CHECK_INTERVAL_MS || '15000');
 
-async function refreshQueue() {
+let radioConfig = null;
+
+const server = http.createServer(async (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Radio-Skip-Secret, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   try {
-    // Call get_radio_smart_queue to populate the queue
-    const result = await pool.query(
-      "SELECT * FROM public.get_radio_smart_queue(NULL, NULL, 50)"
-    );
-    
-    // Clear old unplayed items and insert fresh ones
-    await pool.query("DELETE FROM public.radio_queue WHERE NOT is_played AND created_at < NOW() - INTERVAL '10 minutes'");
-    
-    if (result.rows.length > 0) {
-      // Only insert if queue is getting low
-      const { rows: [{ count }] } = await pool.query(
-        "SELECT COUNT(*) FROM public.radio_queue WHERE NOT is_played"
-      );
-      
-      if (parseInt(count) < 10) {
-        console.log(`[Queue] Refreshing queue with ${result.rows.length} tracks (queue was ${count})`);
-        // Insert top tracks into queue using parameterized queries (no SQL injection)
-        for (let i = 0; i < Math.min(result.rows.length, 20); i++) {
-          const row = result.rows[i];
-          await pool.query(
-            `INSERT INTO public.radio_queue (track_id, user_id, source, position, chance_score, quality_component, xp_component, freshness_component, discovery_component)
-             VALUES ($1, $2, 'algorithm', $3, $4, $5, $6, $7, $8)
-             ON CONFLICT DO NOTHING`,
-            [row.track_id, row.author_id, i, 
-             parseFloat(row.chance_score) || 0, 
-             parseFloat(row.quality_component) || 0, 
-             parseFloat(row.xp_component) || 0, 
-             parseFloat(row.freshness_component) || 0, 
-             parseFloat(row.discovery_component) || 0]
-          );
+    if (req.url === '/health') {
+      const lsUp = await liquidsoap.isUp().catch(() => false);
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        status: 'ok',
+        service: 'aimuza-radio',
+        version: '3.0.0',
+        uptime: Math.round(process.uptime()),
+        liquidsoap: lsUp,
+        ws_clients: metadataWs.clients.size,
+        listeners: metadataWs.listenersCount,
+      }));
+      return;
+    }
+
+    if (req.url === '/api/now-playing') {
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        track: metadataWs.currentTrack,
+        listeners: metadataWs.listenersCount,
+        queue_size: metadataWs.queue.length,
+      }));
+      return;
+    }
+
+    if (req.url === '/api/queue') {
+      res.writeHead(200);
+      res.end(JSON.stringify({ queue: metadataWs.queue.slice(0, 20) }));
+      return;
+    }
+
+    if (req.url === '/api/listeners') {
+      res.writeHead(200);
+      res.end(JSON.stringify({ count: metadataWs.listenersCount }));
+      return;
+    }
+
+    if (req.url === '/api/stats') {
+      const stats = await getStats(pool, metadataWs);
+      res.writeHead(200);
+      res.end(JSON.stringify(stats));
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/internal/track-changed') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const trackData = JSON.parse(body);
+          await handleTrackChanged(pool, metadataWs, () => radioConfig, trackData);
+          res.writeHead(200);
+          res.end('{"ok":true}');
+        } catch (e) {
+          res.writeHead(400);
+          res.end('{"error":"' + e.message + '"}');
+        }
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/skip') {
+      const skipSecret = process.env.RADIO_SKIP_SECRET;
+      if (skipSecret) {
+        const authHeader = req.headers['x-radio-skip-secret'] || req.headers['authorization']?.replace('Bearer ', '');
+        if (authHeader !== skipSecret) {
+          res.writeHead(403);
+          res.end('{"error":"forbidden"}');
+          return;
         }
       }
-    }
-  } catch (error) {
-    console.error('[Queue] Error refreshing queue:', error.message);
-  }
-}
-
-// ─── Prediction Resolver ──────────────────────────────────────
-
-async function resolvePredictions() {
-  try {
-    const result = await pool.query("SELECT public.radio_resolve_predictions()");
-    const count = result.rows[0]?.radio_resolve_predictions || 0;
-    if (count > 0) {
-      console.log(`[Predictions] Resolved ${count} predictions`);
-    }
-  } catch (error) {
-    console.error('[Predictions] Error resolving:', error.message);
-  }
-}
-
-// ─── Auction Slot Manager ─────────────────────────────────────
-
-async function manageAuctionSlots() {
-  try {
-    // Close expired bidding slots
-    const { rowCount: closedCount } = await pool.query(`
-      UPDATE public.radio_slots 
-      SET status = 'completed'
-      WHERE status IN ('bidding', 'playing') AND ends_at < NOW()
-    `);
-    if (closedCount > 0) {
-      console.log(`[Auction] Closed ${closedCount} expired slots`);
+      await liquidsoap.skip();
+      res.writeHead(200);
+      res.end('{"ok":true}');
+      return;
     }
 
-    // Award winning bids for closed slots
-    await pool.query(`
-      UPDATE public.radio_slots s
-      SET winner_user_id = b.user_id, winner_track_id = b.track_id, winning_bid = b.amount, status = 'won'
-      FROM public.radio_bids b
-      WHERE s.status = 'bidding' AND s.starts_at <= NOW()
-        AND b.slot_id = s.id AND b.status = 'active'
-        AND b.amount = (SELECT MAX(b2.amount) FROM public.radio_bids b2 WHERE b2.slot_id = s.id AND b2.status = 'active')
-    `);
-  } catch (error) {
-    console.error('[Auction] Error managing slots:', error.message);
-  }
-}
-
-// ─── Voting Resolver ──────────────────────────────────────────
-
-const VOTING_RESOLVE_INTERVAL_MS = parseInt(process.env.VOTING_RESOLVE_INTERVAL_MS || '60000'); // 1 min
-
-async function resolveExpiredVoting() {
-  try {
-    // Find tracks with expired voting period
-    const { rows: expiredTracks } = await pool.query(`
-      SELECT id, title, voting_likes_count, voting_dislikes_count, user_id
-      FROM public.tracks
-      WHERE moderation_status = 'voting' AND voting_ends_at < NOW()
-    `);
-
-    if (expiredTracks.length === 0) return;
-
-    console.log(`[Voting] Processing ${expiredTracks.length} expired voting tracks`);
-
-    // Get voting settings
-    const { rows: settings } = await pool.query(`
-      SELECT key, value FROM public.settings
-      WHERE key IN ('voting_min_votes', 'voting_approval_ratio')
-    `);
-    const settingsMap = new Map(settings.map(s => [s.key, s.value]));
-    const minVotes = parseInt(settingsMap.get('voting_min_votes') || '10', 10);
-    const approvalRatio = parseFloat(settingsMap.get('voting_approval_ratio') || '0.6');
-
-    for (const track of expiredTracks) {
-      const likes = track.voting_likes_count || 0;
-      const dislikes = track.voting_dislikes_count || 0;
-      const totalVotes = likes + dislikes;
-      let votingResult, newStatus, reason;
-
-      if (totalVotes < minVotes) {
-        votingResult = 'rejected';
-        newStatus = 'rejected';
-        reason = `Недостаточно голосов: ${totalVotes} из ${minVotes} минимальных`;
-      } else {
-        const likeRatio = likes / totalVotes;
-        if (likeRatio >= approvalRatio) {
-          votingResult = 'voting_approved';
-          newStatus = 'pending'; // Back to moderation queue for final label decision
-          reason = `Голосование пройдено: ${Math.round(likeRatio * 100)}% положительных`;
-        } else {
-          votingResult = 'rejected';
-          newStatus = 'rejected';
-          reason = `Отклонено: ${Math.round(likeRatio * 100)}% положительных (нужно ${Math.round(approvalRatio * 100)}%)`;
-        }
-      }
-
-      // Update track
-      await pool.query(`
-        UPDATE public.tracks
-        SET moderation_status = $1, voting_result = $2, is_public = false
-        WHERE id = $3
-      `, [newStatus, votingResult, track.id]);
-
-      // Notify user
-      if (track.user_id) {
-        const notifTitle = votingResult === 'voting_approved'
-          ? '🎉 Голосование пройдено!'
-          : 'Голосование завершено';
-        const notifMsg = votingResult === 'voting_approved'
-          ? `Трек "${track.title}" успешно прошёл голосование и отправлен на финальное рассмотрение.`
-          : `Трек "${track.title}" не набрал достаточно голосов. ${reason}`;
-
-        await pool.query(`
-          INSERT INTO public.notifications (user_id, type, title, message, target_type, target_id)
-          VALUES ($1, 'voting_result', $2, $3, 'track', $4)
-        `, [track.user_id, notifTitle, notifMsg, track.id]);
-      }
-
-      console.log(`[Voting] Track "${track.title}" (${track.id}): ${votingResult} -> ${newStatus}`);
-    }
-  } catch (error) {
-    console.error('[Voting] Error resolving expired voting:', error.message);
-  }
-}
-
-// ─── Internal Voting Resolver ─────────────────────────────────
-
-async function resolveExpiredInternalVoting() {
-  try {
-    // Find tracks with expired internal voting
-    const { rows: expiredTracks } = await pool.query(`
-      SELECT id, title, user_id
-      FROM public.tracks
-      WHERE moderation_status = 'voting' 
-        AND voting_type = 'internal'
-        AND voting_ends_at < NOW()
-    `);
-
-    if (expiredTracks.length === 0) return;
-
-    console.log(`[InternalVoting] Processing ${expiredTracks.length} expired internal voting tracks`);
-
-    for (const track of expiredTracks) {
-      try {
-        // Call the RPC function to resolve
-        await pool.query(`SELECT public.resolve_internal_voting($1)`, [track.id]);
-        console.log(`[InternalVoting] Resolved track "${track.title}" (${track.id})`);
-      } catch (err) {
-        console.error(`[InternalVoting] Failed to resolve track ${track.id}:`, err.message);
-      }
-    }
-  } catch (error) {
-    console.error('[InternalVoting] Error:', error.message);
-  }
-}
-
-// ─── Stale Moderation Lock Cleanup ───────────────────────────
-
-async function cleanupStaleModerationLocks() {
-  try {
-    const { rowCount } = await pool.query(`
-      UPDATE public.tracks
-      SET moderation_locked_by = NULL, moderation_locked_at = NULL
-      WHERE moderation_locked_by IS NOT NULL
-        AND moderation_locked_at < NOW() - interval '30 minutes'
-    `);
-    if (rowCount > 0) {
-      console.log(`[Moderation] Cleaned up ${rowCount} stale moderation locks`);
-    }
-  } catch (error) {
-    console.error('[Moderation] Error cleaning locks:', error.message);
-  }
-}
-
-// ─── Health Check ─────────────────────────────────────────────
-
-const http = require('http');
-const server = http.createServer((req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200);
-    res.end(JSON.stringify({ status: 'ok', service: 'aimuza-radio', uptime: process.uptime() }));
-  } else {
     res.writeHead(404);
-    res.end('Not found');
+    res.end('{"error":"not found"}');
+  } catch (err) {
+    res.writeHead(500);
+    res.end('{"error":"' + err.message + '"}');
   }
 });
 
-const PORT = process.env.PORT || 3200;
+const metadataWs = new MetadataServer(server, {
+  jwtSecret: process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET,
+});
 
-// ─── Main Loop ────────────────────────────────────────────────
+metadataWs.onReaction = async (ws, data) => {
+  if (!ws.userId || !metadataWs.currentTrack) return;
+  try {
+    const result = await pool.query(
+      'SELECT public.radio_award_listen_xp($1, $2, $3, $4, $5, $6, $7)',
+      [ws.userId, metadataWs.currentTrack.track_id,
+        Math.round(data.listen_duration || 30),
+        Math.round(metadataWs.currentTrack.duration || 180),
+        data.reaction || null, data.session_id || null, null]
+    );
+    if (result?.rows?.[0]) {
+      const xpResult = result.rows[0].radio_award_listen_xp;
+      if (xpResult) metadataWs.sendXpAwarded(ws.userId, xpResult);
+    }
+  } catch (err) {
+    console.error('[Reaction] Error:', err.message);
+  }
+};
 
 async function main() {
   console.log('═══════════════════════════════════════════');
-  console.log(' AIMUZA Radio Service v2.0');
-  console.log(`  DB: ${DB_HOST}:${DB_PORT}/${DB_NAME}`);
-  console.log(`  Queue interval: ${QUEUE_INTERVAL_MS}ms`);
-  console.log(`  Prediction resolve interval: ${PREDICTION_RESOLVE_INTERVAL_MS}ms`);
-  console.log(`  Voting resolve interval: ${VOTING_RESOLVE_INTERVAL_MS}ms`);
+  console.log(' AIMUZA Radio Controller v3.0');
+  console.log(' DB: ' + (process.env.DB_HOST || 'db') + ':' + (process.env.DB_PORT || '5432') + '/' + (process.env.DB_NAME || 'aimuza'));
+  console.log(' Playlist refresh: ' + QUEUE_INTERVAL_MS + 'ms');
   console.log('═══════════════════════════════════════════');
 
-  // Test DB connection
   try {
     await pool.query('SELECT 1');
-    console.log('[DB] Connected successfully');
+    console.log('[DB] Connected');
   } catch (error) {
-    console.error('[DB] Connection failed:', error.message);
+    console.error('[DB] Failed:', error.message);
     process.exit(1);
   }
 
-  // Start health check server
+  await loadRadioConfig(pool, (config) => { radioConfig = config; });
+
   server.listen(PORT, () => {
-    console.log(`[Health] Listening on port ${PORT}`);
+    console.log('[HTTP] Listening on :' + PORT);
+    console.log('[WS] Ready on :' + PORT + '/ws');
   });
 
-  // Start workers
-  setInterval(refreshQueue, QUEUE_INTERVAL_MS);
-  setInterval(resolvePredictions, PREDICTION_RESOLVE_INTERVAL_MS);
-  setInterval(manageAuctionSlots, 30000); // Check every 30s
-  setInterval(resolveExpiredVoting, VOTING_RESOLVE_INTERVAL_MS); // Check every 1 min
-  setInterval(resolveExpiredInternalVoting, VOTING_RESOLVE_INTERVAL_MS); // Internal voting every 1 min
-  setInterval(cleanupStaleModerationLocks, 300000); // Cleanup stale locks every 5 min
+  await refreshPlaylist(pool, metadataWs);
+  await new Promise(r => setTimeout(r, 500));
 
-  // Initial run
-  await refreshQueue();
-  await resolvePredictions();
-  await manageAuctionSlots();
-  await resolveExpiredVoting();
-  await resolveExpiredInternalVoting();
-  await cleanupStaleModerationLocks();
+  let lsReady = false;
+  for (let i = 0; i < 30; i++) {
+    lsReady = await liquidsoap.isUp();
+    if (lsReady) break;
+    console.log('[Liquidsoap] Waiting...');
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  console.log('[Liquidsoap] ' + (lsReady ? 'Ready' : 'Not available (will retry)'));
+
+  setInterval(() => refreshPlaylist(pool, metadataWs), QUEUE_INTERVAL_MS);
+  setInterval(() => resolvePredictions(pool, metadataWs), PREDICTION_INTERVAL_MS);
+  setInterval(() => manageAuctionSlots(pool, metadataWs), 30000);
+  setInterval(() => injectBoostedTracks(pool), BOOST_INTERVAL_MS);
+  setInterval(() => updateListenerCount(metadataWs), 10000);
+  setInterval(() => loadRadioConfig(pool, (config) => { radioConfig = config; }), 300000);
 
   console.log('[Radio] All workers started');
+
+  const shutdown = async () => {
+    console.log('[Radio] Shutting down...');
+    server.close();
+    await pool.end();
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error('[Fatal]', err);
+  process.exit(1);
+});

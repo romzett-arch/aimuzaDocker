@@ -172,10 +172,8 @@ serve(async (req) => {
               });
 
             if (!audioUploadError) {
-              const { data: audioUrlData } = supabaseAdmin.storage
-                .from("tracks")
-                .getPublicUrl(audioPath);
-              permanentAudioUrl = audioUrlData.publicUrl;
+              const BASE_URL = Deno.env.get("BASE_URL") || "https://aimuza.ru";
+              permanentAudioUrl = `${BASE_URL}/storage/v1/object/public/tracks/${audioPath}`;
               console.log(`[Admin Recheck] Audio saved: ${permanentAudioUrl}`);
             } else {
               console.error(`[Admin Recheck] Audio upload error:`, audioUploadError);
@@ -197,10 +195,8 @@ serve(async (req) => {
                 });
 
               if (!coverUploadError) {
-                const { data: coverUrlData } = supabaseAdmin.storage
-                  .from("tracks")
-                  .getPublicUrl(coverPath);
-                permanentCoverUrl = coverUrlData.publicUrl;
+                const BASE_URL = Deno.env.get("BASE_URL") || "https://aimuza.ru";
+                permanentCoverUrl = `${BASE_URL}/storage/v1/object/public/tracks/${coverPath}`;
                 console.log(`[Admin Recheck] Cover saved: ${permanentCoverUrl}`);
               }
             }

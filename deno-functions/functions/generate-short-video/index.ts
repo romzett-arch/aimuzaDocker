@@ -1,10 +1,9 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
-};
+import { corsHeaders } from "./constants.ts";
+import { validateAuth, AuthError } from "./auth.ts";
+import { refundUser } from "./refund.ts";
+import { handleVideoAlreadyExists } from "./handleVideoExists.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -16,42 +15,25 @@ serve(async (req) => {
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
   try {
-    const authHeader = req.headers.get("Authorization");
-    let userId: string | null = null;
-    let isInternalCall = false;
-
-    // Check if this is an internal call (from suno-callback) with service key
-    if (authHeader === `Bearer ${supabaseServiceKey}`) {
-      isInternalCall = true;
-      console.log("Internal service call detected");
-    } else if (authHeader?.startsWith("Bearer ")) {
-      // User JWT - validate and get user
-      const userClient = createClient(supabaseUrl, supabaseAnonKey, {
-        global: { headers: { Authorization: authHeader } }
-      });
-      
-      const token = authHeader.replace("Bearer ", "");
-      const { data: claimsData, error: claimsError } = await userClient.auth.getClaims(token);
-      
-      if (claimsError || !claimsData?.claims) {
+    let userId: string | null;
+    let isInternalCall: boolean;
+    try {
+      const auth = await validateAuth(req, supabaseUrl, supabaseServiceKey, supabaseAnonKey);
+      userId = auth.userId;
+      isInternalCall = auth.isInternalCall;
+    } catch (e) {
+      if (e instanceof AuthError) {
         return new Response(
-          JSON.stringify({ error: "Unauthorized" }),
+          JSON.stringify({ error: e.message }),
           { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-      
-      userId = claimsData.claims.sub as string;
-      console.log(`User call from: ${userId}`);
-    } else {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized - missing auth" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      throw e;
     }
 
     const body = await req.json();
     const { track_id, suno_task_id, suno_audio_id, author } = body;
-    
+
     const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
     if (!SUNO_API_KEY) {
       throw new Error("SUNO_API_KEY is not configured");
@@ -61,7 +43,6 @@ serve(async (req) => {
 
     console.log(`Generating music video for track: ${track_id}, suno_task_id: ${suno_task_id}, suno_audio_id: ${suno_audio_id}`);
 
-    // Get track info to verify ownership and get suno_audio_id if not provided
     const { data: track, error: trackError } = await supabase
       .from("tracks")
       .select("id, user_id, suno_audio_id, title, description")
@@ -72,7 +53,6 @@ serve(async (req) => {
       throw new Error("Track not found");
     }
 
-    // If user call, verify ownership
     if (!isInternalCall && track.user_id !== userId) {
       return new Response(
         JSON.stringify({ error: "Access denied - not your track" }),
@@ -80,10 +60,8 @@ serve(async (req) => {
       );
     }
 
-    // Use provided suno_audio_id or get from track
     const audioId = suno_audio_id || track.suno_audio_id;
-    
-    // Extract task_id from track description (format: [task_id: xxx])
+
     let taskId = suno_task_id;
     if (!taskId && track.description) {
       const taskIdMatch = track.description.match(/\[task_id:\s*([^\]]+)\]/);
@@ -93,12 +71,10 @@ serve(async (req) => {
       }
     }
 
-    // Validate we have required parameters - Suno API requires taskId
     if (!taskId) {
       throw new Error("Track has no Suno task ID for video generation");
     }
 
-    // Get addon service price
     const { data: addonService } = await supabase
       .from("addon_services")
       .select("id, price_rub")
@@ -111,9 +87,7 @@ serve(async (req) => {
 
     const price = addonService.price_rub;
 
-    // If user call (not internal from addon processing), check balance and deduct
     if (!isInternalCall && userId) {
-      // Check user balance
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("balance")
@@ -131,7 +105,6 @@ serve(async (req) => {
         );
       }
 
-      // Deduct balance
       const newBalance = (profile.balance || 0) - price;
       const { error: deductError } = await supabase
         .from("profiles")
@@ -142,7 +115,6 @@ serve(async (req) => {
         throw new Error("Failed to deduct balance");
       }
 
-      // Log transaction
       await supabase.from("balance_transactions").insert({
         user_id: userId,
         amount: -price,
@@ -153,7 +125,6 @@ serve(async (req) => {
         reference_type: "track",
       });
 
-      // Create track_addon record
       await supabase
         .from("track_addons")
         .insert({
@@ -164,22 +135,17 @@ serve(async (req) => {
         });
     }
 
-    // Build callback URL for Suno
     const callbackUrl = `${supabaseUrl}/functions/v1/suno-video-callback`;
 
-    // Request music video generation from Suno API
-    // According to Suno docs, both taskId and audioId can be provided
-    // taskId is required, audioId is optional but more specific
     const requestBody: Record<string, unknown> = {
       callBackUrl: callbackUrl,
-      taskId: taskId, // Required
+      taskId: taskId,
     };
 
-    // Add audioId if available (more specific)
     if (audioId) {
       requestBody.audioId = audioId;
     }
-    
+
     if (author) {
       requestBody.author = author;
     }
@@ -205,119 +171,23 @@ serve(async (req) => {
       throw new Error(`Invalid JSON response from Suno: ${responseText}`);
     }
 
-    // Handle "Mp4 record already exists" - means video is already generated
-    // Try to fetch the existing video URL
     if (data.code !== 200 && data.msg?.includes("Mp4 record already exists")) {
       console.log("Video already exists, fetching status...");
-      
-      // Try to get existing video via status API
-      const statusResponse = await fetch(`https://api.sunoapi.org/api/v1/mp4/query?taskId=${taskId}`, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${SUNO_API_KEY}`,
-          "Content-Type": "application/json",
-        },
+      return await handleVideoAlreadyExists({
+        taskId,
+        trackId: track_id,
+        addonServiceId: addonService.id,
+        price,
+        sunoApiKey: SUNO_API_KEY,
+        supabase,
+        userId,
+        isInternalCall,
       });
-      
-      const statusText = await statusResponse.text();
-      console.log("Suno video status response:", statusResponse.status, statusText);
-      
-      let statusData;
-      try {
-        statusData = JSON.parse(statusText);
-      } catch {
-        // If status API fails, refund and error
-        if (!isInternalCall && userId) {
-          const { data: currentProfile } = await supabase
-            .from("profiles")
-            .select("balance")
-            .eq("user_id", userId)
-            .single();
-          
-          await supabase
-            .from("profiles")
-            .update({ balance: (currentProfile?.balance || 0) + price })
-            .eq("user_id", userId);
-        }
-        throw new Error("Video already exists but failed to fetch URL");
-      }
-      
-      if (statusData.code === 200 && statusData.data) {
-        // Video exists - extract URL
-        const videoUrl = statusData.data.video_url || statusData.data.mp4_url || statusData.data.url;
-        
-        if (videoUrl) {
-          console.log(`Found existing video: ${videoUrl}`);
-          
-          // Refund user since video already exists
-          if (!isInternalCall && userId) {
-            const { data: currentProfile } = await supabase
-              .from("profiles")
-              .select("balance")
-              .eq("user_id", userId)
-              .single();
-            
-            await supabase
-              .from("profiles")
-              .update({ balance: (currentProfile?.balance || 0) + price })
-              .eq("user_id", userId);
-          }
-          
-          // Update addon to completed with existing URL
-          await supabase
-            .from("track_addons")
-            .update({ 
-              status: "completed", 
-              result_url: videoUrl,
-              updated_at: new Date().toISOString()
-            })
-            .eq("track_id", track_id)
-            .eq("addon_service_id", addonService.id);
-          
-          return new Response(
-            JSON.stringify({
-              success: true,
-              video_url: videoUrl,
-              message: "Video already exists",
-              already_exists: true,
-            }),
-            {
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            }
-          );
-        }
-      }
-      
-      // Refund and error if we couldn't get video URL
-      if (!isInternalCall && userId) {
-        const { data: currentProfile } = await supabase
-          .from("profiles")
-          .select("balance")
-          .eq("user_id", userId)
-          .single();
-        
-        await supabase
-          .from("profiles")
-          .update({ balance: (currentProfile?.balance || 0) + price })
-          .eq("user_id", userId);
-      }
-      throw new Error("Video exists but could not retrieve URL");
     }
 
     if (!response.ok) {
-      // Refund if user call
       if (!isInternalCall && userId) {
-        const { data: currentProfile } = await supabase
-          .from("profiles")
-          .select("balance")
-          .eq("user_id", userId)
-          .single();
-
-        await supabase
-          .from("profiles")
-          .update({ balance: (currentProfile?.balance || 0) + price })
-          .eq("user_id", userId);
-        
+        await refundUser(supabase, userId, price);
         await supabase
           .from("track_addons")
           .update({ status: "failed", result_url: JSON.stringify({ error: "Suno API error" }) })
@@ -328,19 +198,8 @@ serve(async (req) => {
     }
 
     if (data.code !== 200) {
-      // Refund if user call
       if (!isInternalCall && userId) {
-        const { data: currentProfile } = await supabase
-          .from("profiles")
-          .select("balance")
-          .eq("user_id", userId)
-          .single();
-        
-        await supabase
-          .from("profiles")
-          .update({ balance: (currentProfile?.balance || 0) + price })
-          .eq("user_id", userId);
-        
+        await refundUser(supabase, userId, price);
         await supabase
           .from("track_addons")
           .update({ status: "failed", result_url: JSON.stringify({ error: data.msg }) })
@@ -357,12 +216,11 @@ serve(async (req) => {
 
     console.log(`Video generation started, Suno video task ID: ${videoTaskId}`);
 
-    // Update the track_addons table with processing status and video task ID
     const { error: updateError } = await supabase
       .from("track_addons")
       .update({
         status: "processing",
-        result_url: JSON.stringify({ 
+        result_url: JSON.stringify({
           video_task_id: videoTaskId,
           track_id: track_id,
           suno_audio_id: audioId || null,
@@ -389,7 +247,7 @@ serve(async (req) => {
     );
   } catch (error) {
     console.error("generate-short-video error:", error);
-    
+
     return new Response(
       JSON.stringify({
         success: false,

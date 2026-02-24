@@ -50,7 +50,7 @@ app.use(morgan('short'));
 
 // Raw body parser for storage upload routes (binary files)
 app.use('/storage/v1/object', express.raw({
-  type: ['image/*', 'audio/*', 'video/*', 'application/octet-stream', 'application/pdf', 'application/zip', 'text/html', 'text/html; charset=utf-8'],
+  type: ['image/*', 'audio/*', 'video/*', 'application/octet-stream', 'application/pdf', 'application/zip'],
   limit: '100mb',
 }));
 

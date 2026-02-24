@@ -206,19 +206,18 @@ serve(async (req) => {
       // Suno record-info returns camelCase fields (audioUrl, imageUrl)
       // while callback uses snake_case (audio_url, image_url)
       // Normalize to handle both formats
-      const normalizedRecords = records.map((r: Record<string, unknown>) => ({
-        audioUrl: r.audioUrl || r.audio_url || r.source_audio_url || r.sourceAudioUrl,
-        imageUrl: r.imageUrl || r.image_url || r.source_image_url || r.sourceImageUrl,
-        duration: r.duration,
-        id: r.id,
-      }));
+      const normalizedRecords = records.map((r: Record<string, unknown>) => {
+        const rawAudio = r.audioUrl || r.audio_url || r.source_audio_url || r.sourceAudioUrl;
+        const audioUrl = (typeof rawAudio === "string" && rawAudio.startsWith("http")) ? rawAudio : null;
+        return {
+          audioUrl,
+          imageUrl: r.imageUrl || r.image_url || r.source_image_url || r.sourceImageUrl,
+          duration: r.duration,
+          id: r.id,
+        };
+      });
 
-      // Check if ANY record has a real audio URL (not empty string, null, undefined)
-      const hasAnyAudio = normalizedRecords.some(
-        (r: { audioUrl: unknown }) => r.audioUrl && String(r.audioUrl) !== "" && String(r.audioUrl) !== "null"
-      );
-
-      if (normalizedRecords.length > 0 && hasAnyAudio) {
+      if (normalizedRecords.length > 0 && normalizedRecords[0].audioUrl) {
         // Find ALL tracks matching this task_id (both v1 and v2)
         const { data: matchedTracks } = await supabaseClient
           .from("tracks")
@@ -234,23 +233,30 @@ serve(async (req) => {
 
         console.log(`Found ${tracksWithTask.length} tracks matching task_id ${taskId}`);
 
-        // Update each track with corresponding Suno record (by order: first→v1, second→v2)
-        // Download files to local storage for persistent access
-        // CRITICAL: Only update tracks where the corresponding record has a valid audio URL
-        for (let i = 0; i < tracksWithTask.length && i < normalizedRecords.length; i++) {
-          const rec = normalizedRecords[i];
-          const trk = tracksWithTask[i];
-          
-          // CRITICAL: Skip records without valid audio URL
-          // When status is FIRST_SUCCESS, only one of two records has audio
-          const rawAudioUrl = rec.audioUrl ? String(rec.audioUrl) : "";
-          if (!rawAudioUrl || rawAudioUrl === "" || rawAudioUrl === "null" || rawAudioUrl === "undefined") {
-            console.log(`Track ${trk.id} (${trk.title}) — no audio URL yet, skipping (status: ${taskStatus})`);
+        // Match each DB track to its Suno record by title version (v1→index 0, v2→index 1)
+        // instead of sequential index. This prevents race conditions when parallel polls
+        // run for v1 and v2: each poll only updates its own track with the correct record.
+        for (const trk of tracksWithTask) {
+          // Only process the specific track requested by this poll call
+          if (trackId && trk.id !== trackId) continue;
+
+          // Determine which Suno record to use based on title version
+          const isV2 = /\(v2\)\s*$/.test(trk.title || "");
+          const recordIndex = isV2 ? 1 : 0;
+
+          if (recordIndex >= normalizedRecords.length) {
+            console.log(`No Suno record at index ${recordIndex} for track ${trk.id} (${trk.title})`);
+            continue;
+          }
+
+          const rec = normalizedRecords[recordIndex];
+          if (!rec.audioUrl) {
+            console.log(`Skipping track ${trk.id} — no valid audio URL at index ${recordIndex}`);
             continue;
           }
           
           // Download audio to local storage
-          let finalAudioUrl = rawAudioUrl;
+          let finalAudioUrl = String(rec.audioUrl);
           const localAudio = await downloadToLocalStorage(
             finalAudioUrl,
             "tracks",
@@ -260,9 +266,6 @@ serve(async (req) => {
 
           // Download cover to local storage
           let finalCoverUrl: string | null = rec.imageUrl ? String(rec.imageUrl) : null;
-          if (finalCoverUrl && (finalCoverUrl === "null" || finalCoverUrl === "undefined")) {
-            finalCoverUrl = null;
-          }
           if (finalCoverUrl) {
             const localCover = await downloadToLocalStorage(
               finalCoverUrl,
@@ -279,6 +282,7 @@ serve(async (req) => {
               cover_url: finalCoverUrl,
               duration: rec.duration ? Math.round(Number(rec.duration)) : null,
               status: "completed",
+              suno_audio_id: rec.id ? String(rec.id) : null,
             })
             .eq("id", trk.id)
             .eq("user_id", userId);
@@ -286,11 +290,9 @@ serve(async (req) => {
           if (updateError) {
             console.error(`Error updating track ${trk.id}:`, updateError);
           } else {
-            console.log(`Track ${trk.id} (${trk.title}) completed via polling with local storage`);
+            console.log(`Track ${trk.id} (${trk.title}) completed via polling, record[${recordIndex}], suno_audio_id=${rec.id}`);
           }
         }
-      } else if (normalizedRecords.length > 0) {
-        console.log(`Task ${taskId}: records exist but no audio URLs ready yet (status: ${taskStatus})`);
       }
 
       return new Response(

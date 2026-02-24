@@ -156,19 +156,12 @@ router.get('/object/public/:bucket/*', (req, res) => {
       '.pdf': 'application/pdf',
       '.json': 'application/json',
       '.zip': 'application/zip',
-      '.html': 'text/html; charset=utf-8',
     };
 
     res.set('Content-Type', mimeTypes[ext] || 'application/octet-stream');
     res.set('Cache-Control', 'public, max-age=86400');
-    // Сертификаты — предлагаем скачать при наличии ?download= в query
-    if (bucket === 'certificates' && req.query.download) {
-      const downloadName = req.query.download || path.basename(filePath);
-      // RFC 5987: ASCII fallback + UTF-8 filename* для кириллицы (избегаем битых файлов)
-      const asciiFallback = 'certificate.html';
-      const encoded = encodeURIComponent(downloadName);
-      res.set('Content-Disposition', `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`);
-    }
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.set('Access-Control-Allow-Origin', '*');
     res.sendFile(fullPath);
   } catch (err) {
     console.error('[Storage Download]', err.message);
@@ -181,7 +174,7 @@ router.post('/object/public-url/:bucket/*', (req, res) => {
   const bucket = req.params.bucket;
   const filePath = req.params[0];
   res.json({
-    publicUrl: `${BASE_URL}/storage/v1/object/public/${bucket}/${filePath}`,
+    publicUrl: `/storage/v1/object/public/${bucket}/${filePath}`,
   });
 });
 

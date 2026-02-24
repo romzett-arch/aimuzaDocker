@@ -8,8 +8,8 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const APP_NAME = "AI Planet Sound";
-const APP_URL = "https://aiplanetsound.lovable.app";
+const APP_NAME = "AIMUZA";
+const APP_URL = "https://aimuza.ru";
 
 function generateCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no O/0/1/I confusion
@@ -97,7 +97,7 @@ function getEmailHtml(type: string, data: { code?: string; link?: string; email:
           <div style="padding: 16px 24px 32px;">
             <h2 style="color: #e0e0e0; text-align: center;">Привет, ${data.username || "музыкант"}! 👋</h2>
             <p style="text-align: center; line-height: 1.6;">
-              Добро пожаловать на платформу AI Planet Sound — хаб AI музыкантов!
+              Добро пожаловать на платформу AIMUZA — хаб AI музыкантов!
             </p>
             <div style="text-align: center; margin: 24px 0;">
               <a href="${APP_URL}" style="${buttonStyle}">Начать создавать 🚀</a>

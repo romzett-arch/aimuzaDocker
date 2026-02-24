@@ -1,15 +1,30 @@
-FROM node:20-alpine
+FROM node:20-bookworm-slim
+
+# Install Icecast2, Liquidsoap, supervisord, ffmpeg (for silence gen)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    icecast2 \
+    liquidsoap \
+    supervisor \
+    ffmpeg \
+    wget \
+    curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /var/log/icecast /var/log/liquidsoap /app/jingles /tmp
 
 WORKDIR /app
 
-COPY radio/package.json ./
+# Copy Node.js app (context: project root, radio in deploy/)
+COPY deploy/radio/package.json ./
 RUN npm install --production
 
-COPY radio/ ./
+COPY deploy/radio/ ./
 
-EXPOSE 3200
+# Fix line endings (Windows CRLF → LF) and make executable
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+EXPOSE 3200 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD wget -qO- http://localhost:3200/health || exit 1
 
-CMD ["node", "server.js"]
+CMD ["/app/start.sh"]

@@ -97,12 +97,8 @@ serve(async (req) => {
         );
       }
 
-      // Get public URL
-      const { data: urlData } = supabaseClient.storage
-        .from("audio-references")
-        .getPublicUrl(fileName);
-
-      const publicUrl = urlData?.publicUrl;
+      const BASE_URL = Deno.env.get("BASE_URL") || "https://aimuza.ru";
+      const publicUrl = `${BASE_URL}/storage/v1/object/public/audio-references/${fileName}`;
       
       if (!publicUrl) {
         return new Response(

@@ -1,10 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
-};
+import { corsHeaders, WAV_TTL_DAYS } from "./constants.ts";
+import { validateAuth, AuthError } from "./auth.ts";
+import { processWavViaFfmpeg, copyWavToStorage } from "./utils.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -16,42 +14,25 @@ serve(async (req) => {
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
   try {
-    const authHeader = req.headers.get("Authorization");
-    let userId: string | null = null;
-    let isInternalCall = false;
-
-    // Check if this is an internal call with service key
-    if (authHeader === `Bearer ${supabaseServiceKey}`) {
-      isInternalCall = true;
-      console.log("Internal service call detected");
-    } else if (authHeader?.startsWith("Bearer ")) {
-      // User JWT - validate and get user
-      const userClient = createClient(supabaseUrl, supabaseAnonKey, {
-        global: { headers: { Authorization: authHeader } }
-      });
-      
-      const token = authHeader.replace("Bearer ", "");
-      const { data: claimsData, error: claimsError } = await userClient.auth.getClaims(token);
-      
-      if (claimsError || !claimsData?.claims) {
+    let userId: string | null;
+    let isInternalCall: boolean;
+    try {
+      const auth = await validateAuth(req, supabaseUrl, supabaseServiceKey, supabaseAnonKey);
+      userId = auth.userId;
+      isInternalCall = auth.isInternalCall;
+    } catch (e) {
+      if (e instanceof AuthError) {
         return new Response(
-          JSON.stringify({ error: "Unauthorized" }),
+          JSON.stringify({ error: e.message }),
           { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-      
-      userId = claimsData.claims.sub as string;
-      console.log(`User call from: ${userId}`);
-    } else {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized - missing auth" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      throw e;
     }
 
     const body = await req.json();
     const { track_id, audio_id } = body;
-    
+
     console.log("Convert to WAV request:", { track_id, audio_id, userId, isInternalCall });
 
     const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
@@ -59,9 +40,11 @@ serve(async (req) => {
       throw new Error("SUNO_API_KEY not configured");
     }
 
+    const ffmpegApiUrl = Deno.env.get("FFMPEG_API_URL");
+    const ffmpegApiSecret = Deno.env.get("FFMPEG_API_SECRET");
+
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Get track info to get task_id from description
     const { data: track, error: trackError } = await supabase
       .from("tracks")
       .select("id, user_id, suno_audio_id, title, description, audio_url, wav_url")
@@ -72,7 +55,6 @@ serve(async (req) => {
       throw new Error("Track not found");
     }
 
-    // If WAV already exists on track, return it
     if (track.wav_url) {
       console.log("WAV already exists on track:", track.wav_url);
       return new Response(
@@ -81,7 +63,6 @@ serve(async (req) => {
       );
     }
 
-    // If user call, verify ownership
     if (!isInternalCall && track.user_id !== userId) {
       return new Response(
         JSON.stringify({ error: "Access denied - not your track" }),
@@ -89,7 +70,6 @@ serve(async (req) => {
       );
     }
 
-    // Extract task_id from track description
     let taskId: string | null = null;
     if (track.description) {
       const taskIdMatch = track.description.match(/\[task_id:\s*([^\]]+)\]/);
@@ -98,14 +78,40 @@ serve(async (req) => {
       }
     }
 
-    // Use provided audio_id or get from track
-    const audioId = audio_id || track.suno_audio_id;
+    let audioId = audio_id || track.suno_audio_id;
 
     if (!taskId) {
       throw new Error("Track has no Suno task ID for WAV conversion");
     }
 
-    // Get addon service
+    if (!audioId && taskId) {
+      console.log(`audioId missing, fetching from erweima.ai record-info for taskId=${taskId}`);
+      try {
+        const infoResp = await fetch(
+          `https://apibox.erweima.ai/api/v1/generate/record-info?taskId=${taskId}`,
+          { headers: { "Authorization": `Bearer ${SUNO_API_KEY}` } }
+        );
+        const infoData = await infoResp.json();
+        if (infoData.code === 200 && infoData.data?.response?.sunoData) {
+          const sunoRecords = infoData.data.response.sunoData;
+          const titleSuffix = track.title?.match(/\(v(\d+)\)/)?.[1];
+          const idx = titleSuffix ? parseInt(titleSuffix) - 1 : 0;
+          const matched = sunoRecords[idx] || sunoRecords[0];
+          if (matched?.id) {
+            audioId = matched.id;
+            console.log(`Resolved audioId from erweima: ${audioId}`);
+            await supabase.from("tracks").update({ suno_audio_id: audioId }).eq("id", track_id);
+          }
+        }
+      } catch (lookupErr) {
+        console.error("Failed to lookup audioId from erweima:", lookupErr);
+      }
+    }
+
+    if (!audioId) {
+      throw new Error("Track has no Suno audio ID and could not resolve it. Please regenerate the track.");
+    }
+
     const { data: addonService } = await supabase
       .from("addon_services")
       .select("id, price_rub")
@@ -118,7 +124,6 @@ serve(async (req) => {
 
     const callbackUrl = `${supabaseUrl}/functions/v1/wav-callback`;
 
-    // Call Suno API to convert to WAV
     const response = await fetch("https://api.sunoapi.org/api/v1/wav/generate", {
       method: "POST",
       headers: {
@@ -135,69 +140,90 @@ serve(async (req) => {
     const result = await response.json();
     console.log("Suno WAV API response:", result);
 
-    // Handle "already exists" case - try to get the WAV URL directly
     if (result.code === 409 && result.data?.taskId) {
       console.log("WAV already exists, fetching record-info...");
-      
-      // Get WAV record info from Suno API - correct endpoint is /wav/record-info
+
       const statusResponse = await fetch(`https://api.sunoapi.org/api/v1/wav/record-info?taskId=${result.data.taskId}`, {
         method: "GET",
         headers: {
           "Authorization": `Bearer ${SUNO_API_KEY}`,
         },
       });
-      
+
       const statusResult = await statusResponse.json();
       console.log("WAV record-info response:", statusResult);
-      
-      // Check if WAV URL is available - the field is "audioWavUrl" in "response" object
+
       if (statusResult.code === 200 && statusResult.data?.response?.audioWavUrl) {
-        const wavUrl = statusResult.data.response.audioWavUrl;
-        console.log("Found WAV URL from record-info:", wavUrl);
-        
-        // Update track with WAV URL
+        const originalWavUrl = statusResult.data.response.audioWavUrl;
+        console.log("Found WAV URL from record-info:", originalWavUrl);
+
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("username")
+          .eq("user_id", track.user_id)
+          .single();
+        const artistName = profile?.username || "AIMuza Artist";
+
+        let wavUrlToStore = originalWavUrl;
+        if (ffmpegApiUrl && ffmpegApiSecret) {
+          const processedUrl = await processWavViaFfmpeg(
+            originalWavUrl, track.title, artistName, ffmpegApiUrl, ffmpegApiSecret,
+          );
+          if (processedUrl) {
+            wavUrlToStore = processedUrl;
+          } else {
+            console.warn("[convert-wav] ffmpeg processing failed, using raw WAV");
+          }
+        }
+
+        let finalWavUrl = wavUrlToStore;
+        const storedUrl = await copyWavToStorage(supabase, wavUrlToStore, track_id);
+        if (storedUrl) {
+          finalWavUrl = storedUrl;
+        }
+
+        const expiresAt = new Date(Date.now() + WAV_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
         await supabase
           .from("tracks")
-          .update({ 
-            wav_url: wavUrl,
+          .update({
+            wav_url: finalWavUrl,
+            wav_expires_at: expiresAt,
             updated_at: new Date().toISOString(),
           })
           .eq("id", track_id);
-        
-        // Update addon status
+
         await supabase.from("track_addons").upsert({
           track_id,
           addon_service_id: addonService.id,
           status: "completed",
-          result_url: wavUrl,
+          result_url: finalWavUrl,
           updated_at: new Date().toISOString(),
         }, {
           onConflict: "track_id,addon_service_id",
         });
-        
-        // Send notification
+
         await supabase.from("notifications").insert({
           user_id: track.user_id,
           type: "addon_completed",
           title: "WAV готов к скачиванию",
-          message: `Трек "${track.title}" доступен в WAV формате.`,
+          message: `Трек "${track.title}" конвертирован в WAV (16-bit/44.1kHz). Доступен 7 дней.`,
           target_type: "track",
           target_id: track_id,
-          metadata: { wav_url: wavUrl },
+          metadata: { wav_url: finalWavUrl, expires_at: expiresAt },
         });
-        
+
         return new Response(
-          JSON.stringify({ success: true, wav_url: wavUrl, message: "WAV ready" }),
+          JSON.stringify({ success: true, wav_url: finalWavUrl, expires_at: expiresAt, message: "WAV ready" }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-      
-      // Status not ready yet, keep waiting
+
       await supabase.from("track_addons").upsert({
         track_id,
         addon_service_id: addonService.id,
         status: "processing",
-        result_url: JSON.stringify({ 
+        result_url: JSON.stringify({
           wav_task_id: result.data.taskId,
           suno_audio_id: audioId,
         }),
@@ -216,12 +242,11 @@ serve(async (req) => {
       throw new Error(result.msg || "Failed to start WAV conversion");
     }
 
-    // Create or update addon record
     await supabase.from("track_addons").upsert({
       track_id,
       addon_service_id: addonService.id,
       status: "processing",
-      result_url: JSON.stringify({ 
+      result_url: JSON.stringify({
         wav_task_id: result.data?.taskId,
         suno_audio_id: audioId,
       }),

@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --production
 
-COPY server.js ./
+COPY server.js channels.js connections.js ./
 
 EXPOSE 4000
 
