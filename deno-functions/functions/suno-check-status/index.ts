@@ -217,7 +217,7 @@ serve(async (req) => {
         };
       });
 
-      if (normalizedRecords.length > 0 && normalizedRecords[0].audioUrl) {
+      if (normalizedRecords.length > 0 && normalizedRecords.some((r: { audioUrl: string | null }) => r.audioUrl)) {
         // Find ALL tracks matching this task_id (both v1 and v2)
         const { data: matchedTracks } = await supabaseClient
           .from("tracks")
@@ -233,12 +233,10 @@ serve(async (req) => {
 
         console.log(`Found ${tracksWithTask.length} tracks matching task_id ${taskId}`);
 
-        // Match each DB track to its Suno record by title version (v1→index 0, v2→index 1)
-        // instead of sequential index. This prevents race conditions when parallel polls
-        // run for v1 and v2: each poll only updates its own track with the correct record.
+        // Match each DB track to its Suno record by title version (v1→index 0, v2→index 1).
+        // When a specific trackId is requested, also update the paired track if it's still pending,
+        // so both tracks get processed in a single check-status call.
         for (const trk of tracksWithTask) {
-          // Only process the specific track requested by this poll call
-          if (trackId && trk.id !== trackId) continue;
 
           // Determine which Suno record to use based on title version
           const isV2 = /\(v2\)\s*$/.test(trk.title || "");

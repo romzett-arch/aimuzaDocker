@@ -147,43 +147,48 @@ serve(async (req) => {
 
     let updatedCount = 0;
 
-    const sortedTracks = [...allMatchedTracks].sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+    // Normalize ALL Suno results (keep original indices intact — no filtering!)
+    const normalizedSunoResults = tracks.map((track: SunoTrackData, idx: number) => {
+      const rawAudioUrl = track.audio_url || track.source_audio_url || track.stream_audio_url;
+      const audioUrl = typeof rawAudioUrl === "string" && rawAudioUrl.startsWith("http") ? rawAudioUrl : null;
+      return { ...track, audioUrl, originalIndex: idx };
+    });
 
-    for (let i = 0; i < tracks.length; i++) {
-      const track = tracks[i];
+    // Pending DB tracks (not yet completed/failed)
+    const pendingDbTracks = allMatchedTracks.filter(
+      (t) => t.status !== "completed" && t.status !== "failed"
+    );
+
+    console.log(`Matching ${normalizedSunoResults.length} Suno results to ${pendingDbTracks.length} pending DB tracks (total DB: ${allMatchedTracks.length})`);
+
+    // Match each DB track to its Suno record by title version (v1→index 0, v2→index 1).
+    // This is the same logic as suno-check-status to prevent mismatches.
+    for (const trackToUpdate of pendingDbTracks) {
+      const isV2 = /\(v2\)\s*$/.test(trackToUpdate.title || "");
+      const recordIndex = isV2 ? 1 : 0;
+
+      if (recordIndex >= normalizedSunoResults.length) {
+        console.log(`No Suno record at index ${recordIndex} for track ${trackToUpdate.id} (${trackToUpdate.title})`);
+        continue;
+      }
+
+      const track = normalizedSunoResults[recordIndex];
+      if (!track.audioUrl) {
+        console.log(`Suno record[${recordIndex}] has no audio URL for track ${trackToUpdate.id} (${trackToUpdate.title}), skipping`);
+        continue;
+      }
+
       const {
         id: sunoAudioId,
-        audio_url,
-        source_audio_url,
-        stream_audio_url,
+        audioUrl,
         image_url,
         source_image_url,
         duration,
-        title: sunoTitle,
       } = track;
 
-      const rawAudioUrl = audio_url || source_audio_url || stream_audio_url;
-      const audioUrl = typeof rawAudioUrl === "string" && rawAudioUrl.startsWith("http") ? rawAudioUrl : null;
       const coverUrl = image_url || source_image_url;
 
-      if (!audioUrl) {
-        console.log(`Track has no valid audio URL (raw: ${rawAudioUrl}), skipping`);
-        continue;
-      }
-
-      if (i >= sortedTracks.length) {
-        console.log(`No matched track at index ${i} for Suno result: ${sunoTitle}`);
-        continue;
-      }
-
-      const trackToUpdate = sortedTracks[i];
-
-      if (trackToUpdate.status === "completed" || trackToUpdate.status === "failed") {
-        console.log(`Track ${trackToUpdate.id} (${trackToUpdate.title}) already ${trackToUpdate.status}, skipping — index ${i} preserved for correct mapping`);
-        continue;
-      }
-
-      console.log(`Updating track ${trackToUpdate.id} (${trackToUpdate.title}) with Suno result[${i}]: ${audioUrl}`);
+      console.log(`Updating track ${trackToUpdate.id} (${trackToUpdate.title}) with Suno record[${recordIndex}]: ${audioUrl}`);
 
       let finalAudioUrl = audioUrl;
       let finalCoverUrl = coverUrl;
@@ -216,6 +221,12 @@ serve(async (req) => {
         }
       }
 
+      // Preserve description without duplicating task_id
+      const descAlreadyHasTaskId = trackToUpdate.description?.includes("[task_id:");
+      const updatedDescription = descAlreadyHasTaskId
+        ? trackToUpdate.description
+        : (trackToUpdate.description ? `${trackToUpdate.description}\n\n[task_id: ${taskId}]` : `[task_id: ${taskId}]`);
+
       const { error: updateError } = await supabaseAdmin
         .from("tracks")
         .update({
@@ -224,7 +235,7 @@ serve(async (req) => {
           duration: duration ? Math.round(duration) : null,
           status: "completed",
           suno_audio_id: sunoAudioId || null,
-          description: trackToUpdate.description ? `${trackToUpdate.description}\n\n[task_id: ${taskId}]` : `[task_id: ${taskId}]`,
+          description: updatedDescription,
         })
         .eq("id", trackToUpdate.id);
 
