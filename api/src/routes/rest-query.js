@@ -2,23 +2,34 @@ import { pool } from '../db.js';
 import { setJwtClaims, resetJwtClaims, sanitizeTable, parseFilters, parseSelect, parseOrder } from './rest-utils.js';
 
 export async function handleHead(req, res) {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
+    await setJwtClaims(client, req.user);
+
     const table = sanitizeTable(req.params.table);
     const { where, params } = parseFilters(req.query);
     const countSql = `SELECT COUNT(*) FROM ${table} ${where}`;
-    const cr = await pool.query(countSql, params);
+    const cr = await client.query(countSql, params);
+
+    await client.query('COMMIT');
     res.set('Content-Range', `0-0/${cr.rows[0].count}`);
     res.set('X-Total-Count', String(cr.rows[0].count));
     res.status(200).end();
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('[REST HEAD]', err.message);
     res.status(200).set('Content-Range', '0-0/0').set('X-Total-Count', '0').end();
+  } finally {
+    await resetJwtClaims(client);
+    client.release();
   }
 }
 
 export async function handleGet(req, res) {
   const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     await setJwtClaims(client, req.user);
 
     const tableName = req.params.table;
@@ -43,6 +54,8 @@ export async function handleGet(req, res) {
 
     const result = await client.query(sql, params);
 
+    await client.query('COMMIT');
+
     if (countResult !== null) {
       res.set('Content-Range', `0-${result.rows.length}/${countResult}`);
       res.set('X-Total-Count', String(countResult));
@@ -55,6 +68,7 @@ export async function handleGet(req, res) {
 
     res.json(result.rows);
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('[REST GET]', err.message, '| SQL table:', req.params.table, '| select:', req.query.select);
     if (err.message.includes('does not exist') || err.message.includes('column')) {
       return res.json([]);

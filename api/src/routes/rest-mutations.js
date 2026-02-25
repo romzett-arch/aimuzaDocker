@@ -1,19 +1,37 @@
 import { pool } from '../db.js';
 import { setJwtClaims, resetJwtClaims, sanitizeTable, parseFilters, parseSelect } from './rest-utils.js';
 
+const PROTECTED_COLUMNS = new Set([
+  'role', 'is_super_admin', 'balance', 'likes_count', 'plays_count',
+  'moderation_status', 'moderation_reviewed_by', 'moderation_reviewed_at',
+  'voting_result', 'voting_likes_count', 'voting_dislikes_count',
+  'chart_position', 'chart_score', 'weighted_likes_sum', 'weighted_dislikes_sum',
+  'created_at', 'downloads_count', 'shares_count', 'xp', 'level', 'tier',
+  'vote_weight', 'reputation_score', 'authority_score',
+]);
+
+const MAX_BATCH_SIZE = 100;
+
+function filterProtectedCols(cols, user) {
+  if (user?.role === 'service_role') return cols;
+  return cols.filter(c => !PROTECTED_COLUMNS.has(c));
+}
+
 export async function handlePost(req, res) {
   const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     await setJwtClaims(client, req.user);
 
     const table = sanitizeTable(req.params.table);
     const rows = Array.isArray(req.body) ? req.body : [req.body];
-    if (rows.length === 0) return res.status(400).json({ error: 'No data' });
+    if (rows.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No data' }); }
+    if (rows.length > MAX_BATCH_SIZE) { await client.query('ROLLBACK'); return res.status(400).json({ error: `Batch size exceeds limit of ${MAX_BATCH_SIZE}` }); }
 
     const results = [];
     for (const row of rows) {
-      const cols = Object.keys(row).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
-      if (cols.length === 0) return res.status(400).json({ error: 'No valid columns' });
+      const cols = filterProtectedCols(Object.keys(row).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c)), req.user);
+      if (cols.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No valid columns' }); }
 
       const vals = cols.map(c => row[c]);
       const placeholders = cols.map((_, i) => {
@@ -31,7 +49,7 @@ export async function handlePost(req, res) {
           .map(c => c.trim())
           .filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c))
           .map(c => `"${c}"`).join(', ');
-        if (!conflictCols) return res.status(400).json({ error: 'Invalid on_conflict columns' });
+        if (!conflictCols) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Invalid on_conflict columns' }); }
         const conflictNames = onConflict.split(',').map(x => x.trim());
         const updateCols = cols
           .filter(c => !conflictNames.includes(c))
@@ -70,14 +88,18 @@ export async function handlePost(req, res) {
       }
     }
 
+    await client.query('COMMIT');
+
     const prefer = req.headers.prefer || '';
     if (prefer.includes('return=representation')) {
       return res.status(201).json(rows.length === 1 ? results[0] : results);
     }
     res.status(201).json(results);
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('[REST POST]', err.message, '| table:', req.params.table);
-    res.status(400).json({ message: err.message, error: err.message, code: 'REST_ERROR', details: null, hint: null });
+    const msg = err.message?.includes('violates') || err.message?.includes('duplicate') ? err.message : 'Operation failed';
+    res.status(400).json({ message: msg, error: msg, code: 'REST_ERROR', details: null, hint: null });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -87,12 +109,13 @@ export async function handlePost(req, res) {
 export async function handlePatch(req, res) {
   const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     await setJwtClaims(client, req.user);
 
     const table = sanitizeTable(req.params.table);
     const updates = req.body;
-    const cols = Object.keys(updates).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
-    if (cols.length === 0) return res.status(400).json({ error: 'No valid columns' });
+    const cols = filterProtectedCols(Object.keys(updates).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c)), req.user);
+    if (cols.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No valid columns' }); }
 
     const setClauses = [];
     const setParams = [];
@@ -115,14 +138,18 @@ export async function handlePatch(req, res) {
     const sql = `UPDATE ${table} SET ${setClauses.join(', ')} ${adjustedWhere} RETURNING *`;
     const result = await client.query(sql, [...setParams, ...filterParams]);
 
+    await client.query('COMMIT');
+
     const prefer = req.headers.prefer || '';
     if (prefer.includes('return=representation')) {
       return res.json(result.rows);
     }
     res.status(204).end();
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('[REST PATCH]', err.message);
-    res.status(400).json({ message: err.message, error: err.message, code: 'REST_ERROR', details: null, hint: null });
+    const msg = err.message?.includes('violates') || err.message?.includes('duplicate') ? err.message : 'Operation failed';
+    res.status(400).json({ message: msg, error: msg, code: 'REST_ERROR', details: null, hint: null });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -132,15 +159,19 @@ export async function handlePatch(req, res) {
 export async function handleDelete(req, res) {
   const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     await setJwtClaims(client, req.user);
 
     const table = sanitizeTable(req.params.table);
     const { where, params } = parseFilters(req.query);
     if (!where) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Filters required for DELETE' });
     }
     const sql = `DELETE FROM ${table} ${where} RETURNING *`;
     const result = await client.query(sql, params);
+
+    await client.query('COMMIT');
 
     const prefer = req.headers.prefer || '';
     if (prefer.includes('return=representation')) {
@@ -148,8 +179,9 @@ export async function handleDelete(req, res) {
     }
     res.status(204).end();
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('[REST DELETE]', err.message);
-    res.status(400).json({ message: err.message, error: err.message, code: 'REST_ERROR', details: null, hint: null });
+    res.status(400).json({ message: 'Operation failed', error: 'Operation failed', code: 'REST_ERROR', details: null, hint: null });
   } finally {
     await resetJwtClaims(client);
     client.release();
