@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { encode as base64Encode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -109,21 +110,29 @@ serve(async (req) => {
 
       console.log(`File saved to storage: ${publicUrl}`);
 
-      // Upload file directly to Suno via stream (works regardless of BASE_URL accessibility)
-      const sunoForm = new FormData();
-      sunoForm.append("file", new Blob([arrayBuffer], { type: file.type }), file.name);
-      sunoForm.append("uploadPath", `audio-references/${user.id}`);
+      // Upload file to Suno via base64 (reliable JSON transport, no multipart issues)
+      const base64Data = base64Encode(new Uint8Array(arrayBuffer));
+      const fileExt2 = file.name.split('.').pop() || 'mp3';
+      const mimeMap: Record<string, string> = { mp3: "audio/mpeg", wav: "audio/wav" };
+      const dataUrl = `data:${mimeMap[fileExt2] || file.type};base64,${base64Data}`;
 
-      const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-stream-upload`, {
+      console.log(`Uploading to Suno base64, data length: ${base64Data.length}`);
+
+      const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-base64-upload`, {
         method: "POST",
         headers: {
+          "Content-Type": "application/json",
           "Authorization": `Bearer ${SUNO_API_KEY}`,
         },
-        body: sunoForm,
+        body: JSON.stringify({
+          base64Data: dataUrl,
+          uploadPath: `audio-references/${user.id}`,
+          fileName: file.name,
+        }),
       });
 
       const uploadData = await uploadResponse.json();
-      console.log("Suno stream upload response:", JSON.stringify(uploadData));
+      console.log("Suno base64 upload response:", JSON.stringify(uploadData));
 
       if (!uploadResponse.ok || (uploadData.code && uploadData.code !== 200)) {
         console.error("Suno upload failed:", uploadData);
