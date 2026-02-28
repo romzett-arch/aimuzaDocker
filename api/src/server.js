@@ -32,6 +32,7 @@ import storageRouter from './routes/storage.js';
 import emailRouter from './routes/email.js';
 import functionsRouter from './routes/functions.js';
 import { authMiddleware } from './middleware/auth.js';
+import { maintenanceGuard } from './middleware/maintenance.js';
 
 dotenv.config();
 
@@ -39,8 +40,12 @@ const app = express();
 const PORT = parseInt(process.env.API_PORT || '3000');
 
 // Middleware
-app.use(helmet({ contentSecurityPolicy: false }));
-// A9: Explicit CORS origins instead of wildcard with credentials
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] },
+  },
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN || 'http://localhost').split(',').map(s => s.trim());
 app.use(cors({
   origin: ALLOWED_ORIGINS,
@@ -48,16 +53,25 @@ app.use(cors({
 }));
 app.use(morgan('short'));
 
-// Raw body parser for storage upload routes (binary files)
+// Raw body для storage (не multipart — иначе multer получит пустое тело)
 app.use('/storage/v1/object', express.raw({
-  type: ['image/*', 'audio/*', 'video/*', 'application/octet-stream', 'application/pdf', 'application/zip'],
+  type: (req) => {
+    const ct = (req.headers['content-type'] || '').toLowerCase();
+    return !ct.includes('multipart');
+  },
   limit: '100mb',
+}));
+
+// Raw body для multipart → functions proxy (чтобы передать файлы в Deno as-is)
+app.use('/functions/v1', express.raw({
+  type: (req) => (req.headers['content-type'] || '').toLowerCase().includes('multipart'),
+  limit: '50mb',
 }));
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// A10: Rate limiting — защита от брутфорса и спама
+// Auth-specific rate limiters (before auth middleware — these don't need user context)
 app.use('/auth/v1/token', rateLimit({ windowMs: 15 * 60 * 1000, max: 30, message: { error: 'Too many login attempts, try again later' } }));
 app.use('/auth/v1/signup', rateLimit({ windowMs: 60 * 60 * 1000, max: 10, message: { error: 'Too many signup attempts, try again later' } }));
 app.use('/functions/v1/send-auth-email', rateLimit({ windowMs: 60 * 1000, max: 3, message: { error: 'Too many email requests, try again later' } }));
@@ -65,6 +79,16 @@ app.use('/functions/v1/verify-email-code', rateLimit({ windowMs: 15 * 60 * 1000,
 
 // JWT auth middleware (устанавливает req.user если токен валидный)
 app.use(authMiddleware);
+
+// REST/storage rate limiters AFTER auth — so keyGenerator can use req.user.id
+const restMutationLimiter = rateLimit({ windowMs: 60 * 1000, max: 100, message: { error: 'Rate limit exceeded' }, keyGenerator: (req) => req.user?.id || req.ip });
+const restReadLimiter = rateLimit({ windowMs: 60 * 1000, max: 600, message: { error: 'Rate limit exceeded' }, keyGenerator: (req) => req.user?.id || req.ip });
+const storageLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: { error: 'Upload rate limit exceeded' }, keyGenerator: (req) => req.user?.id || req.ip });
+app.use('/rest/v1', (req, res, next) => { ['POST','PATCH','DELETE'].includes(req.method) ? restMutationLimiter(req, res, next) : restReadLimiter(req, res, next); });
+app.use('/storage/v1/object', (req, res, next) => { ['POST','PUT'].includes(req.method) ? storageLimiter(req, res, next) : next(); });
+
+// Maintenance mode guard — blocks writes for non-admin users during maintenance
+app.use(maintenanceGuard);
 
 // Healthcheck
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
@@ -77,11 +101,11 @@ app.use('/storage/v1', storageRouter);
 app.use('/functions/v1', emailRouter);       // Email — обрабатывается в Node.js (не Deno)
 app.use('/functions/v1', functionsRouter);    // Остальные функции — проксируются в Deno
 
-// Error handler
 app.use((err, req, res, next) => {
   console.error('[API Error]', err.message, err.stack?.split('\n')[1]);
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal Server Error',
+  const status = err.status || 500;
+  res.status(status).json({
+    error: status >= 500 ? 'Internal Server Error' : (err.message || 'Error'),
     code: err.code || 'INTERNAL_ERROR',
   });
 });
