@@ -109,22 +109,23 @@ serve(async (req) => {
 
       console.log(`File saved to storage: ${publicUrl}`);
 
-      // Now upload to Suno using URL endpoint (much more memory efficient)
-      const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-url-upload`, {
+      // Upload file directly to Suno via stream (works regardless of BASE_URL accessibility)
+      const sunoForm = new FormData();
+      sunoForm.append("file", new Blob([arrayBuffer], { type: file.type }), file.name);
+      sunoForm.append("uploadPath", `audio-references/${user.id}`);
+
+      const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-stream-upload`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           "Authorization": `Bearer ${SUNO_API_KEY}`,
         },
-        body: JSON.stringify({
-          url: publicUrl,
-        }),
+        body: sunoForm,
       });
 
       const uploadData = await uploadResponse.json();
-      console.log("Suno upload response:", JSON.stringify(uploadData));
+      console.log("Suno stream upload response:", JSON.stringify(uploadData));
 
-      if (!uploadResponse.ok || uploadData.code !== 200) {
+      if (!uploadResponse.ok || (uploadData.code && uploadData.code !== 200)) {
         console.error("Suno upload failed:", uploadData);
         return new Response(
           JSON.stringify({ error: uploadData.msg || "Ошибка загрузки файла в Suno" }),
@@ -132,7 +133,7 @@ serve(async (req) => {
         );
       }
 
-      const uploadUrl = uploadData.data?.url || uploadData.data;
+      const uploadUrl = uploadData.data?.downloadUrl || uploadData.data?.url || uploadData.data;
       
       if (!uploadUrl) {
         console.error("No upload URL in response:", uploadData);
@@ -167,22 +168,27 @@ serve(async (req) => {
 
     console.log(`Uploading audio from URL: ${audioUrl}`);
 
-    // Upload to Suno using URL endpoint
+    // Upload to Suno using URL endpoint (all param names for API compatibility)
+    const requestBody = {
+      fileUrl: audioUrl,
+      uploadPath: audioUrl,
+      url: audioUrl,
+    };
+    console.log("Suno URL upload request:", JSON.stringify(requestBody));
+
     const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-url-upload`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${SUNO_API_KEY}`,
       },
-      body: JSON.stringify({
-        url: audioUrl,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     const uploadData = await uploadResponse.json();
     console.log("Suno URL upload response:", JSON.stringify(uploadData));
 
-    if (!uploadResponse.ok || uploadData.code !== 200) {
+    if (!uploadResponse.ok || (uploadData.code && uploadData.code !== 200)) {
       console.error("Suno URL upload failed:", uploadData);
       return new Response(
         JSON.stringify({ error: uploadData.msg || "Ошибка загрузки по URL" }),
@@ -190,7 +196,7 @@ serve(async (req) => {
       );
     }
 
-    const uploadUrl = uploadData.data?.url || uploadData.data;
+    const uploadUrl = uploadData.data?.downloadUrl || uploadData.data?.url || uploadData.data;
 
     return new Response(
       JSON.stringify({ 
