@@ -123,7 +123,8 @@ serve(async (req) => {
       `${ROBOKASSA_MERCHANT_LOGIN}:${outSum}:${invId}:${ROBOKASSA_PASSWORD1}`;
     const signature = await computeMD5(signatureString);
 
-    console.log("Robokassa create:", { invId, amount, merchant: ROBOKASSA_MERCHANT_LOGIN, isTest: ROBOKASSA_TEST_MODE });
+    const signInputForLog = `${ROBOKASSA_MERCHANT_LOGIN}:${outSum}:${invId}:[PASSWORD]`;
+    console.log("Robokassa create:", { invId, outSum, amount, merchant: ROBOKASSA_MERCHANT_LOGIN, isTest: ROBOKASSA_TEST_MODE, signInput: signInputForLog, signature });
 
     // --- Build payment URL ---
     const paymentUrl = "https://auth.robokassa.ru/Merchant/Index.aspx";
