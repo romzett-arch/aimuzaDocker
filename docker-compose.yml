@@ -79,6 +79,10 @@ services:
       VPS_FFMPEG_URL: http://ffmpeg-api:3001
       FFMPEG_API_URL: http://ffmpeg-api:3001
       FFMPEG_API_SECRET: ${FFMPEG_API_KEY:-}
+      ROBOKASSA_MERCHANT_LOGIN: ${ROBOKASSA_MERCHANT_LOGIN:-}
+      ROBOKASSA_PASSWORD1: ${ROBOKASSA_PASSWORD1:-}
+      ROBOKASSA_PASSWORD2: ${ROBOKASSA_PASSWORD2:-}
+      ROBOKASSA_TEST_MODE: ${ROBOKASSA_TEST_MODE:-false}
     working_dir: /app
     volumes:
       - ./deno-functions:/app
