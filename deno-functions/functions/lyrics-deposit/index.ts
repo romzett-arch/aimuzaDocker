@@ -38,13 +38,12 @@ serve(async (req) => {
       );
     }
 
-    const { lyricsId, method, authorName } = await req.json() as DepositRequest;
-    console.log(`Processing lyrics deposit: ${lyricsId}, method: ${method}`);
+    const { lyrics_id, method, author_name } = await req.json() as DepositRequest;
 
     const { data: lyrics, error: lyricsError } = await supabase
       .from("lyrics_items")
       .select("*")
-      .eq("id", lyricsId)
+      .eq("id", lyrics_id)
       .eq("user_id", user.id)
       .single();
 
@@ -58,7 +57,7 @@ serve(async (req) => {
     const { data: existingDeposit } = await supabase
       .from("lyrics_deposits")
       .select("id, status")
-      .eq("lyrics_id", lyricsId)
+      .eq("lyrics_id", lyrics_id)
       .eq("status", "completed")
       .single();
 
@@ -70,7 +69,7 @@ serve(async (req) => {
     }
 
     const { data: priceSetting } = await supabase
-      .from("app_settings")
+      .from("settings")
       .select("value")
       .eq("key", "lyrics_deposit_price")
       .single();
@@ -85,7 +84,9 @@ serve(async (req) => {
 
     if (!profile || (profile.balance || 0) < depositPrice) {
       return new Response(
-        JSON.stringify({ error: `Недостаточно средств. Требуется: ${depositPrice} ₽` }),
+        JSON.stringify({
+          error: `Недостаточно средств на балансе. Для депонирования требуется ${depositPrice} ₽. Пополните баланс в разделе «Кошелёк».`,
+        }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -110,7 +111,7 @@ serve(async (req) => {
       }
 
       const result = await submitToNris(
-        { ...lyrics, author_name: authorName },
+        { ...lyrics, author_name: author_name },
         contentHash,
         nrisApiKey,
         nrisApiUrl
@@ -129,7 +130,7 @@ serve(async (req) => {
       }
 
       const result = await submitToIrma(
-        { ...lyrics, author_name: authorName },
+        { ...lyrics, author_name: author_name },
         contentHash,
         irmaApiKey,
         irmaApiUrl
@@ -146,7 +147,7 @@ serve(async (req) => {
         lyrics,
         contentHash,
         depositId,
-        authorName || ""
+        author_name || ""
       );
     }
 
@@ -158,7 +159,7 @@ serve(async (req) => {
     const { data: deposit, error: depositError } = await supabase
       .from("lyrics_deposits")
       .insert({
-        lyrics_id: lyricsId,
+        lyrics_id: lyrics_id,
         user_id: user.id,
         method,
         status: "completed",
@@ -166,7 +167,7 @@ serve(async (req) => {
         timestamp_hash: timestampHash,
         external_id: externalId || depositId,
         certificate_url: certificateUrl,
-        author_name: authorName,
+        author_name: author_name,
         price_rub: depositPrice,
         deposited_at: new Date().toISOString(),
       })
@@ -174,7 +175,6 @@ serve(async (req) => {
       .single();
 
     if (depositError) {
-      console.error("Error creating deposit:", depositError);
       await supabase
         .from("profiles")
         .update({ balance: profile.balance })
@@ -188,10 +188,8 @@ serve(async (req) => {
       title: "Текст депонирован",
       message: `Ваш текст "${lyrics.title}" успешно депонирован`,
       target_type: "lyrics",
-      target_id: lyricsId,
+      target_id: lyrics_id,
     });
-
-    console.log(`Lyrics deposit completed: ${deposit.id}`);
 
     return new Response(
       JSON.stringify({
@@ -203,7 +201,6 @@ serve(async (req) => {
     );
 
   } catch (error: unknown) {
-    console.error("Lyrics deposit error:", error);
     const message = error instanceof Error ? error.message : "Ошибка при депонировании";
     return new Response(
       JSON.stringify({ error: message }),

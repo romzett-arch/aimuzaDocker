@@ -1,5 +1,4 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { encode as base64Encode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -110,31 +109,57 @@ serve(async (req) => {
 
       console.log(`File saved to storage: ${publicUrl}`);
 
-      // Upload file to Suno via base64 (reliable JSON transport, no multipart issues)
-      const base64Data = base64Encode(new Uint8Array(arrayBuffer));
-      const fileExt2 = file.name.split('.').pop() || 'mp3';
-      const mimeMap: Record<string, string> = { mp3: "audio/mpeg", wav: "audio/wav" };
-      const dataUrl = `data:${mimeMap[fileExt2] || file.type};base64,${base64Data}`;
+      const isLocalhost = BASE_URL.includes("localhost") || BASE_URL.includes("127.0.0.1");
+      let uploadData: any;
 
-      console.log(`Uploading to Suno base64, data length: ${base64Data.length}`);
+      if (isLocalhost) {
+        // Localhost: Docker cannot upload files to external servers via HTTP/2.
+        // file-url-upload needs a public URL, but http://localhost is not accessible externally.
+        // Return the Storage URL directly — frontend will show a dev-mode warning.
+        console.warn(`[localhost] Returning Storage URL directly (Suno CDN upload skipped): ${publicUrl}`);
+        return new Response(
+          JSON.stringify({
+            success: true,
+            uploadUrl: publicUrl,
+            fileName: file.name,
+            message: "Файл загружен в хранилище",
+            localhostMode: true,
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      } else {
+        // Production: Suno downloads from our public URL
+        console.log(`Uploading to Suno via URL: ${publicUrl}`);
 
-      const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-base64-upload`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${SUNO_API_KEY}`,
-        },
-        body: JSON.stringify({
-          base64Data: dataUrl,
-          uploadPath: `audio-references/${user.id}`,
-          fileName: file.name,
-        }),
-      });
+        const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-url-upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUNO_API_KEY}` },
+          body: JSON.stringify({ fileUrl: publicUrl, uploadPath: `audio-references/${user.id}`, fileName: file.name }),
+        });
 
-      const uploadData = await uploadResponse.json();
-      console.log("Suno base64 upload response:", JSON.stringify(uploadData));
+        try {
+          uploadData = await uploadResponse.json();
+        } catch {
+          const text = await uploadResponse.text();
+          console.error("Suno non-JSON response:", uploadResponse.status, text);
+          return new Response(
+            JSON.stringify({ error: "Suno вернул некорректный ответ" }),
+            { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
 
-      if (!uploadResponse.ok || (uploadData.code && uploadData.code !== 200)) {
+        if (!uploadResponse.ok || (uploadData.code && uploadData.code !== 200)) {
+          console.error("Suno upload failed:", uploadData);
+          return new Response(
+            JSON.stringify({ error: uploadData.msg || "Ошибка загрузки файла в Suno" }),
+            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
+
+      console.log("Suno upload response:", JSON.stringify(uploadData));
+
+      if (uploadData.code && uploadData.code !== 200) {
         console.error("Suno upload failed:", uploadData);
         return new Response(
           JSON.stringify({ error: uploadData.msg || "Ошибка загрузки файла в Suno" }),

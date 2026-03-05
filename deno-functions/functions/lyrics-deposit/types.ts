@@ -1,5 +1,5 @@
 export interface DepositRequest {
-  lyricsId: string;
+  lyrics_id: string;
   method: "internal" | "blockchain" | "nris" | "irma";
-  authorName?: string;
+  author_name?: string;
 }

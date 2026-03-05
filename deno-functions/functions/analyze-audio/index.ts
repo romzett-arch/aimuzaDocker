@@ -137,7 +137,7 @@ serve(async (req: Request) => {
         console.log("Health report saved for track:", track_id);
       }
 
-      // Also update legacy fields on tracks table
+      // Also update legacy fields on tracks table (включая duration — исправляет 180 fallback)
       await supabase
         .from("tracks")
         .update({
@@ -148,6 +148,7 @@ serve(async (req: Request) => {
           audio_peak_db: analysisResult.peak_db,
           upscale_detected: analysisResult.upscale_detected,
           needs_master_wav: !analysisResult.master_quality,
+          ...(analysisResult.duration > 0 && { duration: Math.round(analysisResult.duration) }),
         })
         .eq("id", track_id);
     }

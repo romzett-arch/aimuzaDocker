@@ -9,7 +9,7 @@ const corsHeaders = {
 };
 
 const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
-const SUNO_API_BASE = "https://apibox.erweima.ai";
+const SUNO_API_BASE = "https://api.sunoapi.org";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -44,7 +44,7 @@ serve(async (req) => {
       );
     }
 
-    const { trackId, prompt, lyrics, style, title, instrumental, audioReferenceUrl, negativeTags, vocalGender } = await req.json();
+    const { trackId, trackIds, prompt, lyrics, style, title, instrumental, audioReferenceUrl, negativeTags, vocalGender, personaId } = await req.json();
 
     if (!trackId) {
       return new Response(
@@ -53,13 +53,16 @@ serve(async (req) => {
       );
     }
 
-    console.log(`Starting generation for track ${trackId} by user ${user.id}`);
+    const allTrackIds: string[] = Array.isArray(trackIds) && trackIds.length > 0 ? trackIds : [trackId];
+
+    console.log(`Starting generation for tracks [${allTrackIds.join(", ")}] by user ${user.id}`);
     console.log(`Original prompt: ${prompt}`);
     console.log(`Original style: ${style}`);
     console.log(`Instrumental: ${instrumental}`);
     console.log(`Audio reference URL: ${audioReferenceUrl || 'none'}`);
     console.log(`Negative tags: ${negativeTags || 'none'}`);
     console.log(`Vocal gender: ${vocalGender || 'none'}`);
+    console.log(`Persona ID: ${personaId || 'none'}`);
 
     const cleanedStyle = cleanStyleForSuno(style || "");
     console.log(`Cleaned style: ${cleanedStyle}`);
@@ -67,7 +70,7 @@ serve(async (req) => {
     const { error: updateError } = await supabaseClient
       .from("tracks")
       .update({ status: "processing", error_message: null })
-      .eq("id", trackId)
+      .in("id", allTrackIds)
       .eq("user_id", user.id);
 
     if (updateError) {
@@ -106,6 +109,11 @@ serve(async (req) => {
       console.log(`Vocal gender for Suno: ${sunoPayload.vocalGender}`);
     }
 
+    if (personaId) {
+      sunoPayload.personaId = personaId;
+      console.log(`Persona for Suno: ${personaId}`);
+    }
+
     if (useCustomMode) {
       if (hasLyrics) {
         sunoPayload.prompt = lyrics.slice(0, PROMPT_CHAR_LIMIT);
@@ -142,6 +150,12 @@ serve(async (req) => {
     let sunoEndpoint = `${SUNO_API_BASE}/api/v1/generate`;
 
     if (audioReferenceUrl) {
+      if (audioReferenceUrl.includes("localhost") || audioReferenceUrl.includes("127.0.0.1")) {
+        return new Response(
+          JSON.stringify({ error: "Генерация с аудио-референсом недоступна на localhost: Suno не может скачать файл с http://localhost. Тестируйте эту функцию на продакшене (https://aimuza.ru)." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
       sunoEndpoint = `${SUNO_API_BASE}/api/v1/generate/upload-cover`;
       sunoPayload.uploadUrl = audioReferenceUrl;
       console.log("Using upload-cover endpoint with audio reference");
@@ -264,59 +278,40 @@ serve(async (req) => {
       );
     }
 
-    const taskId = sunoData.data?.taskId;
-    console.log(`Generation started with task ID: ${taskId}`);
+    const taskId = sunoData.data?.taskId || sunoData.data?.task_id || sunoData.taskId || sunoData.task_id;
+    console.log(`Generation started with task ID: ${taskId} (raw data keys: ${JSON.stringify(Object.keys(sunoData.data || {}))})`);
 
     if (taskId) {
-      const { data: currentTrack } = await supabaseClient
+      // Fetch all tracks in the pair by their IDs (reliable, no created_at matching)
+      const { data: pairTracks, error: pairErr } = await supabaseAdmin
         .from("tracks")
-        .select("id, title, description, created_at")
-        .eq("id", trackId)
-        .single();
+        .select("id, title, description")
+        .in("id", allTrackIds);
 
-      if (currentTrack) {
-        const baseTitle = (currentTrack.title || "").replace(/\s*\(v\d+\)$/, "").trim();
+      if (pairErr) console.error("Error fetching pair tracks:", pairErr);
 
-        const { data: pairedTracks } = await supabaseClient
-          .from("tracks")
-          .select("id, title, description, created_at")
-          .eq("user_id", user.id)
-          .eq("created_at", currentTrack.created_at);
+      const tracksToUpdate = pairTracks && pairTracks.length > 0 ? pairTracks : [{ id: trackId, title: null, description: null }];
 
-        const tracksToUpdate = pairedTracks?.filter(t => {
-          const tBaseTitle = (t.title || "").replace(/\s*\(v\d+\)$/, "").trim();
-          return tBaseTitle === baseTitle;
-        }) || [currentTrack];
+      console.log(`Storing task_id ${taskId} in ${tracksToUpdate.length} tracks [${allTrackIds.join(", ")}]`);
 
-        console.log(`Found ${tracksToUpdate.length} tracks in pair to update with task_id`);
-
-        for (const track of tracksToUpdate) {
-          if (track.description?.includes("[task_id:")) {
-            console.log(`Track ${track.id} (${track.title}) already has task_id, skipping to prevent overwrite`);
-            continue;
-          }
-
-          const existingDesc = track.description || "";
-          const newDesc = existingDesc
-            ? `${existingDesc}\n\n[task_id: ${taskId}]`
-            : `[task_id: ${taskId}]`;
-
-          await supabaseClient
-            .from("tracks")
-            .update({ description: newDesc })
-            .eq("id", track.id);
-
-          console.log(`Stored task_id ${taskId} in track ${track.id} (${track.title})`);
+      for (const track of tracksToUpdate) {
+        if (track.description?.includes("[task_id:")) {
+          console.log(`Track ${track.id} (${track.title}) already has task_id, skipping`);
+          continue;
         }
-      } else {
-        const newDesc = `[task_id: ${taskId}]`;
 
-        await supabaseClient
+        const existingDesc = track.description || "";
+        const newDesc = existingDesc
+          ? `${existingDesc}\n\n[task_id: ${taskId}]`
+          : `[task_id: ${taskId}]`;
+
+        const { error: updErr } = await supabaseAdmin
           .from("tracks")
           .update({ description: newDesc })
-          .eq("id", trackId);
+          .eq("id", track.id);
 
-        console.log(`Stored task_id ${taskId} in track ${trackId} (fallback)`);
+        if (updErr) console.error(`Failed to store task_id in track ${track.id}:`, updErr);
+        else console.log(`Stored task_id ${taskId} in track ${track.id} (${track.title})`);
       }
     }
 

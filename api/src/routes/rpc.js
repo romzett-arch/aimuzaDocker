@@ -9,6 +9,63 @@ import { rpcAnonLimiter, votingIpLimiter, votingUserLimiter } from '../middlewar
 
 const router = Router();
 
+const ALLOWED_RPC = new Set([
+  'accept_role_invitation', 'add_user_credits', 'admin_add_xp',   'admin_annul_vote', 'admin_approve_purchase',
+  'admin_end_voting_early', 'admin_extend_promotion', 'admin_get_active_votings',
+  'admin_get_all_promotions', 'admin_get_deal_blockchain_info', 'admin_get_deal_content',
+  'admin_get_flagged_votes', 'admin_get_voting_dashboard',
+  'admin_reject_purchase', 'admin_review_flagged_votes', 'admin_stop_promotion',
+  'aggregate_votes_to_tracks',
+  'approve_verification', 'assess_vote_fraud', 'award_contest_prize', 'award_xp',
+  'block_user', 'calculate_chart_scores', 'calculate_track_quality',
+  'can_write_during_maintenance', 'cast_radio_vote_for_arena', 'cast_weighted_vote',
+  'check_achievements_after_finalize', 'check_contest_achievements',
+  'check_maintenance_access', 'check_user_achievements', 'check_voting_eligibility',
+  'close_admin_conversation', 'close_voting_topic_on_rejection',
+  'create_admin_conversation', 'create_conversation_with_user',
+  'create_voting_forum_topic', 'deactivate_expired_promotions', 'debit_balance', 'debit_for_generation',
+  'deduct_user_xp', 'delete_forum_topic_cascade', 'finalize_contest',
+  'finalize_contest_winners', 'find_similar_qa_tickets', 'find_user_by_short_id',
+  'fn_add_xp', 'forum_authority_leaderboard', 'forum_boost_topic',
+  'forum_calculate_content_quality', 'forum_find_similar_topics', 'forum_get_hub_stats',
+  'forum_get_leaderboard', 'forum_get_user_profile', 'forum_increment_topic_views',
+  'forum_mark_read', 'forum_mark_solution', 'forum_moderate_promo',
+  'forum_recalculate_authority', 'forum_search', 'forum_update_category_on_topic',
+  'forum_update_topic_on_post', 'forum_update_user_stats_on_post',
+  'forum_update_user_stats_on_topic', 'forum_user_is_banned',
+  'generate_share_token', 'get_ad_for_slot', 'get_boosted_tracks',
+  'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
+  'get_feed_tracks_with_profiles', 'get_hero_stats', 'get_last_messages',
+  'get_marketplace_items', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
+  'get_qa_leaderboard', 'get_radio_listeners', 'get_radio_smart_queue',
+  'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',
+  'get_reputation_leaderboard', 'get_reputation_profile', 'get_smart_feed',
+  'get_track_by_share_token', 'get_track_prompt_if_accessible',
+  'get_track_prompt_info', 'get_unread_counts', 'get_user_block_info',
+  'get_user_contest_rating', 'get_user_emails', 'get_user_role',
+  'get_user_stats', 'get_user_vote_weight', 'get_velocity_tracks',
+  'get_voter_profile', 'get_voting_live_stats', 'has_permission',
+  'has_purchased_item', 'has_purchased_prompt', 'has_role',
+  'hide_contest_comment', 'hide_track_comment', 'increment_promotion_click',
+  'increment_promotion_impression', 'increment_prompt_downloads',
+  'is_admin', 'is_maintenance_active', 'is_maintenance_whitelisted',
+  'is_participant_in_conversation', 'is_super_admin', 'is_user_blocked',
+  'pin_comment', 'process_payment_completion', 'process_payment_refund',
+  'process_store_item_purchase', 'purchase_ad_free', 'purchase_track_boost',
+  'qa_recalculate_priority', 'qa_update_tester_tier',
+  'radio_award_listen_xp', 'radio_create_next_slot', 'radio_heartbeat',
+  'radio_place_bid', 'radio_place_prediction', 'radio_skip_ad',
+  'cancel_subscription_with_refund', 'check_deposit_limit', 'check_track_upload_limit',
+  'get_my_radio_stats', 'get_user_subscription_tier', 'record_track_upload',
+  'subscribe_to_plan',
+  'recalculate_feed_scores', 'record_ad_click', 'record_ad_impression',
+  'resolve_qa_ticket', 'resolve_track_voting', 'revoke_share_token',
+  'revoke_verification', 'revoke_vote', 'safe_award_xp',
+  'send_track_to_voting', 'submit_contest_entry', 'take_voting_snapshot',
+  'unblock_user', 'unhide_contest_comment', 'update_last_seen',
+  'update_voter_ranks', 'vote_qa_ticket', 'withdraw_contest_entry',
+]);
+
 /** Общий rate limit для анонимов — на все RPC */
 const anonThenVoting = (req, res, next) => {
   rpcAnonLimiter(req, res, (err) => {
@@ -26,15 +83,16 @@ function votingRateLimit(req, res, next) {
   });
 }
 
-// Обработчик POST и GET для RPC
 async function handleRpc(req, res) {
-  // Получаем отдельное соединение для установки JWT claims
   const client = await pool.connect();
   try {
     const fnName = req.params.fn;
-    // Валидация имени функции
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(fnName)) {
       return res.status(400).json({ error: 'Invalid function name' });
+    }
+
+    if (!ALLOWED_RPC.has(fnName)) {
+      return res.status(403).json({ error: 'Function not allowed', code: 'RPC_FORBIDDEN' });
     }
 
     // ── Транзакция: set_config + вызов функции должны быть в одной TX ──
@@ -97,13 +155,14 @@ async function handleRpc(req, res) {
       return res.json(null);
     }
     console.error('[RPC]', req.params.fn, err.message);
-    res.status(400).json({ message: err.message, error: err.message, code: 'RPC_ERROR', details: null, hint: null });
+    const safeMsg = err.message?.startsWith('RAISE:') || err.message?.includes('Insufficient') || err.message?.includes('Unauthorized')
+      ? err.message : 'RPC call failed';
+    res.status(400).json({ message: safeMsg, error: safeMsg, code: 'RPC_ERROR', details: null, hint: null });
   } finally {
     client.release();
   }
 }
 
 router.post('/:fn', anonThenVoting, handleRpc);
-router.get('/:fn', anonThenVoting, handleRpc);
 
 export default router;

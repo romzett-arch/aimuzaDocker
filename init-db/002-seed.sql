@@ -397,7 +397,7 @@ ON CONFLICT DO NOTHING;
 -- addon_services: 22 rows
 INSERT INTO public.addon_services ("id", "name", "name_ru", "description", "price_rub", "icon", "is_active", "sort_order", "created_at", "updated_at") VALUES
   ('d4db7a17-cd18-499b-8dbb-23e1f32de25f', 'analyze_lyrics', 'AI Разметка текста', 'AI анализ и разметка текста песни с определением жанра, настроения и стиля', 5, 'brain', TRUE, 13, '2026-01-24T19:31:52.888805+00:00', '2026-02-08T13:18:15.704885+00:00'),
-  ('5746c214-e62e-47a2-8923-66036ee13aee', 'generate_lyrics', 'Сгенерировать текст (DeepSeek 2-Pass)', 'AI генерация текста песни — двухпроходная система (структура + образность)', 20, 'text', TRUE, 11, '2026-01-17T19:25:17.063531+00:00', '2026-02-16T18:30:00.000000+00:00'),
+  ('5746c214-e62e-47a2-8923-66036ee13aee', 'generate_lyrics', 'Сгенерировать текст', 'AI генерация текста песни по вашему описанию', 5, 'text', TRUE, 11, '2026-01-17T19:25:17.063531+00:00', '2026-02-11T01:29:46.642352+00:00'),
   ('44a9e8c0-e9d8-4b38-a16c-e96234a25f76', 'boost_style', 'Boost стиль музыки', 'Улучшение и детализация описания стиля для модели V4.5', 5, 'sparkles', TRUE, 12, '2026-01-17T19:25:17.063531+00:00', '2026-02-11T01:29:47.456315+00:00'),
   ('2b4b83a6-24a8-4e32-9c33-e59ff4974ba7', 'timestamped_lyrics', 'Текст с таймкодами', 'Получение текста с временными метками для караоке', 5, 'clock', TRUE, 14, '2026-01-17T19:25:17.063531+00:00', '2026-02-08T13:18:15.704885+00:00'),
   ('2b775702-e716-435f-b70b-62da14d92359', 'vocal_separation', 'Разделение вокала', 'Отделение вокала от инструментов', 20, 'mic', TRUE, 20, '2026-01-17T14:06:10.600622+00:00', '2026-02-08T13:18:15.704885+00:00'),
@@ -419,26 +419,6 @@ INSERT INTO public.addon_services ("id", "name", "name_ru", "description", "pric
   ('df09d527-767b-4372-bb84-f433f35123f3', 'forum_suggest_arguments', 'Подсказать аргументы', 'AI анализирует тему и предлагает тезисы для ответа', 5, 'sparkles', TRUE, 53, '2026-02-08T11:35:33.748838+00:00', '2026-02-11T01:21:03.038828+00:00'),
   ('63797ddc-b31f-4198-8eb4-2603ece4e1d6', 'forum_improve_text', 'Улучшить текст', 'AI улучшает стиль, структуру и читаемость текста, сохраняя смысл', 5, 'sparkles', TRUE, 51, '2026-02-08T11:35:33.748838+00:00', '2026-02-11T01:21:04.199353+00:00')
 ON CONFLICT DO NOTHING;
-
--- addon_services: 17 новых AI-сервисов (B9, B1-B7, D1-D2)
-INSERT INTO public.addon_services (name, name_ru, description, price_rub, icon, is_active, sort_order)
-VALUES
-  ('prompt_analyzer', 'AI-анализ промпта', 'Полная проверка style+lyrics по чек-листу, оценка 1-10, issues и fixes', 3, 'search', TRUE, 60),
-  ('prompt_suggest_tags', 'AI-подбор тегов', 'AI подбирает теги для секции в Тег-студии', 2, 'tags', TRUE, 61),
-  ('prompt_build_style', 'AI-построение стиля', 'AI строит style из текста и тегов', 3, 'sparkles', TRUE, 62),
-  ('prompt_check_style', 'AI-проверка стиля', 'Анализ стиля на конфликты и полноту', 2, 'check-circle', TRUE, 63),
-  ('prompt_auto_fix', 'AI-исправление промпта', 'Автоматическое исправление всех issues', 5, 'wrench', TRUE, 64),
-  ('track_description', 'AI-описание трека', 'Генерация описания из названия, текста и жанра', 3, 'file-text', TRUE, 65),
-  ('track_auto_tags', 'AI-теги трека', 'SEO-теги для поиска и каталога', 0, 'tags', TRUE, 66),
-  ('support_categorize', 'AI-категоризация тикета', 'Автоопределение категории и приоритета', 0, 'folder', TRUE, 67),
-  ('support_suggest_reply', 'AI-шаблон ответа', 'Предложение ответа на основе текста тикета', 0, 'message-square', TRUE, 68),
-  ('admin_daily_digest', 'AI-дайджест', 'Ежедневная суммаризация для админки', 0, 'bar-chart', TRUE, 69),
-  ('prompt_quality_check', 'Оценка промпта маркетплейса', 'Проверка качества перед публикацией', 3, 'star', TRUE, 70),
-  ('distribution_check', 'Проверка дистрибуции', 'Валидация метаданных для стриминг-площадок', 0, 'check-circle', TRUE, 71),
-  ('audio_interpretation', 'AI-анализ аудио', 'DeepSeek интерпретация метрик analyze-audio', 5, 'activity', TRUE, 72),
-  ('mix_pro_analysis', 'Про-анализ микса', 'Профессиональный анализ через RoEx Tonn API', 10, 'sliders', TRUE, 73),
-  ('audio_classify', 'AI-классификация жанра', 'Автоклассификация при загрузке/генерации', 0, 'music', TRUE, 74)
-ON CONFLICT (name) DO NOTHING;
 
 -- settings: 62 rows
 INSERT INTO public.settings ("id", "key", "value", "description", "created_at", "updated_at") VALUES

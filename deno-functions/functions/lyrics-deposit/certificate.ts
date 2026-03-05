@@ -149,7 +149,6 @@ export async function generateLyricsCertificate(
     });
 
   if (uploadError) {
-    console.error("Error uploading certificate:", uploadError);
     throw new Error("Не удалось сохранить сертификат");
   }
 

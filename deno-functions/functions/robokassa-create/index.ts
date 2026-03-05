@@ -1,49 +1,51 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { crypto as stdCrypto } from "https://deno.land/std@0.168.0/crypto/mod.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
-};
+const ALLOWED_ORIGINS = [
+  "https://aimuza.ru",
+  "http://localhost",
+  "http://localhost:3000",
+  "http://localhost:5173",
+];
 
-// Robokassa configuration - ADD YOUR KEYS HERE
-const ROBOKASSA_MERCHANT_LOGIN = Deno.env.get("ROBOKASSA_MERCHANT_LOGIN") || "";
-const ROBOKASSA_PASSWORD1 = Deno.env.get("ROBOKASSA_PASSWORD1") || ""; // For signature creation
-const ROBOKASSA_PASSWORD2 = Deno.env.get("ROBOKASSA_PASSWORD2") || ""; // For result verification
-const ROBOKASSA_TEST_MODE = Deno.env.get("ROBOKASSA_TEST_MODE") === "true";
-
-function md5(str: string): string {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(str);
-  const hashBuffer = new Uint8Array(16);
-  
-  // Simple MD5 implementation for Deno
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return Math.abs(hash).toString(16).padStart(32, '0');
+function getCorsHeaders(req: Request) {
+  const origin = req.headers.get("origin") || "";
+  const allowed = ALLOWED_ORIGINS.some((o) => origin.startsWith(o));
+  return {
+    "Access-Control-Allow-Origin": allowed ? origin : ALLOWED_ORIGINS[0],
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+  };
 }
 
-async function createMD5(str: string): Promise<string> {
+const ROBOKASSA_MERCHANT_LOGIN = Deno.env.get("ROBOKASSA_MERCHANT_LOGIN") || "";
+const ROBOKASSA_PASSWORD1 = Deno.env.get("ROBOKASSA_PASSWORD1") || "";
+const ROBOKASSA_TEST_MODE = Deno.env.get("ROBOKASSA_TEST_MODE") === "true";
+
+const MIN_AMOUNT = 10;
+const MAX_AMOUNT = 150_000;
+
+async function computeMD5(str: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(str);
-  const hashBuffer = await crypto.subtle.digest('MD5', data).catch(() => null);
-  
-  if (hashBuffer) {
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-  
-  // Fallback to simple hash
-  return md5(str);
+  const hashBuffer = await stdCrypto.subtle.digest("MD5", data);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function generateInvId(): string {
+  const numericId = (Date.now() % 1_000_000_000).toString() +
+    Math.floor(Math.random() * 1000).toString().padStart(3, "0");
+  return numericId;
 }
 
 serve(async (req) => {
+  const cors = getCorsHeaders(req);
+
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { headers: cors });
   }
 
   try {
@@ -51,91 +53,112 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // --- Auth ---
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
-      throw new Error("Необходима авторизация");
+      return json(cors, 401, { error: "Необходима авторизация" });
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
+
     if (authError || !user) {
-      throw new Error("Неверный токен авторизации");
+      return json(cors, 401, { error: "Неверный токен авторизации" });
     }
 
-    const { amount, description } = await req.json();
+    // --- Validate input ---
+    const body = await req.json();
+    const amount = Number(body.amount);
 
-    if (!amount || amount < 1) {
-      throw new Error("Сумма должна быть больше 0");
+    if (!Number.isFinite(amount) || !Number.isInteger(amount)) {
+      return json(cors, 400, { error: "Сумма должна быть целым числом" });
+    }
+    if (amount < MIN_AMOUNT) {
+      return json(cors, 400, {
+        error: `Минимальная сумма пополнения: ${MIN_AMOUNT} ₽`,
+      });
+    }
+    if (amount > MAX_AMOUNT) {
+      return json(cors, 400, {
+        error: `Максимальная сумма пополнения: ${MAX_AMOUNT} ₽`,
+      });
     }
 
-    // Create payment record
+    const description =
+      typeof body.description === "string" && body.description.length <= 200
+        ? body.description
+        : `Пополнение баланса на ${amount} ₽`;
+
+    // --- Generate unique InvId ---
+    const invId = generateInvId();
+
+    // --- Create payment record ---
     const { data: payment, error: paymentError } = await supabase
       .from("payments")
       .insert({
         user_id: user.id,
-        amount: amount,
+        amount,
         currency: "RUB",
         status: "pending",
         payment_system: "robokassa",
-        description: description || `Пополнение баланса на ${amount} ₽`,
+        description,
+        external_id: invId,
       })
       .select()
       .single();
 
     if (paymentError) {
-      throw new Error("Ошибка создания платежа: " + paymentError.message);
+      console.error("DB insert error:", paymentError);
+      return json(cors, 500, { error: "Ошибка создания платежа" });
     }
 
-    // Generate Robokassa signature
-    // Format: MerchantLogin:OutSum:InvId:Password1
-    const invId = payment.id.replace(/-/g, '').slice(0, 10); // Short invoice ID
-    const signatureString = `${ROBOKASSA_MERCHANT_LOGIN}:${amount}:${invId}:${ROBOKASSA_PASSWORD1}`;
-    const signature = await createMD5(signatureString);
+    // OutSum в формате "число.00" — Robokassa требует для совпадения подписи
+    const outSum = amount.toFixed(2);
 
-    // Build payment URL
-    const baseUrl = ROBOKASSA_TEST_MODE
-      ? "https://auth.robokassa.ru/Merchant/Index.aspx"
-      : "https://auth.robokassa.ru/Merchant/Index.aspx";
+    // --- Подпись: MD5(MerchantLogin:OutSum:InvId:Password1) ---
+    const signatureString =
+      `${ROBOKASSA_MERCHANT_LOGIN}:${outSum}:${invId}:${ROBOKASSA_PASSWORD1}`;
+    const signature = await computeMD5(signatureString);
 
-    const params = new URLSearchParams({
+    console.log("Robokassa create:", { invId, amount, merchant: ROBOKASSA_MERCHANT_LOGIN, isTest: ROBOKASSA_TEST_MODE });
+
+    // --- Build payment URL ---
+    const paymentUrl = "https://auth.robokassa.ru/Merchant/Index.aspx";
+    const paymentParams: Record<string, string> = {
       MerchantLogin: ROBOKASSA_MERCHANT_LOGIN,
-      OutSum: amount.toString(),
+      OutSum: outSum,
       InvId: invId,
-      Description: description || `Пополнение баланса на ${amount} ₽`,
+      Description: description.slice(0, 100),
       SignatureValue: signature,
       IsTest: ROBOKASSA_TEST_MODE ? "1" : "0",
       Culture: "ru",
+      IncCurrLabel: "RUB",
+      SuccessURL: `${Deno.env.get("BASE_URL") || "https://aimuza.ru"}/payment-success`,
+      FailURL: `${Deno.env.get("BASE_URL") || "https://aimuza.ru"}/payment-fail`,
+    };
+
+    return json(cors, 200, {
+      success: true,
+      payment_id: payment.id,
+      payment_url: paymentUrl,
+      payment_params: paymentParams,
     });
-
-    // Update payment with external ID
-    await supabase
-      .from("payments")
-      .update({ external_id: invId })
-      .eq("id", payment.id);
-
-    const paymentUrl = `${baseUrl}?${params.toString()}`;
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        payment_id: payment.id,
-        payment_url: paymentUrl,
-      }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 200,
-      }
-    );
   } catch (error: unknown) {
     console.error("Robokassa create error:", error);
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return new Response(
-      JSON.stringify({ error: message }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 400,
-      }
-    );
+    return json(getCorsHeaders(req), 500, { error: "Внутренняя ошибка сервера" });
   }
 });
+
+function json(
+  cors: Record<string, string>,
+  status: number,
+  data: Record<string, unknown>
+) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...cors, "Content-Type": "application/json; charset=utf-8" },
+  });
+}

@@ -21,6 +21,7 @@ export interface SunoTrackData {
   audio_url?: string;
   source_audio_url?: string;
   stream_audio_url?: string;
+  source_stream_audio_url?: string;
   image_url?: string;
   source_image_url?: string;
   duration?: number;

@@ -1,15 +1,15 @@
 export async function setJwtClaims(client, user) {
   if (user && user.id && user.id !== 'service-role') {
-    await client.query(`SELECT set_config('request.jwt.claim.sub', $1, false)`, [user.id]);
-    await client.query(`SELECT set_config('request.jwt.claim.role', $1, false)`, [user.role || 'authenticated']);
+    await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [user.id]);
+    await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [user.role || 'authenticated']);
     if (user.email) {
-      await client.query(`SELECT set_config('request.jwt.claim.email', $1, false)`, [user.email]);
+      await client.query(`SELECT set_config('request.jwt.claim.email', $1, true)`, [user.email]);
     }
   }
 }
 
 export async function resetJwtClaims(client) {
-  await client.query(`SELECT set_config('request.jwt.claim.sub', '', false), set_config('request.jwt.claim.role', '', false), set_config('request.jwt.claim.email', '', false)`).catch(() => {});
+  await client.query(`SELECT set_config('request.jwt.claim.sub', '', true), set_config('request.jwt.claim.role', '', true), set_config('request.jwt.claim.email', '', true)`).catch(() => {});
 }
 
 export function sanitizeTable(name) {

@@ -107,7 +107,8 @@ serve(async (req) => {
       });
     }
 
-    if (callbackType !== "complete") {
+    // "text" = промежуточный/финальный callback от erweima.ai с готовыми треками
+    if (callbackType !== "complete" && callbackType !== "first" && callbackType !== "text") {
       console.log(`Skipping callback type: ${callbackType}`);
       return new Response(JSON.stringify({ received: true, message: `Callback type ${callbackType} acknowledged` }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -147,11 +148,14 @@ serve(async (req) => {
 
     let updatedCount = 0;
 
-    // Normalize ALL Suno results (keep original indices intact — no filtering!)
+    // Normalize ALL Suno results — keep original indices intact, collect all URL variants
     const normalizedSunoResults = tracks.map((track: SunoTrackData, idx: number) => {
-      const rawAudioUrl = track.audio_url || track.source_audio_url || track.stream_audio_url;
-      const audioUrl = typeof rawAudioUrl === "string" && rawAudioUrl.startsWith("http") ? rawAudioUrl : null;
-      return { ...track, audioUrl, originalIndex: idx };
+      const audioUrls = [
+        track.source_audio_url, track.audio_url,
+        track.source_stream_audio_url, track.stream_audio_url,
+      ].filter((u): u is string => typeof u === "string" && u.startsWith("http"));
+      const audioUrl = audioUrls[0] || null;
+      return { ...track, audioUrl, audioUrls, originalIndex: idx };
     });
 
     // Pending DB tracks (not yet completed/failed)
@@ -227,12 +231,15 @@ serve(async (req) => {
         ? trackToUpdate.description
         : (trackToUpdate.description ? `${trackToUpdate.description}\n\n[task_id: ${taskId}]` : `[task_id: ${taskId}]`);
 
+      // API erweima.ai часто возвращает duration: null — fallback 180 (FFmpeg убран из критического пути — блокировал callback)
+      const durationSec = duration != null ? Math.round(Number(duration)) : 180;
+
       const { error: updateError } = await supabaseAdmin
         .from("tracks")
         .update({
           audio_url: finalAudioUrl,
           cover_url: finalCoverUrl || null,
-          duration: duration ? Math.round(duration) : null,
+          duration: durationSec,
           status: "completed",
           suno_audio_id: sunoAudioId || null,
           description: updatedDescription,

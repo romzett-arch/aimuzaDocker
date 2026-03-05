@@ -1,8 +1,10 @@
 /**
  * Storage Routes — замена Supabase Storage
- * Файлы хранятся локально в /opt/aimuza/data/uploads/
- * 
+ * Файлы: /opt/aimuza/data/uploads/
+ *
+ * GET    /storage/v1/bucket/:id     — конфиг бакета (allowed_mime_types)
  * POST   /storage/v1/object/:bucket/*path  — загрузка
+ * PUT    /storage/v1/object/:bucket/*path  — upsert
  * GET    /storage/v1/object/public/:bucket/*path  — скачивание
  * DELETE /storage/v1/object/:bucket  — удаление (body: paths[])
  */
@@ -39,8 +41,45 @@ const upload = multer({
   storage: multer.memoryStorage(),
 });
 
+const ALLOWED_UPLOAD_EXTENSIONS = new Set([
+  '.mp3', '.wav', '.ogg', '.flac', '.aac',
+  '.mp4', '.webm',
+  '.jpg', '.jpeg', '.png', '.gif', '.webp',
+  '.pdf', '.zip', '.json',
+  '.html', // сертификаты депонирования (lyrics-deposit, track-deposit)
+]);
+
+function requireStorageAuth(req, res, next) {
+  if (!req.user || !req.user.id || req.user.id === 'anon') {
+    return res.status(401).json({ error: 'Authentication required', code: 'AUTH_REQUIRED' });
+  }
+  next();
+}
+
+// Bucket config (storage-js проверяет allowed_mime_types перед загрузкой)
+router.get('/bucket/:bucketId', (req, res) => {
+  const { bucketId } = req.params;
+  const buckets = {
+    certificates: {
+      id: bucketId,
+      name: bucketId,
+      public: true,
+      allowed_mime_types: ['text/html', 'text/html;charset=utf-8', 'application/octet-stream'],
+      file_size_limit: 5242880,
+    },
+  };
+  const config = buckets[bucketId] || {
+    id: bucketId,
+    name: bucketId,
+    public: false,
+    allowed_mime_types: null,
+    file_size_limit: 52428800,
+  };
+  res.json(config);
+});
+
 // ─── Upload ─────────────────────────────────
-router.post('/object/:bucket/*', upload.any(), async (req, res) => {
+router.post('/object/:bucket/*', requireStorageAuth, upload.any(), async (req, res) => {
   try {
     const bucket = req.params.bucket;
     const filePath = req.params[0] || req.body?.path;
@@ -51,6 +90,13 @@ router.post('/object/:bucket/*', upload.any(), async (req, res) => {
 
     if (!/^[a-zA-Z0-9_-]+$/.test(bucket)) {
       return res.status(400).json({ error: 'Invalid bucket name' });
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    const isCertificatesBucket = bucket === 'certificates';
+    const isAllowedExt = ALLOWED_UPLOAD_EXTENSIONS.has(ext) || isCertificatesBucket;
+    if (ext && !isAllowedExt) {
+      return res.status(400).json({ error: 'File type not allowed' });
     }
 
     const fullPath = safePath(bucket, filePath);
@@ -86,19 +132,25 @@ router.post('/object/:bucket/*', upload.any(), async (req, res) => {
       data: { path: `${bucket}/${filePath}` },
     });
   } catch (err) {
-    console.error('[Storage Upload]', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 
 // ─── Upload via PUT (upsert) ─────────────────
-router.put('/object/:bucket/*', upload.any(), async (req, res) => {
+router.put('/object/:bucket/*', requireStorageAuth, upload.any(), async (req, res) => {
   try {
     const bucket = req.params.bucket;
     const filePath = req.params[0];
     
     if (!bucket || !filePath) {
       return res.status(400).json({ error: 'Bucket and path required' });
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    const isCertificatesBucket = bucket === 'certificates';
+    const isAllowedExt = ALLOWED_UPLOAD_EXTENSIONS.has(ext) || isCertificatesBucket;
+    if (ext && !isAllowedExt) {
+      return res.status(400).json({ error: 'File type not allowed' });
     }
 
     const fullPath = safePath(bucket, filePath);
@@ -120,8 +172,7 @@ router.put('/object/:bucket/*', upload.any(), async (req, res) => {
       data: { path: `${bucket}/${filePath}` },
     });
   } catch (err) {
-    console.error('[Storage PUT]', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 
@@ -156,20 +207,26 @@ router.get('/object/public/:bucket/*', (req, res) => {
       '.pdf': 'application/pdf',
       '.json': 'application/json',
       '.zip': 'application/zip',
+      '.html': 'text/html; charset=utf-8',
     };
 
-    res.set('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+    const mime = mimeTypes[ext] || 'application/octet-stream';
+    res.set('Content-Type', mime);
     res.set('Cache-Control', 'public, max-age=86400');
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
     res.set('Access-Control-Allow-Origin', '*');
+    res.set('X-Content-Type-Options', 'nosniff');
+    if (ext === '.svg') {
+      res.set('Content-Disposition', 'attachment');
+      res.set('Content-Security-Policy', "default-src 'none'");
+    }
     res.sendFile(fullPath);
   } catch (err) {
-    console.error('[Storage Download]', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Download failed' });
   }
 });
 
-// ─── getPublicUrl (для совместимости с supabase client) ─────
+// ─── getPublicUrl ────────────────────────────
 router.post('/object/public-url/:bucket/*', (req, res) => {
   const bucket = req.params.bucket;
   const filePath = req.params[0];
@@ -179,22 +236,29 @@ router.post('/object/public-url/:bucket/*', (req, res) => {
 });
 
 // ─── Delete ─────────────────────────────────
-router.delete('/object/:bucket', (req, res) => {
+router.delete('/object/:bucket', requireStorageAuth, (req, res) => {
   try {
     const bucket = req.params.bucket;
-    const paths = req.body?.prefixes || req.body || [];
+    let body = req.body;
+    if (Buffer.isBuffer(body)) {
+      try { body = JSON.parse(body.toString()); } catch { body = []; }
+    }
+    const paths = Array.isArray(body) ? body : (body?.prefixes || []);
 
+    let deleted = 0;
     for (const p of paths) {
-      const fullPath = safePath(bucket, typeof p === 'string' ? p : '');
+      if (typeof p !== 'string' || !p) continue;
+      const fullPath = safePath(bucket, p);
       if (fullPath && fs.existsSync(fullPath)) {
         fs.unlinkSync(fullPath);
+        deleted++;
       }
     }
 
-    res.json({ message: 'Deleted' });
+    res.json({ message: 'Deleted', deleted });
   } catch (err) {
-    console.error('[Storage Delete]', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('[Storage DELETE]', err.message);
+    res.status(500).json({ error: 'Delete failed' });
   }
 });
 

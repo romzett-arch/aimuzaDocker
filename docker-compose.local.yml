@@ -12,6 +12,8 @@ services:
       context: ./deno-functions
       dockerfile: Dockerfile
     image: deploy-deno-functions:latest
+    environment:
+      DENO_DIR: /deno-dir
     volumes:
       - ./deno-functions:/app
       - deno_cache:/deno-dir

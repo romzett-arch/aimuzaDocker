@@ -186,6 +186,11 @@ async function loadServeBasedFunctions() {
           .replace(
             /import\s*\{\s*serve\s*\}\s*from\s*"https:\/\/deno\.land\/std[^"]*\/http\/server\.ts"/g,
             `const serve = (handler: any) => { (globalThis as any).__capturedHandler = handler; }`
+          )
+          // Переписываем относительные импорты на file:// URL (Deno требует явный протокол)
+          .replace(
+            /from\s*["']\.\/([^"']+)["']/g,
+            `from "file:///app/functions/${entry.name}/$1"`
           );
         
         // Создаём temp файл с модифицированным кодом
@@ -194,7 +199,7 @@ async function loadServeBasedFunctions() {
         
         try {
           (globalThis as any).__capturedHandler = null;
-          await import(tmpPath);
+          await import(`file://${tmpPath}`);
           
           const captured = (globalThis as any).__capturedHandler;
           if (typeof captured === 'function') {

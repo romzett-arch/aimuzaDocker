@@ -1,0 +1,74 @@
+<icecast>
+    <location>AI Planet Sound</location>
+    <admin>admin@aimuza.ru</admin>
+    <hostname>localhost</hostname>
+
+    <limits>
+        <clients>500</clients>
+        <sources>4</sources>
+        <queue-size>524288</queue-size>
+        <client-timeout>60</client-timeout>
+        <header-timeout>15</header-timeout>
+        <source-timeout>60</source-timeout>
+        <burst-on-connect>1</burst-on-connect>
+        <burst-size>131072</burst-size>
+    </limits>
+
+    <authentication>
+        <source-password>ICECAST_SOURCE_PASS_PLACEHOLDER</source-password>
+        <relay-password>ICECAST_SOURCE_PASS_PLACEHOLDER</relay-password>
+        <admin-user>admin</admin-user>
+        <admin-password>ICECAST_ADMIN_PASS_PLACEHOLDER</admin-password>
+    </authentication>
+
+    <listen-socket>
+        <port>8000</port>
+        <bind-address>0.0.0.0</bind-address>
+    </listen-socket>
+
+    <mount type="normal">
+        <mount-name>/radio.mp3</mount-name>
+        <fallback-mount>/silence.mp3</fallback-mount>
+        <fallback-override>1</fallback-override>
+        <max-listeners>500</max-listeners>
+        <charset>UTF-8</charset>
+        <public>0</public>
+        <stream-name>AI Planet Radio</stream-name>
+        <stream-description>Smart Stream — AI Generated Music</stream-description>
+        <stream-url>https://aimuza.ru/radio</stream-url>
+        <genre>Electronic AI</genre>
+    </mount>
+
+    <mount type="normal">
+        <mount-name>/radio.opus</mount-name>
+        <fallback-mount>/silence.mp3</fallback-mount>
+        <fallback-override>1</fallback-override>
+        <max-listeners>500</max-listeners>
+        <charset>UTF-8</charset>
+        <public>0</public>
+    </mount>
+
+    <fileserve>1</fileserve>
+
+    <paths>
+        <basedir>/usr/share/icecast2</basedir>
+        <logdir>/var/log/icecast</logdir>
+        <webroot>/usr/share/icecast2/web</webroot>
+        <adminroot>/usr/share/icecast2/admin</adminroot>
+    </paths>
+
+    <logging>
+        <accesslog>access.log</accesslog>
+        <errorlog>error.log</errorlog>
+        <loglevel>3</loglevel>
+        <logsize>10000</logsize>
+    </logging>
+
+    <security>
+        <chroot>0</chroot>
+        <changeowner>
+            <user>icecast2</user>
+            <group>icecast</group>
+        </changeowner>
+    </security>
+</icecast>

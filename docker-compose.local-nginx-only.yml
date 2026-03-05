@@ -1,0 +1,23 @@
+# Локальный оверрайд: ТОЛЬКО nginx (без переопределения frontend/deno)
+# Использовать когда нужен интерфейс как на сервере (образы с Docker Hub)
+# Запуск: docker compose -f docker-compose.prod.yml -f docker-compose.local-nginx-only.yml up -d
+# На сервере не использовать — там системный nginx
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: aimuza-nginx
+    restart: unless-stopped
+    depends_on:
+      - api
+      - frontend
+      - ffmpeg-api
+      - realtime
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - uploads_data:/opt/aimuza/data/uploads:ro
+    networks:
+      - aimuza-net

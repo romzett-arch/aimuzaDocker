@@ -1,0 +1,148 @@
+-- Fix process_store_item_purchase:
+-- 1. Add auth check (p_buyer_id must match authenticated user)
+-- 2. Record balance_transactions for buyer and seller
+-- 3. Fix store_beats exclusive deactivation (column is user_id, not seller_id)
+
+DROP FUNCTION IF EXISTS public.process_store_item_purchase(UUID, UUID);
+
+CREATE OR REPLACE FUNCTION public.process_store_item_purchase(
+  p_store_item_id UUID,
+  p_buyer_id UUID
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+DECLARE
+  v_item RECORD;
+  v_purchase_id UUID;
+  v_platform_fee INTEGER;
+  v_net_amount INTEGER;
+  v_buyer_balance INTEGER;
+  v_seller_balance INTEGER;
+BEGIN
+  -- Auth check: buyer must be the authenticated user
+  IF p_buyer_id != auth.uid() THEN
+    RAISE EXCEPTION 'Unauthorized: buyer_id must match authenticated user';
+  END IF;
+
+  -- Get item info
+  SELECT * INTO v_item FROM public.store_items 
+  WHERE id = p_store_item_id AND is_active = true;
+  
+  IF v_item IS NULL THEN
+    RAISE EXCEPTION 'Item not found or not available';
+  END IF;
+  
+  IF v_item.seller_id = p_buyer_id THEN
+    RAISE EXCEPTION 'Cannot purchase your own item';
+  END IF;
+  
+  -- Check if already purchased
+  IF EXISTS (
+    SELECT 1 FROM public.item_purchases 
+    WHERE store_item_id = p_store_item_id AND buyer_id = p_buyer_id
+  ) THEN
+    RAISE EXCEPTION 'Already purchased';
+  END IF;
+  
+  -- Calculate platform fee (10%)
+  v_platform_fee := ROUND(v_item.price * 0.1);
+  v_net_amount := v_item.price - v_platform_fee;
+  
+  -- Deduct from buyer balance
+  UPDATE public.profiles SET balance = balance - v_item.price
+  WHERE user_id = p_buyer_id AND balance >= v_item.price
+  RETURNING balance INTO v_buyer_balance;
+  
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Insufficient balance';
+  END IF;
+  
+  -- Create purchase record
+  INSERT INTO public.item_purchases (
+    buyer_id, seller_id, store_item_id, item_type, source_id, 
+    price, license_type, platform_fee, net_amount
+  )
+  VALUES (
+    p_buyer_id, v_item.seller_id, p_store_item_id, v_item.item_type, 
+    v_item.source_id, v_item.price, v_item.license_type, v_platform_fee, v_net_amount
+  )
+  RETURNING id INTO v_purchase_id;
+  
+  -- Create earnings record (seller_earnings uses user_id, not seller_id)
+  INSERT INTO public.seller_earnings (user_id, amount, source_type, source_id, platform_fee, net_amount)
+  VALUES (v_item.seller_id, v_item.price, v_item.item_type, v_purchase_id, v_platform_fee, v_net_amount);
+  
+  -- Add to seller balance
+  UPDATE public.profiles SET balance = balance + v_net_amount
+  WHERE user_id = v_item.seller_id
+  RETURNING balance INTO v_seller_balance;
+  
+  -- Increment sales count
+  UPDATE public.store_items SET sales_count = sales_count + 1 WHERE id = p_store_item_id;
+  
+  -- Record balance_transactions for buyer (spending)
+  INSERT INTO public.balance_transactions (user_id, amount, balance_after, type, description, reference_id, reference_type)
+  VALUES (
+    p_buyer_id, -v_item.price, v_buyer_balance,
+    'item_purchase',
+    'Покупка: ' || v_item.title,
+    p_store_item_id, 'store_item'
+  );
+  
+  -- Record balance_transactions for seller (income)
+  INSERT INTO public.balance_transactions (user_id, amount, balance_after, type, description, reference_id, reference_type)
+  VALUES (
+    v_item.seller_id, v_net_amount, v_seller_balance,
+    'sale_income',
+    'Продажа: ' || v_item.title,
+    p_store_item_id, 'store_item'
+  );
+  
+  -- If exclusive, mark as inactive
+  IF v_item.is_exclusive THEN
+    UPDATE public.store_items SET is_active = false WHERE id = p_store_item_id;
+    
+    IF v_item.item_type = 'prompt' THEN
+      UPDATE public.user_prompts SET is_public = false WHERE id = v_item.source_id;
+    ELSIF v_item.item_type = 'lyrics' THEN
+      UPDATE public.lyrics_items SET is_active = false, is_for_sale = false WHERE id = v_item.source_id;
+    ELSIF v_item.item_type = 'beat' THEN
+      UPDATE public.store_beats SET is_active = false WHERE id = v_item.source_id;
+    END IF;
+  END IF;
+  
+  -- Notify seller
+  INSERT INTO public.notifications (user_id, type, title, message, actor_id, target_type, target_id)
+  VALUES (
+    v_item.seller_id,
+    'item_sold',
+    '💰 Продажа: ' || v_item.title,
+    'Ваш товар куплен за ' || v_item.price || ' AiPCI',
+    p_buyer_id,
+    'store_item',
+    p_store_item_id
+  );
+  
+  RETURN v_purchase_id;
+END;
+$$;
+
+-- Also ensure balance_transactions INSERT policy allows SECURITY DEFINER functions
+-- The existing policy uses WITH CHECK (true) which allows all inserts, so this is fine.
+-- But let's make sure the policy exists:
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies 
+    WHERE tablename = 'balance_transactions' AND policyname = 'Service role can insert transactions'
+  ) THEN
+    CREATE POLICY "Service role can insert transactions"
+      ON public.balance_transactions FOR INSERT
+      WITH CHECK (true);
+  END IF;
+EXCEPTION WHEN duplicate_object THEN
+  NULL;
+END $$;

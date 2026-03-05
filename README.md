@@ -1,4 +1,4 @@
-# AI Planet Sound — Docker Deployment
+# AIMUZA — Docker Deployment
 
 Инфраструктура деплоя: API, Deno Edge Functions, PostgreSQL, FFmpeg, Realtime, Radio.
 
@@ -8,7 +8,8 @@
 
 ```bash
 cp .env.example .env
-# Заполнить .env (DB_PASSWORD, JWT_SECRET, ANON_KEY, SUNO_API_KEY, ...)
+# Заполнить .env (DB_PASSWORD, JWT_SECRET, ANON_KEY, SUNO_API_KEY, FFMPEG_API_KEY, ...)
+# FFMPEG_API_KEY — обязателен для скачивания треков (нормализация + метаданные). Без него — оригинал без обработки.
 docker compose up -d
 ```
 

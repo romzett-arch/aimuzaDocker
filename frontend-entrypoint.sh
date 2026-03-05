@@ -9,7 +9,7 @@ CONFIG_FILE="/usr/share/nginx/html/runtime-config.js"
 
 echo "window.__RUNTIME_CONFIG__ = {" > "$CONFIG_FILE"
 echo "  ANON_KEY: \"${ANON_KEY:-}\"," >> "$CONFIG_FILE"
-echo "  APP_NAME: \"${APP_NAME:-AI Planet Sound}\"," >> "$CONFIG_FILE"
+echo "  APP_NAME: \"${APP_NAME:-AIMUZA}\"," >> "$CONFIG_FILE"
 echo "  SENTRY_DSN: \"${SENTRY_DSN:-}\"" >> "$CONFIG_FILE"
 echo "};" >> "$CONFIG_FILE"
 

@@ -2534,8 +2534,8 @@ STABLE SECURITY DEFINER
 SET search_path = public
 AS $$
   SELECT 
-    -- super_admin и admin имеют все права (делегируем в is_admin)
-    is_admin(_user_id)
+    -- super_admin и admin имеют все права
+    EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = _user_id AND role IN ('super_admin', 'admin'))
     OR
     -- Модератор с конкретным разрешением
     EXISTS (
@@ -4380,11 +4380,11 @@ CREATE INDEX IF NOT EXISTS idx_role_change_logs_created_at ON public.role_change
 CREATE INDEX IF NOT EXISTS idx_role_change_logs_changed_by ON public.role_change_logs(changed_by);
 CREATE INDEX IF NOT EXISTS idx_role_change_logs_action ON public.role_change_logs(action);
 
--- RLS для просмотра логов только админами
+-- RLS для просмотра логов только супер-админами
 DROP POLICY IF EXISTS "Super admins can view all logs" ON public.role_change_logs;
 CREATE POLICY "Super admins can view all logs" ON public.role_change_logs
   FOR SELECT
-  USING (public.is_admin(auth.uid()));
+  USING (public.is_super_admin(auth.uid()));
 
 -- Разрешаем вставку логов админам
 DROP POLICY IF EXISTS "Admins can insert logs" ON public.role_change_logs;
@@ -5507,7 +5507,12 @@ CREATE POLICY "Jury members are viewable by everyone"
 
 CREATE POLICY "Admins can manage jury"
   ON public.contest_jury FOR ALL
-  USING (public.is_admin(auth.uid()));
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.user_roles
+      WHERE user_id = auth.uid() AND role = 'admin'
+    )
+  );
 
 -- Jury scores policies
 ALTER TABLE public.contest_jury_scores ENABLE ROW LEVEL SECURITY;
@@ -7053,7 +7058,7 @@ BEGIN
   
   -- Отправляем уведомление всем админам
   FOR v_admin IN 
-    SELECT user_id FROM public.user_roles WHERE role IN ('admin', 'super_admin')
+    SELECT user_id FROM public.user_roles WHERE role = 'admin'
   LOOP
     -- Не уведомляем самого создателя если он админ
     IF v_admin.user_id != NEW.user_id THEN
@@ -7699,7 +7704,9 @@ CREATE POLICY "Users can create promotions for their tracks"
 
 CREATE POLICY "Admins can view all promotions"
   ON public.track_promotions FOR SELECT
-  USING (public.is_admin(auth.uid()));
+  USING (
+    EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role = 'admin')
+  );
 
 -- Public can see active promotions (for displaying boosted tracks)
 CREATE POLICY "Anyone can see active promotions"
@@ -7955,19 +7962,26 @@ ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS verification_type TEXT; -- 
 CREATE TABLE IF NOT EXISTS public.verification_requests (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL,
-  type TEXT NOT NULL DEFAULT 'creator', -- 'creator', 'label', 'partner'
+  request_type TEXT NOT NULL DEFAULT 'creator', -- 'creator', 'label', 'partner'
   status TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'approved', 'rejected'
   
   -- Информация о заявителе
   real_name TEXT,
-  social_links JSONB DEFAULT '[]'::jsonb, -- [{vk: "...", ok: "..."}]
-  documents JSONB DEFAULT '[]'::jsonb, -- ссылки на документы
-  notes TEXT, -- комментарий от заявителя
+  portfolio_links TEXT[], -- ссылки на соцсети/площадки
+  tracks_count INTEGER,
+  followers_count INTEGER,
+  
+  -- Документы (опционально)
+  document_urls TEXT[],
+  
+  -- Причина заявки
+  reason TEXT,
   
   -- Обработка
   reviewed_by UUID REFERENCES auth.users(id),
   reviewed_at TIMESTAMP WITH TIME ZONE,
   rejection_reason TEXT,
+  admin_notes TEXT,
   
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
@@ -16965,29 +16979,4 @@ BEFORE UPDATE ON public.bug_reports
 FOR EACH ROW
 EXECUTE FUNCTION public.update_updated_at_column();
 
--- =====================================================
--- Таблица закладок (избранное) — отдельно от лайков
--- =====================================================
-CREATE TABLE IF NOT EXISTS public.track_bookmarks (
-  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  track_id UUID NOT NULL REFERENCES public.tracks(id) ON DELETE CASCADE,
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  UNIQUE(user_id, track_id)
-);
-
-ALTER TABLE public.track_bookmarks ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Anyone can view track bookmarks" ON public.track_bookmarks
-FOR SELECT USING (true);
-
-CREATE POLICY "Users can bookmark tracks" ON public.track_bookmarks
-FOR INSERT WITH CHECK (
-  auth.uid() = user_id OR is_admin(auth.uid())
-);
-
-CREATE POLICY "Users can unbookmark tracks" ON public.track_bookmarks
-FOR DELETE USING (
-  auth.uid() = user_id OR is_admin(auth.uid())
-);
 

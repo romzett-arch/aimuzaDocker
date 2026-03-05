@@ -9,7 +9,7 @@ export type BillingResult = {
 };
 
 export async function checkAndDeductBalance(
-  supabase: { from: (t: string) => { select: (c: string) => { eq: (a: string, b: string) => { maybeSingle: () => Promise<{ data: { balance?: number; price_rub?: number } | null }> }; update: (d: object) => { eq: (a: string, b: string) => Promise<{ error: unknown }> }; insert: (d: object) => Promise<unknown> } } };
+  supabase: { from: (t: string) => unknown },
   userId: string,
   mode: Mode,
   skipBilling: boolean

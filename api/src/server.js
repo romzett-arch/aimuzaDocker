@@ -53,9 +53,11 @@ app.use(cors({
 }));
 app.use(morgan('short'));
 
-// Raw body для storage (не multipart — иначе multer получит пустое тело)
+// Raw body для storage uploads (POST/PUT, не multipart — иначе multer получит пустое тело)
+// DELETE исключён — ему нужен JSON body (массив путей для удаления)
 app.use('/storage/v1/object', express.raw({
   type: (req) => {
+    if (req.method === 'DELETE') return false;
     const ct = (req.headers['content-type'] || '').toLowerCase();
     return !ct.includes('multipart');
   },

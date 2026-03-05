@@ -176,7 +176,7 @@ export async function runAcrcloudStep(
 
 export async function runInternalStep(
   steps: CheckStep[],
-  supabase: { from: (table: string) => { select: (cols: string) => { neq: (col: string, val: string) => { neq: (col: string, val: string | undefined) => { ilike: (col: string, pattern: string) => { limit: (n: number) => Promise<{ data: Array<{ title?: string; profiles?: { username?: string } }> | null }> } } } } } } },
+  supabase: { from: (t: string) => unknown },
   trackId: string,
   trackTitle: string,
   userId: string | undefined

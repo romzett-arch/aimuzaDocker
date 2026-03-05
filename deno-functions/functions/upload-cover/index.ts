@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getSunoErrorMessage } from "./errors.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -7,10 +8,13 @@ const corsHeaders = {
 };
 
 const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
-const SUNO_API_BASE = "https://apibox.erweima.ai";
-const FILE_UPLOAD_BASE = "https://sunoapiorg.redpandaai.co";
+const SUNO_API_BASE = "https://api.sunoapi.org";
 
-// Map artist names to genre/style descriptions (Suno doesn't allow artist names)
+const STYLE_CHAR_LIMIT = 1000;
+const PROMPT_CHAR_LIMIT = 5000;
+const NON_CUSTOM_PROMPT_LIMIT = 500;
+const TITLE_CHAR_LIMIT = 100;
+
 const artistToStyleMap: Record<string, string> = {
   "Drake": "moody trap hip-hop with melodic hooks",
   "The Weeknd": "dark synth-pop R&B with falsetto vocals",
@@ -23,9 +27,25 @@ const artistToStyleMap: Record<string, string> = {
   "Post Malone": "melodic hip-hop rock fusion",
   "Kendrick Lamar": "conscious lyrical hip-hop",
   "Beyoncé": "powerful R&B pop with soulful vocals",
+  "BTS": "K-pop with dynamic choreography vibes",
+  "Harry Styles": "70s inspired soft rock pop",
+  "Doja Cat": "playful rap-pop with catchy hooks",
+  "SZA": "neo-soul R&B with vulnerable lyrics",
+  "Travis Scott": "atmospheric auto-tune trap",
+  "Olivia Rodrigo": "emotional pop-rock with teen angst",
+  "Lana Del Rey": "cinematic dreamy baroque pop",
+  "Kanye West": "experimental hip-hop with gospel influences",
   "Bruno Mars": "funk pop with retro grooves",
   "Adele": "powerful ballads with soulful vocals",
+  "Rihanna": "dancehall-influenced pop R&B",
+  "Justin Bieber": "pop R&B with tropical influences",
+  "Lady Gaga": "theatrical electro-pop",
+  "Shakira": "latin pop with world music fusion",
   "Coldplay": "anthemic alternative rock with atmospheric synths",
+  "Imagine Dragons": "arena rock with electronic elements",
+  "Twenty One Pilots": "alternative hip-hop with electronic elements",
+  "Maroon 5": "pop rock with funky grooves",
+  "OneRepublic": "orchestral pop rock with uplifting themes",
 };
 
 function convertArtistToStyle(artistName: string): string {
@@ -60,42 +80,6 @@ function cleanStyleForSuno(style: string): string {
   return cleanedStyle;
 }
 
-/**
- * Upload file to Suno API via URL method
- */
-async function uploadFileToSuno(fileUrl: string): Promise<string> {
-  console.log(`Uploading file to Suno from URL: ${fileUrl}`);
-  
-  // Send both parameter names for API compatibility
-  const requestBody = { 
-    fileUrl: fileUrl,
-    uploadPath: fileUrl,
-    url: fileUrl 
-  };
-  console.log("Upload request body:", JSON.stringify(requestBody));
-  
-  const response = await fetch(`${FILE_UPLOAD_BASE}/api/file-url-upload`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${SUNO_API_KEY}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  const data = await response.json();
-  console.log("File upload response:", JSON.stringify(data));
-  
-  if (!response.ok || (data.code && data.code !== 200)) {
-    throw new Error(data.msg || "Failed to upload file to Suno");
-  }
-  
-  // Response contains downloadUrl for the uploaded file
-  const uploadedUrl = data.data?.downloadUrl || data.data?.url || data.data || data.downloadUrl || data.url;
-  console.log("Uploaded file URL:", uploadedUrl);
-  return uploadedUrl;
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -116,6 +100,11 @@ serve(async (req) => {
       { global: { headers: { Authorization: authHeader } } }
     );
 
+    const supabaseAdmin = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    );
+
     const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
     if (userError || !user) {
       return new Response(
@@ -125,13 +114,14 @@ serve(async (req) => {
     }
 
     const { 
-      trackId, 
-      sourceAudioUrl,  // URL of uploaded audio file (from Supabase storage or external)
-      prompt,          // Lyrics or description
-      style,           // Music style
+      trackId,
+      trackIds: rawTrackIds,
+      sourceAudioUrl,
+      prompt,
+      style,
       title, 
       instrumental,
-      customMode = true,
+      customMode: rawCustomMode,
     } = await req.json();
 
     if (!trackId || !sourceAudioUrl) {
@@ -141,59 +131,68 @@ serve(async (req) => {
       );
     }
 
-    console.log(`Starting upload-cover for track ${trackId} by user ${user.id}`);
+    const allTrackIds: string[] = Array.isArray(rawTrackIds) && rawTrackIds.length > 0
+      ? rawTrackIds
+      : [trackId];
+
+    console.log(`Starting upload-cover for tracks [${allTrackIds.join(", ")}] by user ${user.id}`);
     console.log(`Source audio: ${sourceAudioUrl}`);
     console.log(`Style: ${style}, Instrumental: ${instrumental}`);
 
-    // Clean the style to remove artist names
     const cleanedStyle = cleanStyleForSuno(style || "");
     console.log(`Cleaned style: ${cleanedStyle}`);
 
-    // Update track status to processing
     const { error: updateError } = await supabaseClient
       .from("tracks")
       .update({ status: "processing", error_message: null })
-      .eq("id", trackId)
+      .in("id", allTrackIds)
       .eq("user_id", user.id);
 
     if (updateError) {
       console.error("Failed to update track status:", updateError);
     }
 
-    // Step 1: Upload the source audio to Suno's servers
-    let sunoUploadUrl: string;
-    try {
-      sunoUploadUrl = await uploadFileToSuno(sourceAudioUrl);
-      console.log(`File uploaded to Suno: ${sunoUploadUrl}`);
-    } catch (uploadError) {
-      console.error("Failed to upload file to Suno:", uploadError);
-      await supabaseClient
-        .from("tracks")
-        .update({ 
-          status: "failed",
-          error_message: "Не удалось загрузить аудио для обработки"
-        })
-        .eq("id", trackId);
-      
-      return new Response(
-        JSON.stringify({ error: "Failed to upload audio file" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    const callbackSecret = Deno.env.get("SUNO_CALLBACK_SECRET");
+    const explicitCallbackUrl = Deno.env.get("SUNO_CALLBACK_URL");
+    const baseCallbackUrl = explicitCallbackUrl || `${Deno.env.get("SUPABASE_URL")}/functions/v1/suno-callback`;
+    const callBackUrl = callbackSecret
+      ? `${baseCallbackUrl}${baseCallbackUrl.includes('?') ? '&' : '?'}secret=${encodeURIComponent(callbackSecret)}`
+      : baseCallbackUrl;
 
-    // Step 2: Call Suno upload-cover endpoint
+    const hasLyrics = !!prompt && prompt.trim().length > 0;
+    const hasStyle = !!cleanedStyle && cleanedStyle.trim().length > 0;
+    const useCustomMode = rawCustomMode !== undefined ? rawCustomMode : (hasLyrics || hasStyle);
+
     const sunoPayload: Record<string, unknown> = {
-      uploadUrl: sunoUploadUrl,
-      customMode: customMode,
+      uploadUrl: sourceAudioUrl,
+      customMode: useCustomMode,
       instrumental: instrumental || false,
-      model: "V4",
-      callBackUrl: `${Deno.env.get("SUPABASE_URL")}/functions/v1/suno-callback`,
+      model: "V5",
+      callBackUrl,
     };
 
-    if (customMode) {
-      if (prompt) sunoPayload.prompt = prompt;
-      if (cleanedStyle) sunoPayload.style = cleanedStyle;
-      if (title) sunoPayload.title = title;
+    if (useCustomMode) {
+      if (!instrumental && hasLyrics) {
+        sunoPayload.prompt = prompt.slice(0, PROMPT_CHAR_LIMIT);
+      }
+
+      let finalStyle = cleanedStyle || "pop";
+      if (finalStyle.length > STYLE_CHAR_LIMIT) {
+        const parts = finalStyle.split(", ");
+        let truncated = "";
+        for (const part of parts) {
+          if ((truncated + ", " + part).length <= STYLE_CHAR_LIMIT) {
+            truncated = truncated ? truncated + ", " + part : part;
+          } else break;
+        }
+        finalStyle = truncated || finalStyle.slice(0, STYLE_CHAR_LIMIT);
+      }
+      sunoPayload.style = finalStyle;
+      sunoPayload.title = (title || "Untitled").slice(0, TITLE_CHAR_LIMIT);
+
+      console.log(`Custom mode: style="${sunoPayload.style}" (${String(sunoPayload.style).length} chars), title="${sunoPayload.title}"`);
+    } else {
+      if (prompt) sunoPayload.prompt = prompt.slice(0, NON_CUSTOM_PROMPT_LIMIT);
     }
 
     console.log("Sending to Suno upload-cover API:", JSON.stringify(sunoPayload));
@@ -211,29 +210,127 @@ serve(async (req) => {
     console.log("Suno upload-cover response:", JSON.stringify(sunoData));
 
     if (!sunoResponse.ok || sunoData.code !== 200) {
-      const errorMessage = sunoData.msg || "Failed to start cover generation";
-      console.error(`Suno API error: ${errorMessage}`);
-      
+      const rawErrorMessage = sunoData.msg || "Failed to start cover generation";
+      const errorCode = sunoData.code || sunoResponse.status || 500;
+      const errorInfo = getSunoErrorMessage(errorCode, rawErrorMessage);
+      const russianErrorMessage = errorInfo.short;
+
+      console.error(`Suno API error (${errorCode}): ${rawErrorMessage} -> ${russianErrorMessage}`);
+
       await supabaseClient
         .from("tracks")
-        .update({ 
-          status: "failed",
-          error_message: errorMessage
-        })
-        .eq("id", trackId)
+        .update({ status: "failed", error_message: russianErrorMessage })
+        .in("id", allTrackIds)
         .eq("user_id", user.id);
 
+      // Refund: find pending generation_logs for these tracks
+      const { data: logs } = await supabaseClient
+        .from("generation_logs")
+        .select("id, cost_rub")
+        .in("track_id", allTrackIds)
+        .eq("user_id", user.id)
+        .eq("status", "pending");
+
+      let totalRefund = 0;
+      if (logs && logs.length > 0) {
+        totalRefund = logs.reduce((sum, log) => sum + (log.cost_rub || 0), 0);
+
+        await supabaseClient
+          .from("generation_logs")
+          .update({ status: "failed" })
+          .in("id", logs.map(l => l.id));
+
+        if (totalRefund > 0) {
+          const { data: profile } = await supabaseClient
+            .from("profiles")
+            .select("balance")
+            .eq("user_id", user.id)
+            .single();
+
+          if (profile) {
+            const newBalance = (profile.balance || 0) + totalRefund;
+            await supabaseClient
+              .from("profiles")
+              .update({ balance: newBalance })
+              .eq("user_id", user.id);
+
+            await supabaseClient.from("balance_transactions").insert({
+              user_id: user.id,
+              amount: totalRefund,
+              balance_after: newBalance,
+              type: "refund",
+              description: "Возврат за неудачную генерацию кавера",
+              reference_id: trackId,
+              reference_type: "track",
+              metadata: { error: russianErrorMessage },
+            });
+
+            console.log(`Refunded ${totalRefund} to user ${user.id}`);
+          }
+        }
+      }
+
+      await supabaseAdmin
+        .from("notifications")
+        .insert({
+          user_id: user.id,
+          type: "refund",
+          title: `Ошибка: ${russianErrorMessage}`,
+          message: `${errorInfo.full}${totalRefund > 0 ? `\n\nВам возвращено ${totalRefund} ₽` : ""}`,
+          target_type: "track",
+          target_id: trackId,
+        });
+
       return new Response(
-        JSON.stringify({ 
-          error: errorMessage,
-          details: sunoData 
+        JSON.stringify({
+          error: russianErrorMessage,
+          details: errorInfo.full,
+          refunded: totalRefund > 0,
+          refundAmount: totalRefund,
         }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const taskId = sunoData.data?.taskId;
-    console.log(`Cover generation started with task ID: ${taskId}`);
+    // Robust taskId extraction (Suno API may use different key names)
+    const taskId = sunoData.data?.taskId || sunoData.data?.task_id || sunoData.taskId || sunoData.task_id;
+    console.log(`Cover generation started with task ID: ${taskId} (raw data keys: ${JSON.stringify(Object.keys(sunoData.data || {}))})`);
+
+    // Store task_id in track descriptions so suno-callback can find them
+    if (taskId) {
+      const { data: pairTracks, error: pairErr } = await supabaseAdmin
+        .from("tracks")
+        .select("id, title, description")
+        .in("id", allTrackIds);
+
+      if (pairErr) console.error("Error fetching pair tracks:", pairErr);
+
+      const tracksToUpdate = pairTracks && pairTracks.length > 0
+        ? pairTracks
+        : [{ id: trackId, title: null, description: null }];
+
+      console.log(`Storing task_id ${taskId} in ${tracksToUpdate.length} tracks [${allTrackIds.join(", ")}]`);
+
+      for (const track of tracksToUpdate) {
+        if (track.description?.includes("[task_id:")) {
+          console.log(`Track ${track.id} (${track.title}) already has task_id, skipping`);
+          continue;
+        }
+
+        const existingDesc = track.description || "";
+        const newDesc = existingDesc
+          ? `${existingDesc}\n\n[task_id: ${taskId}]`
+          : `[task_id: ${taskId}]`;
+
+        const { error: updErr } = await supabaseAdmin
+          .from("tracks")
+          .update({ description: newDesc })
+          .eq("id", track.id);
+
+        if (updErr) console.error(`Failed to store task_id in track ${track.id}:`, updErr);
+        else console.log(`Stored task_id ${taskId} in track ${track.id} (${track.title})`);
+      }
+    }
 
     return new Response(
       JSON.stringify({ 

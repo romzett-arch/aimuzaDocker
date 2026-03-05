@@ -12,48 +12,60 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "http://api:3000";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const BASE_URL = Deno.env.get("BASE_URL") || "http://localhost";
 
-// Download external file and save to local storage via API
+// Download external file and save to local storage via API (with retry for transient errors)
 async function downloadToLocalStorage(
   externalUrl: string,
   bucket: string,
-  filePath: string
+  filePath: string,
+  maxRetries = 2
 ): Promise<string | null> {
-  try {
-    console.log(`Downloading ${externalUrl} → ${bucket}/${filePath}`);
-    const resp = await fetch(externalUrl);
-    if (!resp.ok) {
-      console.log(`Download failed: ${resp.status}`);
-      return null;
-    }
-    const blob = await resp.blob();
-    const buffer = new Uint8Array(await blob.arrayBuffer());
-
-    // Upload to local storage API (PUT for upsert)
-    const uploadResp = await fetch(
-      `${SUPABASE_URL}/storage/v1/object/${bucket}/${filePath}`,
-      {
-        method: "PUT",
-        headers: {
-          "Content-Type": blob.type || "application/octet-stream",
-          "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
-        },
-        body: buffer,
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Downloading ${externalUrl} → ${bucket}/${filePath} (attempt ${attempt + 1})`);
+      const resp = await fetch(externalUrl);
+      if (!resp.ok) {
+        console.log(`Download failed: ${resp.status}`);
+        if (attempt < maxRetries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        continue;
       }
-    );
+      const blob = await resp.blob();
+      const buffer = new Uint8Array(await blob.arrayBuffer());
+      if (buffer.length < 1000) {
+        console.log(`File too small (${buffer.length} bytes), likely invalid`);
+        if (attempt < maxRetries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        continue;
+      }
 
-    if (!uploadResp.ok) {
-      const errText = await uploadResp.text();
-      console.log(`Upload to storage failed: ${uploadResp.status} ${errText}`);
-      return null;
+      const uploadResp = await fetch(
+        `${SUPABASE_URL}/storage/v1/object/${bucket}/${filePath}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": blob.type || "application/octet-stream",
+            "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+          },
+          body: buffer,
+        }
+      );
+
+      if (!uploadResp.ok) {
+        const errText = await uploadResp.text();
+        console.log(`Upload to storage failed: ${uploadResp.status} ${errText}`);
+        if (attempt < maxRetries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        continue;
+      }
+
+      const localUrl = `${BASE_URL}/storage/v1/object/public/${bucket}/${filePath}`;
+      console.log(`Saved to local storage: ${localUrl}`);
+      return localUrl;
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      console.error(`Download attempt ${attempt + 1} failed:`, lastErr.message);
+      if (attempt < maxRetries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
     }
-
-    const localUrl = `${BASE_URL}/storage/v1/object/public/${bucket}/${filePath}`;
-    console.log(`Saved to local storage: ${localUrl}`);
-    return localUrl;
-  } catch (err) {
-    console.error(`Error downloading to storage:`, err);
-    return null;
   }
+  return null;
 }
 
 // Fetch with retry logic for connection issues
@@ -171,8 +183,13 @@ serve(async (req) => {
       
       console.log(`Task status: ${taskStatus}, Records: ${records.length}`);
       
-      // Check for failed status - handle GENERATE_AUDIO_FAILED and other failure states
-      if (taskStatus === "GENERATE_AUDIO_FAILED" || taskStatus === "FAILED" || taskStatus === "ERROR") {
+      // Check for failed status — all terminal failure states from Suno API docs
+      const TERMINAL_FAILURES = [
+        "GENERATE_AUDIO_FAILED", "CREATE_TASK_FAILED",
+        "CALLBACK_EXCEPTION", "SENSITIVE_WORD_ERROR",
+        "FAILED", "ERROR",
+      ];
+      if (TERMINAL_FAILURES.includes(taskStatus)) {
         console.log(`Task ${taskId} failed with status: ${taskStatus}`);
         
         if (trackId) {
@@ -203,42 +220,49 @@ serve(async (req) => {
         );
       }
       
-      // Suno record-info returns camelCase fields (audioUrl, imageUrl)
-      // while callback uses snake_case (audio_url, image_url)
-      // Normalize to handle both formats
+      // Normalize records: collect ALL URL variants for fallback during download.
+      // record-info uses camelCase, callback uses snake_case.
+      // Priority: sourceAudioUrl (stable CDN) > audioUrl (temp proxy) > stream URLs
       const normalizedRecords = records.map((r: Record<string, unknown>) => {
-        const rawAudio = r.audioUrl || r.audio_url || r.source_audio_url || r.sourceAudioUrl;
-        const audioUrl = (typeof rawAudio === "string" && rawAudio.startsWith("http")) ? rawAudio : null;
+        const audioUrls = [
+          r.sourceAudioUrl, r.source_audio_url,
+          r.audioUrl, r.audio_url,
+          r.sourceStreamAudioUrl, r.source_stream_audio_url,
+          r.streamAudioUrl, r.stream_audio_url,
+        ].filter((u): u is string => typeof u === "string" && u.startsWith("http"));
+
+        const imageUrls = [
+          r.sourceImageUrl, r.source_image_url,
+          r.imageUrl, r.image_url,
+        ].filter((u): u is string => typeof u === "string" && u.startsWith("http"));
+
         return {
-          audioUrl,
-          imageUrl: r.imageUrl || r.image_url || r.source_image_url || r.sourceImageUrl,
+          audioUrl: audioUrls[0] || null,
+          audioUrls,
+          imageUrl: imageUrls[0] || null,
+          imageUrls,
           duration: r.duration,
           id: r.id,
         };
       });
 
       if (normalizedRecords.length > 0 && normalizedRecords.some((r: { audioUrl: string | null }) => r.audioUrl)) {
-        // Find ALL tracks matching this task_id (both v1 and v2)
+        // Include "failed" tracks — if Suno says SUCCESS, we can resurrect them.
+        // This handles the case when callback never arrived and frontend timed out.
         const { data: matchedTracks } = await supabaseClient
           .from("tracks")
-          .select("id, title, description")
+          .select("id, title, description, status")
           .eq("user_id", userId)
-          .in("status", ["processing", "pending"])
+          .in("status", ["processing", "pending", "failed"])
           .order("created_at", { ascending: true });
 
-        // Filter to tracks that have this task_id
         const tracksWithTask = (matchedTracks || []).filter(
           (t: { description?: string }) => t.description?.includes(`[task_id: ${taskId}]`) || t.description?.includes(`[task_id:${taskId}]`)
         );
 
-        console.log(`Found ${tracksWithTask.length} tracks matching task_id ${taskId}`);
+        console.log(`Found ${tracksWithTask.length} tracks matching task_id ${taskId} (statuses: ${tracksWithTask.map((t: { status: string }) => t.status).join(",")})`);
 
-        // Match each DB track to its Suno record by title version (v1→index 0, v2→index 1).
-        // When a specific trackId is requested, also update the paired track if it's still pending,
-        // so both tracks get processed in a single check-status call.
         for (const trk of tracksWithTask) {
-
-          // Determine which Suno record to use based on title version
           const isV2 = /\(v2\)\s*$/.test(trk.title || "");
           const recordIndex = isV2 ? 1 : 0;
 
@@ -252,34 +276,36 @@ serve(async (req) => {
             console.log(`Skipping track ${trk.id} — no valid audio URL at index ${recordIndex}`);
             continue;
           }
-          
-          // Download audio to local storage
-          let finalAudioUrl = String(rec.audioUrl);
-          const localAudio = await downloadToLocalStorage(
-            finalAudioUrl,
-            "tracks",
-            `audio/${trk.id}.mp3`
-          );
-          if (localAudio) finalAudioUrl = localAudio;
 
-          // Download cover to local storage
-          let finalCoverUrl: string | null = rec.imageUrl ? String(rec.imageUrl) : null;
-          if (finalCoverUrl) {
-            const localCover = await downloadToLocalStorage(
-              finalCoverUrl,
-              "tracks",
-              `covers/${trk.id}.jpg`
-            );
-            if (localCover) finalCoverUrl = localCover;
+          // Download audio with fallback chain (try all URLs until one succeeds)
+          let finalAudioUrl: string | null = null;
+          for (const url of rec.audioUrls) {
+            const local = await downloadToLocalStorage(url, "tracks", `audio/${trk.id}.mp3`);
+            if (local) { finalAudioUrl = local; break; }
           }
+          if (!finalAudioUrl) finalAudioUrl = rec.audioUrl;
+
+          // Download cover with fallback chain
+          let finalCoverUrl: string | null = null;
+          if (rec.imageUrls.length > 0) {
+            for (const url of rec.imageUrls) {
+              const local = await downloadToLocalStorage(url, "tracks", `covers/${trk.id}.jpg`);
+              if (local) { finalCoverUrl = local; break; }
+            }
+            if (!finalCoverUrl) finalCoverUrl = rec.imageUrl;
+          }
+
+          // API erweima.ai часто возвращает duration: null — fallback 180 (FFmpeg убран — блокировал)
+          const durationSec = rec.duration != null ? Math.round(Number(rec.duration)) : 180;
 
           const { error: updateError } = await supabaseClient
             .from("tracks")
             .update({
               audio_url: finalAudioUrl,
               cover_url: finalCoverUrl,
-              duration: rec.duration ? Math.round(Number(rec.duration)) : null,
+              duration: durationSec,
               status: "completed",
+              error_message: null,
               suno_audio_id: rec.id ? String(rec.id) : null,
             })
             .eq("id", trk.id)

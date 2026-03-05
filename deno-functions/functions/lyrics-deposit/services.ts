@@ -19,8 +19,7 @@ export async function submitToOpenTimestamps(hash: string): Promise<string> {
       return `ots_pending_${Date.now()}`;
     }
     return `ots_${Date.now()}`;
-  } catch (error) {
-    console.error("OpenTimestamps error:", error);
+  } catch {
     return `ots_pending_${hash.substring(0, 16)}`;
   }
 }

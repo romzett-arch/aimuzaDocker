@@ -26,6 +26,7 @@ const DB_CONFIG = {
   database: process.env.DB_NAME || 'aimuza',
   user: process.env.DB_USER || 'aimuza',
   password: process.env.DB_PASSWORD || 'aimuza_secret',
+  client_encoding: 'UTF8',
 };
 
 const presenceState = new Map();

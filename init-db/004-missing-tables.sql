@@ -123,72 +123,16 @@ CREATE TABLE IF NOT EXISTS public.role_invitations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
   role text NOT NULL,
-  status text DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined', 'expired', 'cancelled')),
+  status text DEFAULT 'pending',
   invited_by uuid,
-  message text,
-  expires_at timestamptz DEFAULT (now() + interval '7 days'),
-  responded_at timestamptz,
+  expires_at timestamptz,
   created_at timestamptz DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS public.role_invitation_permissions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   invitation_id uuid REFERENCES public.role_invitations(id) ON DELETE CASCADE,
-  category_id uuid REFERENCES public.permission_categories(id) ON DELETE CASCADE,
-  UNIQUE(invitation_id, category_id)
-);
-
--- ── permission_categories (if missing) ─────────────────────────────
-CREATE TABLE IF NOT EXISTS public.permission_categories (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  key text UNIQUE,
-  name text NOT NULL,
-  name_ru text,
-  slug text UNIQUE,
-  description text,
-  icon text,
-  sort_order integer DEFAULT 0,
-  is_active boolean DEFAULT true,
-  created_at timestamptz DEFAULT now()
-);
-
--- ── moderator_presets (if missing) ─────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.moderator_presets (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL,
-  name_ru text,
-  description text,
-  permissions jsonb DEFAULT '[]'::jsonb,
-  category_ids uuid[] DEFAULT ARRAY[]::uuid[],
-  is_active boolean DEFAULT true,
-  sort_order integer DEFAULT 0,
-  created_at timestamptz DEFAULT now()
-);
-
--- ── moderator_permissions (if missing) ─────────────────────────────
-CREATE TABLE IF NOT EXISTS public.moderator_permissions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid NOT NULL,
-  category_id uuid REFERENCES public.permission_categories(id) ON DELETE CASCADE,
-  granted_by uuid,
-  granted_at timestamptz DEFAULT now(),
-  UNIQUE(user_id, category_id)
-);
-
--- ── role_change_logs (if missing) ──────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.role_change_logs (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid NOT NULL,
-  changed_by uuid,
-  action text NOT NULL CHECK (action IN (
-    'invited', 'accepted', 'declined', 'revoked', 'expired', 'assigned',
-    'blocked', 'unblocked', 'invitation_cancelled',
-    'user_deleted', 'moderation_sent_to_voting', 'balance_changed', 'moderation_approved'
-  )),
-  old_role app_role,
-  new_role app_role,
-  reason text,
-  metadata jsonb,
+  category_id uuid,
   created_at timestamptz DEFAULT now()
 );
 

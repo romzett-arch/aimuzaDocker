@@ -2,6 +2,8 @@ import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
 import { signToken } from '../middleware/auth.js';
 
+const DUMMY_HASH = '$2a$12$K4p9MxVPgOSR5QjKWnJL.OBkqiLbqMy0aZXGxVUP3IxtTGd1bEX6q';
+
 export function registerToken(router) {
   router.post('/token', async (req, res) => {
     try {
@@ -19,6 +21,7 @@ export function registerToken(router) {
         );
 
         if (result.rows.length === 0) {
+          await bcrypt.compare(password, DUMMY_HASH);
           return res.status(400).json({ error: 'Invalid login credentials', code: 'INVALID_CREDENTIALS' });
         }
 
@@ -93,7 +96,7 @@ export function registerToken(router) {
       res.status(400).json({ error: 'Unsupported grant_type' });
     } catch (err) {
       console.error('[Auth] Token error:', err.message);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: 'Authentication failed' });
     }
   });
 

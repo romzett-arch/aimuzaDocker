@@ -12,8 +12,14 @@ const PROTECTED_COLUMNS = new Set([
 
 const MAX_BATCH_SIZE = 100;
 
+function isAdminUser(user) {
+  if (user?.role === 'service_role') return true;
+  const r = (user?.app_role || '').toLowerCase();
+  return r === 'admin' || r === 'super_admin' || r === 'superadmin';
+}
+
 function filterProtectedCols(cols, user) {
-  if (user?.role === 'service_role') return cols;
+  if (isAdminUser(user)) return cols;
   return cols.filter(c => !PROTECTED_COLUMNS.has(c));
 }
 
@@ -90,16 +96,29 @@ export async function handlePost(req, res) {
 
     await client.query('COMMIT');
 
-    const prefer = req.headers.prefer || '';
-    if (prefer.includes('return=representation')) {
+    const prefer2 = req.headers.prefer || '';
+    if (prefer2.includes('return=representation')) {
+      const acceptHeader = req.headers.accept || '';
+      if (acceptHeader.includes('vnd.pgrst.object+json')) {
+        if (results.length === 0) {
+          return res.status(406).json({
+            message: 'JSON object requested, multiple (or no) rows returned',
+            code: 'PGRST116',
+            details: 'The result contains 0 rows',
+            hint: null,
+          });
+        }
+        return res.status(201).json(results[0]);
+      }
       return res.status(201).json(rows.length === 1 ? results[0] : results);
     }
     res.status(201).json(results);
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('[REST POST]', err.message, '| table:', req.params.table);
-    const msg = err.message?.includes('violates') || err.message?.includes('duplicate') ? err.message : 'Operation failed';
-    res.status(400).json({ message: msg, error: msg, code: 'REST_ERROR', details: null, hint: null });
+    console.error('[REST POST]', err.message, '| table:', req.params.table, '| code:', err.code);
+    const pgMsg = err.message || 'Operation failed';
+    const pgCode = err.code || 'REST_ERROR';
+    res.status(400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -142,14 +161,27 @@ export async function handlePatch(req, res) {
 
     const prefer = req.headers.prefer || '';
     if (prefer.includes('return=representation')) {
+      const acceptHeader = req.headers.accept || '';
+      if (acceptHeader.includes('vnd.pgrst.object+json')) {
+        if (result.rows.length === 0) {
+          return res.status(406).json({
+            message: 'JSON object requested, multiple (or no) rows returned',
+            code: 'PGRST116',
+            details: 'The result contains 0 rows',
+            hint: null,
+          });
+        }
+        return res.json(result.rows[0]);
+      }
       return res.json(result.rows);
     }
     res.status(204).end();
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('[REST PATCH]', err.message);
-    const msg = err.message?.includes('violates') || err.message?.includes('duplicate') ? err.message : 'Operation failed';
-    res.status(400).json({ message: msg, error: msg, code: 'REST_ERROR', details: null, hint: null });
+    console.error('[REST PATCH]', err.message, '| table:', req.params.table, '| code:', err.code);
+    const pgMsg = err.message || 'Operation failed';
+    const pgCode = err.code || 'REST_ERROR';
+    res.status(400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -175,13 +207,19 @@ export async function handleDelete(req, res) {
 
     const prefer = req.headers.prefer || '';
     if (prefer.includes('return=representation')) {
+      const acceptHeader = req.headers.accept || '';
+      if (acceptHeader.includes('vnd.pgrst.object+json')) {
+        return res.json(result.rows[0] || null);
+      }
       return res.json(result.rows);
     }
     res.status(204).end();
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('[REST DELETE]', err.message);
-    res.status(400).json({ message: 'Operation failed', error: 'Operation failed', code: 'REST_ERROR', details: null, hint: null });
+    console.error('[REST DELETE]', err.message, '| table:', req.params.table, '| code:', err.code);
+    const pgMsg = err.message || 'Operation failed';
+    const pgCode = err.code || 'REST_ERROR';
+    res.status(400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
   } finally {
     await resetJwtClaims(client);
     client.release();

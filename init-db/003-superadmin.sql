@@ -199,7 +199,7 @@ BEGIN
       RAISE EXCEPTION 'ЗАПРЕЩЕНО: Нельзя изменить статус суперадмина.';
     END IF;
     -- Нельзя понизить роль
-    IF NEW.role != 'super_admin' AND OLD.role = 'super_admin' THEN
+    IF NEW.role != 'superadmin' AND OLD.role = 'superadmin' THEN
       RAISE EXCEPTION 'ЗАПРЕЩЕНО: Нельзя понизить роль суперадмина.';
     END IF;
     -- Нельзя заблокировать

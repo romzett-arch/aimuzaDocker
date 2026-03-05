@@ -22,6 +22,7 @@ const pool = new Pool({
   user: process.env.DB_USER || 'aimuza',
   password: process.env.DB_PASSWORD || 'password',
   max: 10,
+  client_encoding: 'UTF8',
 });
 
 const PORT = parseInt(process.env.PORT || '3200');
@@ -192,6 +193,21 @@ async function main() {
   setInterval(() => injectBoostedTracks(pool), BOOST_INTERVAL_MS);
   setInterval(() => updateListenerCount(metadataWs), 10000);
   setInterval(() => loadRadioConfig(pool, (config) => { radioConfig = config; }), 300000);
+
+  // Cron: автопродление подписок (каждый час)
+  const renewSubscriptions = async () => {
+    try {
+      const result = await pool.query('SELECT public.renew_expired_subscriptions()');
+      const data = result?.rows?.[0]?.renew_expired_subscriptions;
+      if (data && (data.renewed > 0 || data.past_due > 0 || data.expired > 0)) {
+        console.log('[Subscriptions] Renewed:', data.renewed, 'Past due:', data.past_due, 'Expired:', data.expired);
+      }
+    } catch (err) {
+      console.error('[Subscriptions] Renewal error:', err.message);
+    }
+  };
+  await renewSubscriptions();
+  setInterval(renewSubscriptions, 3600000);
 
   console.log('[Radio] All workers started');
 

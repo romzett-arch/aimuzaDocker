@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════
-# AI Planet Sound — Production Deploy
+# AIMUZA — Production Deploy
 # Запуск на сервере: cd /opt/aimuza/deploy && bash deploy.sh
 # Маршрут: Docker Hub → Сервер
 # ═══════════════════════════════════════════════
@@ -10,7 +10,7 @@ set -e
 COMPOSE_FILE="docker-compose.prod.yml"
 
 echo "╔══════════════════════════════════════════╗"
-echo "║   AI Planet Sound — Production Deploy    ║"
+echo "║   AIMUZA — Production Deploy    ║"
 echo "╚══════════════════════════════════════════╝"
 
 cd "$(dirname "$0")"
@@ -39,12 +39,22 @@ echo "📊 Шаг 4: Статус контейнеров:"
 docker compose -f "$COMPOSE_FILE" ps
 
 echo ""
-echo "🔄 Шаг 5: Перезагрузка Nginx..."
+echo "📄 Шаг 5: Синхронизация nginx config..."
+if [ -f "nginx/aimuza.ru.prod.conf" ]; then
+    cp nginx/aimuza.ru.prod.conf /etc/nginx/sites-available/aimuza.ru
+    ln -sf /etc/nginx/sites-available/aimuza.ru /etc/nginx/sites-enabled/aimuza.ru
+    echo "   nginx/aimuza.ru.prod.conf → sites-available + sites-enabled (symlink)"
+else
+    echo "   ⚠ nginx/aimuza.ru.prod.conf не найден, пропуск"
+fi
+
+echo ""
+echo "🔄 Шаг 6: Перезагрузка Nginx..."
 nginx -t && nginx -s reload
 echo "✅ Nginx перезагружен"
 
 echo ""
-echo "🧹 Шаг 6: Очистка старых образов..."
+echo "🧹 Шаг 7: Очистка старых образов..."
 docker image prune -f
 
 echo ""

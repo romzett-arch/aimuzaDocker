@@ -1,4 +1,4 @@
--- Миграция: 16 новых AI-сервисов в addon_services (B9, B1-B7, D1-D2)
+-- Миграция: 17 новых AI-сервисов в addon_services (B9, B1-B7, D1-D2, A1, forum_auto_tags)
 -- Для БД, где seed уже применялся без этого блока.
 INSERT INTO public.addon_services (name, name_ru, description, price_rub, icon, is_active, sort_order)
 VALUES
@@ -16,5 +16,7 @@ VALUES
   ('distribution_check', 'Проверка дистрибуции', 'Валидация метаданных для стриминг-площадок', 0, 'check-circle', TRUE, 71),
   ('audio_interpretation', 'AI-анализ аудио', 'DeepSeek интерпретация метрик analyze-audio', 5, 'activity', TRUE, 72),
   ('mix_pro_analysis', 'Про-анализ микса', 'Профессиональный анализ через RoEx Tonn API', 10, 'sliders', TRUE, 73),
-  ('audio_classify', 'AI-классификация жанра', 'Автоклассификация при загрузке/генерации', 0, 'music', TRUE, 74)
+  ('audio_classify', 'AI-классификация жанра', 'Автоклассификация при загрузке/генерации', 0, 'music', TRUE, 74),
+  ('forum_auto_tags', 'AI-теги поста (форум)', 'Автоподбор тегов для поста форума', 2, 'tags', TRUE, 75),
+  ('comments_moderation', 'AI-модерация комментариев', 'Проверка комментариев на токсичность и спам', 0, 'shield', TRUE, 76)
 ON CONFLICT (name) DO NOTHING;

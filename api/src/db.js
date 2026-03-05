@@ -13,6 +13,7 @@ export const pool = new Pool({
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
+  client_encoding: 'UTF8',
 });
 
 pool.on('error', (err) => {
