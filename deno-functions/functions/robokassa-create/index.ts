@@ -135,9 +135,6 @@ serve(async (req) => {
       SignatureValue: signature,
       IsTest: ROBOKASSA_TEST_MODE ? "1" : "0",
       Culture: "ru",
-      IncCurrLabel: "RUB",
-      SuccessURL: `${Deno.env.get("BASE_URL") || "https://aimuza.ru"}/payment-success`,
-      FailURL: `${Deno.env.get("BASE_URL") || "https://aimuza.ru"}/payment-fail`,
     };
 
     return json(cors, 200, {

@@ -21,4 +21,4 @@ COPY . .
 
 EXPOSE 8081
 
-CMD ["deno", "run", "--allow-all", "--unstable", "server.ts"]
+CMD ["/usr/bin/deno", "run", "--allow-all", "--unstable", "server.ts"]
