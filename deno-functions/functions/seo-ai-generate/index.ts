@@ -38,6 +38,76 @@ interface SeoGenerateResponse {
 
 type AiProvider = "deepseek" | "timeweb";
 
+interface ChatCompletionMessage {
+  content?: string | Array<{ type?: string; text?: string }>;
+  role?: string;
+  reasoning_content?: string;
+  provider_specific_fields?: {
+    reasoning_content?: string;
+  };
+}
+
+interface ChatCompletionResponse {
+  choices?: Array<{
+    finish_reason?: string;
+    index?: number;
+    message?: ChatCompletionMessage;
+  }>;
+}
+
+function normalizeModel(provider: AiProvider, configuredModel?: string): string {
+  const rawModel = configuredModel?.trim();
+  if (!rawModel) {
+    return provider === "timeweb" ? "deepseek-v3" : "deepseek-chat";
+  }
+
+  if (provider === "timeweb") {
+    const lowered = rawModel.toLowerCase();
+    if (
+      lowered === "deepseek-v3.2" ||
+      lowered.includes("reasoner") ||
+      lowered.includes("deepseek/deepseek-reasoner")
+    ) {
+      return "deepseek-v3";
+    }
+  }
+
+  return rawModel;
+}
+
+function extractMessageContent(message?: ChatCompletionMessage): string {
+  if (!message?.content) return "";
+
+  if (typeof message.content === "string") {
+    return message.content.trim();
+  }
+
+  return message.content
+    .map((part) => (typeof part.text === "string" ? part.text : ""))
+    .join("")
+    .trim();
+}
+
+function extractReasoningContent(message?: ChatCompletionMessage): string {
+  return (
+    message?.reasoning_content?.trim() ||
+    message?.provider_specific_fields?.reasoning_content?.trim() ||
+    ""
+  );
+}
+
+function getFallbackContent(message?: ChatCompletionMessage): string {
+  const directContent = extractMessageContent(message);
+  if (directContent) return directContent;
+
+  const reasoningContent = extractReasoningContent(message);
+  if (reasoningContent.includes("{")) {
+    return reasoningContent;
+  }
+
+  return "";
+}
+
 function buildPrompt(
   entityType: string,
   context: SeoGenerateRequest["context"],
@@ -235,7 +305,7 @@ const handler = async (req: Request) => {
       );
     }
 
-    const model = config.ai_model || (provider === "timeweb" ? "deepseek-v3.2" : "deepseek-chat");
+    const model = normalizeModel(provider, config.ai_model);
     const baseUrl = provider === "timeweb"
       ? `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1`
       : (config.ai_base_url || "https://api.deepseek.com/v1").replace(/\/$/, "");
@@ -243,9 +313,9 @@ const handler = async (req: Request) => {
 
     const fullPrompt = buildPrompt(entity_type, context, promptTemplate, promptStyle);
     const chatUrl = `${baseUrl}/chat/completions`;
-    const buildChatBody = (systemContent: string, temperature: number, maxTokens: number) =>
+    const buildChatBody = (selectedModel: string, systemContent: string, temperature: number, maxTokens: number) =>
       JSON.stringify({
-        model,
+        model: selectedModel,
         messages: [
           { role: "system", content: systemContent },
           { role: "user", content: fullPrompt },
@@ -261,9 +331,10 @@ const handler = async (req: Request) => {
         Authorization: `Bearer ${apiKey}`,
       },
       body: buildChatBody(
+        model,
         "Ты возвращаешь только валидный JSON. Никакого текста до или после.",
         0.2,
-        800,
+        2200,
       ),
     });
 
@@ -278,17 +349,19 @@ const handler = async (req: Request) => {
       );
     }
 
-    let chatData = (await chatRes.json()) as {
-      choices?: {
-        message?: {
-          content?: string;
-        };
-      }[];
-    };
-    let content = chatData?.choices?.[0]?.message?.content?.trim() || "";
+    let chatData = (await chatRes.json()) as ChatCompletionResponse;
+    let content = getFallbackContent(chatData?.choices?.[0]?.message);
 
     if (!content) {
-      console.warn("[seo-ai-generate] Empty AI content, retrying with stricter prompt");
+      const reasoning = extractReasoningContent(chatData?.choices?.[0]?.message);
+      console.warn("[seo-ai-generate] Empty AI content, retrying with stricter prompt", {
+        provider,
+        model,
+        finishReason: chatData?.choices?.[0]?.finish_reason,
+        hasReasoning: Boolean(reasoning),
+      });
+
+      const retryModel = provider === "timeweb" ? "deepseek-v3" : model;
       const retryRes = await fetch(chatUrl, {
         method: "POST",
         headers: {
@@ -296,21 +369,16 @@ const handler = async (req: Request) => {
           Authorization: `Bearer ${apiKey}`,
         },
         body: buildChatBody(
+          retryModel,
           "Без рассуждений. Сразу верни только валидный JSON-объект без markdown и пояснений.",
           0,
-          1400,
+          3200,
         ),
       });
 
       if (retryRes.ok) {
-        chatData = (await retryRes.json()) as {
-          choices?: {
-            message?: {
-              content?: string;
-            };
-          }[];
-        };
-        content = chatData?.choices?.[0]?.message?.content?.trim() || "";
+        chatData = (await retryRes.json()) as ChatCompletionResponse;
+        content = getFallbackContent(chatData?.choices?.[0]?.message);
       } else {
         const retryErrText = await retryRes.text();
         console.error("[seo-ai-generate] Retry API error:", provider, retryRes.status, retryErrText);
