@@ -10,6 +10,35 @@ const failedHandlers = new Map<string, string>();
 
 (globalThis as Record<string, unknown>)[REGISTRY_KEY] = handlers;
 
+const originalDenoServe = Deno.serve.bind(Deno);
+
+function registerCurrentHandler(handler: Handler): boolean {
+  const currentFunctionName = (globalThis as Record<string, unknown>)[CURRENT_FUNCTION_KEY];
+  if (typeof currentFunctionName !== "string" || currentFunctionName.length === 0) {
+    return false;
+  }
+
+  handlers.set(currentFunctionName, handler);
+  return true;
+}
+
+(Deno as typeof Deno & {
+  serve: (...args: unknown[]) => unknown;
+}).serve = ((...args: unknown[]) => {
+  const maybeHandler = args.at(-1);
+  if (typeof maybeHandler === "function" && registerCurrentHandler(maybeHandler as Handler)) {
+    return {
+      finished: Promise.resolve(),
+      shutdown: () => Promise.resolve(),
+      ref: () => {},
+      unref: () => {},
+      addr: { transport: "tcp", hostname: "127.0.0.1", port: 0 },
+    };
+  }
+
+  return originalDenoServe(...(args as Parameters<typeof Deno.serve>));
+}) as typeof Deno.serve;
+
 async function loadHandlers() {
   for await (const entry of Deno.readDir("./functions")) {
     if (!entry.isDirectory) continue;
