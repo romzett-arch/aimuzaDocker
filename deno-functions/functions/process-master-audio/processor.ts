@@ -1,6 +1,7 @@
 import { PROCESSING_STAGES } from "./types.ts";
 import { callVps, parseAnalysis } from "./vps.ts";
 import { computeFileHash, submitToOpenTimestamps } from "./blockchain.ts";
+import { generateCertificateHtml } from "../generate-gold-pack/generators.ts";
 
 export async function runMasterProcessing(
   supabase: any,
@@ -163,6 +164,8 @@ export async function runMasterProcessing(
     .eq('user_id', track.user_id)
     .maybeSingle();
   const username = profile?.username || 'Unknown';
+  let metadataCleaned = false;
+  let metadataBranded = false;
 
   if (FFMPEG_API_URL && FFMPEG_API_SECRET) {
     console.log(`[process-master-audio] Metadata cleaning via FFMPEG_API_URL`);
@@ -183,10 +186,14 @@ export async function runMasterProcessing(
           TXXX_TRACK_ID: trackId,
         },
       },
-    }, 60000, { 'Authorization': `Bearer ${FFMPEG_API_SECRET}` });
+    }, 60000, { 'x-api-key': FFMPEG_API_SECRET });
     if (metaResult?.cleaned_url) {
       processedUrl = metaResult.cleaned_url;
+      metadataCleaned = true;
+      metadataBranded = true;
       console.log(`[process-master-audio] ✓ Metadata cleaned via FFMPEG API`);
+    } else {
+      throw new Error('metadata_cleaning_failed');
     }
   } else {
     console.log(`[process-master-audio] Metadata cleaning via VPS /normalize`);
@@ -209,13 +216,17 @@ export async function runMasterProcessing(
     }, 60000);
     if (metaResult?.normalized_url) {
       processedUrl = metaResult.normalized_url;
+      metadataCleaned = true;
+      metadataBranded = true;
       console.log(`[process-master-audio] ✓ Metadata cleaned via VPS normalize`);
+    } else {
+      throw new Error('metadata_cleaning_failed');
     }
   }
 
   await supabase.from('tracks').update({
-    metadata_cleaned: true,
-    metadata_branded: true,
+    metadata_cleaned: metadataCleaned,
+    metadata_branded: metadataBranded,
   }).eq('id', trackId);
 
   await updateStage('blockchain_hash');
@@ -256,7 +267,27 @@ export async function runMasterProcessing(
   }).eq('id', trackId);
 
   await updateStage('certificate_generation');
-  const certificateUrl = `${Deno.env.get('BASE_URL') || 'https://aimuza.ru'}/storage/v1/object/public/tracks/gold-packs/${trackId}/certificate.html`;
+  const registeredAt = new Date().toISOString();
+  const certificateFileName = `gold-packs/${trackId}/certificate.html`;
+  const certificateHtml = generateCertificateHtml({
+    ...track,
+    blockchain_hash: blockchainHash,
+    processing_completed_at: registeredAt,
+  }, registeredAt);
+  const { error: certificateUploadError } = await supabase.storage
+    .from('tracks')
+    .upload(
+      certificateFileName,
+      new Blob([certificateHtml], { type: 'text/html;charset=utf-8' }),
+      { upsert: true, contentType: 'text/html;charset=utf-8' }
+    );
+
+  if (certificateUploadError) {
+    console.error('[process-master-audio] Certificate upload failed:', certificateUploadError);
+    throw new Error('certificate_generation_failed');
+  }
+
+  const certificateUrl = `${Deno.env.get('BASE_URL') || 'https://aimuza.ru'}/storage/v1/object/public/tracks/${certificateFileName}`;
   await supabase.from('tracks').update({
     certificate_url: certificateUrl,
   }).eq('id', trackId);
@@ -273,7 +304,7 @@ export async function runMasterProcessing(
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${serviceKey}`,
         },
-        body: JSON.stringify({ trackId }),
+        body: JSON.stringify({ trackId, registeredAt }),
       }
     );
     const goldPackResult = await goldPackResponse.json();
@@ -311,8 +342,8 @@ export async function runMasterProcessing(
       ots_proof_uploaded: otsProofUploaded,
     },
     metadata: {
-      cleaned: true,
-      branded: true,
+      cleaned: metadataCleaned,
+      branded: metadataBranded,
       artist: username,
     },
     gold_pack_ready: true,

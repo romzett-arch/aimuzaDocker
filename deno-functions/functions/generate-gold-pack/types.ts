@@ -1,5 +1,6 @@
 export interface GoldPackRequest {
   trackId: string;
+  registeredAt?: string;
 }
 
 export interface TrackMetadata {

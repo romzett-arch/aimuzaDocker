@@ -212,10 +212,22 @@ router.get('/object/public/:bucket/*', (req, res) => {
 
     const mime = mimeTypes[ext] || 'application/octet-stream';
     res.set('Content-Type', mime);
-    res.set('Cache-Control', 'public, max-age=86400');
+    res.set('Cache-Control', ext === '.html' ? 'no-store, max-age=0' : 'public, max-age=86400');
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
     res.set('Access-Control-Allow-Origin', '*');
     res.set('X-Content-Type-Options', 'nosniff');
+    if (ext === '.html') {
+      res.set(
+        'Content-Security-Policy',
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; " +
+        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com blob:; " +
+        "style-src 'self' 'unsafe-inline' https:; " +
+        "img-src 'self' data: blob: https:; " +
+        "font-src 'self' data: https:; " +
+        "connect-src 'self' https: data: blob:; " +
+        "worker-src 'self' blob:;"
+      );
+    }
     if (ext === '.svg') {
       res.set('Content-Disposition', 'attachment');
       res.set('Content-Security-Policy', "default-src 'none'");

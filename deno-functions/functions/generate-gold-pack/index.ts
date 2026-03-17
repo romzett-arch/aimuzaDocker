@@ -15,7 +15,7 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    const { trackId }: GoldPackRequest = await req.json();
+    const { trackId, registeredAt }: GoldPackRequest = await req.json();
     console.log(`[generate-gold-pack] Starting for track: ${trackId}`);
 
     if (!trackId) {
@@ -54,14 +54,14 @@ serve(async (req) => {
       console.error('[generate-gold-pack] XML upload error:', xmlUploadError);
     }
 
-    const certificateHtml = generateCertificateHtml(track as TrackMetadata);
+    const certificateHtml = generateCertificateHtml(track as TrackMetadata, registeredAt);
     const certificateFileName = `gold-packs/${trackId}/certificate.html`;
 
     const { error: certUploadError } = await supabase.storage
       .from('tracks')
-      .upload(certificateFileName, new Blob([certificateHtml], { type: 'text/html' }), {
+      .upload(certificateFileName, new Blob([certificateHtml], { type: 'text/html;charset=utf-8' }), {
         upsert: true,
-        contentType: 'text/html'
+        contentType: 'text/html;charset=utf-8'
       });
 
     if (certUploadError) {
