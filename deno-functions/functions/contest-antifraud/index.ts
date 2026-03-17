@@ -10,7 +10,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const TIMEWEB_AGENT_ACCESS_ID = "0846d064-4950-4d79-a54c-62ba315cdb34";
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -181,7 +180,8 @@ serve(async (req: Request) => {
 
         const userPrompt = `Обнаружены аномалии в голосовании:\n\n${summary}\n\nВердикт:`;
 
-        const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
+        const agentId = Deno.env.get("TIMEWEB_AGENT_ID") || "";
+        const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
         const response = await fetch(apiUrl, {
           method: "POST",
           headers: {

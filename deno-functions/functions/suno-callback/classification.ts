@@ -1,5 +1,4 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { TIMEWEB_AGENT_ACCESS_ID } from "./types.ts";
 
 export async function classifyTrackWithAI(
   supabaseAdmin: SupabaseClient,
@@ -75,7 +74,8 @@ ${artistStylesList}
 Верни ТОЛЬКО JSON без markdown:
 {"genre_id": "...", "vocal_type_id": "...", "template_id": "..." или null, "artist_style_id": "..." или null}`;
 
-    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
+    const agentId = Deno.env.get("TIMEWEB_AGENT_ID") || "";
+    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
 
     const response = await fetch(apiUrl, {
       method: "POST",

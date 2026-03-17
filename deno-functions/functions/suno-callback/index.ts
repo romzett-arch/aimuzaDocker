@@ -8,7 +8,7 @@ import type { MatchedTrack, SunoCallbackPayload, SunoTrackData, TrackToFail } fr
 
 declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
 
-serve(async (req) => {
+const handler = async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -76,22 +76,11 @@ serve(async (req) => {
         }
       }
 
-      if (tracksToFail.length === 0) {
-        const { data: pendingTracks } = await supabaseAdmin
-          .from("tracks")
-          .select("id, user_id")
-          .in("status", ["processing", "pending"])
-          .order("created_at", { ascending: false })
-          .limit(5);
-
-        if (pendingTracks && pendingTracks.length > 0) {
-          tracksToFail = pendingTracks;
-        }
-      }
-
       if (tracksToFail.length > 0) {
         await handleFailedTracksWithRefunds(supabaseAdmin, tracksToFail, failReason, errorInfo);
         console.log(`Marked ${tracksToFail.length} tracks as failed with refunds`);
+      } else {
+        console.warn(`No tracks found for failed callback task_id=${taskId}. Skipping refund to avoid cross-user mismatch.`);
       }
 
       return new Response(
@@ -159,9 +148,7 @@ serve(async (req) => {
     });
 
     // Pending DB tracks (not yet completed/failed)
-    const pendingDbTracks = allMatchedTracks.filter(
-      (t) => t.status !== "completed" && t.status !== "failed"
-    );
+    const pendingDbTracks = allMatchedTracks.filter((t) => t.status !== "completed");
 
     console.log(`Matching ${normalizedSunoResults.length} Suno results to ${pendingDbTracks.length} pending DB tracks (total DB: ${allMatchedTracks.length})`);
 
@@ -274,4 +261,10 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
-});
+};
+
+if (import.meta.main) {
+  serve(handler);
+}
+
+export default handler;

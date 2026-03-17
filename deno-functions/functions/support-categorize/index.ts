@@ -10,7 +10,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const TIMEWEB_AGENT_ACCESS_ID = "0846d064-4950-4d79-a54c-62ba315cdb34";
 
 const VALID_CATEGORIES = ["bug", "feature", "payment", "account", "generation", "other"];
 const VALID_PRIORITIES = ["low", "medium", "high", "urgent"];
@@ -93,7 +92,8 @@ priority — одна из: low, medium, high, urgent
 
     const userPrompt = `Тема: ${subject}\n\nСообщение: ${message.substring(0, 800)}`;
 
-    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
+    const agentId = Deno.env.get("TIMEWEB_AGENT_ID") || "";
+    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
     const response = await fetch(apiUrl, {
       method: "POST",
       headers: {

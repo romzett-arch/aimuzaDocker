@@ -77,8 +77,13 @@ services:
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       VPS_FFMPEG_URL: http://ffmpeg-api:3001
       FFMPEG_API_URL: http://ffmpeg-api:3001
+      FFMPEG_PUBLIC_URL: ${BASE_URL:-https://aimuza.ru}/api/ffmpeg
       FFMPEG_API_SECRET: ${FFMPEG_API_KEY:-}
       BASE_URL: ${BASE_URL:-https://aimuza.ru}
+      ROBOKASSA_MERCHANT_LOGIN: ${ROBOKASSA_MERCHANT_LOGIN:-}
+      ROBOKASSA_PASSWORD1: ${ROBOKASSA_PASSWORD1:-}
+      ROBOKASSA_PASSWORD2: ${ROBOKASSA_PASSWORD2:-}
+      ROBOKASSA_TEST_MODE: ${ROBOKASSA_TEST_MODE:-false}
     ports:
       - "127.0.0.1:8081:8081"
     networks:

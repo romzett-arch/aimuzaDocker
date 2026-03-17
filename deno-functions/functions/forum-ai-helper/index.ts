@@ -51,6 +51,11 @@ serve(async (req) => {
       throw new Error("TIMEWEB_AGENT_TOKEN not configured");
     }
 
+    const agentId = Deno.env.get("TIMEWEB_AGENT_ID");
+    if (!agentId) {
+      throw new Error("TIMEWEB_AGENT_ID not configured");
+    }
+
     const serviceName = SERVICE_NAMES[mode];
     if (!serviceName) {
       return new Response(
@@ -115,7 +120,7 @@ serve(async (req) => {
 
     const { systemPrompt, userPrompt } = buildPrompts(mode, text, topicTitle, topicContent, threadPosts);
 
-    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${AGENT_ACCESS_ID}/v1/chat/completions`;
+    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
 
     const response = await fetch(apiUrl, {
       method: "POST",
