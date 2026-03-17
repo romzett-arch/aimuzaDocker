@@ -64,7 +64,7 @@ router.get('/bucket/:bucketId', (req, res) => {
       id: bucketId,
       name: bucketId,
       public: true,
-      allowed_mime_types: ['text/html', 'text/html;charset=utf-8', 'application/octet-stream'],
+      allowed_mime_types: ['text/html', 'text/html;charset=utf-8', 'application/pdf', 'application/octet-stream'],
       file_size_limit: 5242880,
     },
   };
@@ -220,12 +220,12 @@ router.get('/object/public/:bucket/*', (req, res) => {
       res.set(
         'Content-Security-Policy',
         "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; " +
-        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com blob:; " +
-        "style-src 'self' 'unsafe-inline' https:; " +
-        "img-src 'self' data: blob: https:; " +
-        "font-src 'self' data: https:; " +
-        "connect-src 'self' https: data: blob:; " +
-        "worker-src 'self' blob:;"
+        "script-src 'none'; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data:; " +
+        "font-src 'self' data:; " +
+        "connect-src 'none'; " +
+        "frame-src 'none';"
       );
     }
     if (ext === '.svg') {

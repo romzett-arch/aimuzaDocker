@@ -1,12 +1,53 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const WAV_TTL_DAYS = 7;
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
+
+function getTaskId(payload: Record<string, any>): string | null {
+  return payload?.data?.task_id
+    ?? payload?.data?.taskId
+    ?? payload?.task_id
+    ?? payload?.taskId
+    ?? null;
+}
+
+function getWavUrl(payload: Record<string, any>): string | null {
+  return payload?.data?.audio_wav_url
+    ?? payload?.data?.audioWavUrl
+    ?? payload?.data?.response?.audio_wav_url
+    ?? payload?.data?.response?.audioWavUrl
+    ?? null;
+}
+
+async function isUsableAudioUrl(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(url, { method: "HEAD" });
+    if (!response.ok) {
+      console.warn(`[wav-cb] HEAD check failed for ${url}: ${response.status}`);
+      return false;
+    }
+
+    const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+    if (contentType.includes("text/html") || contentType.includes("application/json")) {
+      console.warn(`[wav-cb] Unexpected content-type for ${url}: ${contentType}`);
+      return false;
+    }
+
+    const contentLength = Number(response.headers.get("content-length") || "0");
+    if (contentLength > 0 && contentLength < 1000) {
+      console.warn(`[wav-cb] Suspiciously small file for ${url}: ${contentLength} bytes`);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.warn(`[wav-cb] HEAD check error for ${url}:`, error);
+    return false;
+  }
+}
 
 async function processWavViaFfmpeg(
   rawWavUrl: string,
@@ -14,6 +55,7 @@ async function processWavViaFfmpeg(
   artistName: string,
   ffmpegApiUrl: string,
   ffmpegApiSecret: string,
+  ffmpegPublicUrl?: string,
 ): Promise<string | null> {
   try {
     const baseUrl = ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "");
@@ -45,15 +87,26 @@ async function processWavViaFfmpeg(
 
     const result = await resp.json();
     let outputUrl = result.output_url;
-    console.log(`[wav-cb] ffmpeg-api processed OK: ${outputUrl}, LUFS ${result.original_lufs} → ${result.normalized_lufs}`);
+    console.log(`[wav-cb] ffmpeg-api processed OK: ${outputUrl}`);
 
-    // Rewrite public URL to internal Docker address
     if (outputUrl && outputUrl.includes("/output/")) {
       const filename = outputUrl.split("/output/").pop();
       if (filename) {
-        outputUrl = `${baseUrl}/output/${filename}`;
-        console.log(`[wav-cb] Rewrote to internal URL: ${outputUrl}`);
+        const publicBase = ffmpegPublicUrl || baseUrl;
+        outputUrl = `${publicBase}/output/${filename}`;
+        console.log(`[wav-cb] Public URL: ${outputUrl}`);
       }
+    }
+
+    if (!outputUrl) {
+      console.warn("[wav-cb] ffmpeg returned empty output_url");
+      return null;
+    }
+
+    const isReachable = await isUsableAudioUrl(outputUrl);
+    if (!isReachable) {
+      console.warn(`[wav-cb] ffmpeg output URL is not downloadable: ${outputUrl}`);
+      return null;
     }
 
     return outputUrl;
@@ -63,61 +116,15 @@ async function processWavViaFfmpeg(
   }
 }
 
-async function copyFileToStorage(
-  supabaseAdmin: SupabaseClient,
-  externalUrl: string,
-  bucket: string,
-  filePath: string
-): Promise<string | null> {
-  try {
-    console.log(`[wav-cb] Downloading file from: ${externalUrl}`);
-    const response = await fetch(externalUrl);
-    if (!response.ok) {
-      console.error(`[wav-cb] Download failed: ${response.status} ${response.statusText}`);
-      return null;
-    }
-
-    const blob = await response.blob();
-    const arrayBuffer = await blob.arrayBuffer();
-    const uint8Array = new Uint8Array(arrayBuffer);
-
-    if (uint8Array.length < 1000) {
-      console.error(`[wav-cb] File too small (${uint8Array.length} bytes), likely not audio`);
-      return null;
-    }
-
-    console.log(`[wav-cb] Downloaded ${uint8Array.length} bytes, uploading to ${bucket}/${filePath}`);
-
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from(bucket)
-      .upload(filePath, uint8Array, {
-        contentType: "audio/wav",
-        upsert: true,
-      });
-
-    if (uploadError) {
-      console.error(`[wav-cb] Upload error:`, uploadError);
-      return null;
-    }
-
-    const BASE_URL = Deno.env.get("BASE_URL") || "https://aimuza.ru";
-    const publicUrl = `${BASE_URL}/storage/v1/object/public/${bucket}/${filePath}`;
-
-    console.log(`[wav-cb] File uploaded: ${publicUrl}`);
-    return publicUrl;
-  } catch (err) {
-    console.error(`[wav-cb] Error copying file:`, err);
-    return null;
-  }
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
+  let payload: Record<string, any> | null = null;
+
   try {
-    const payload = await req.json();
+    payload = await req.json();
     console.log("WAV callback received:", JSON.stringify(payload));
 
     const supabase = createClient(
@@ -127,13 +134,13 @@ serve(async (req) => {
 
     const ffmpegApiUrl = Deno.env.get("FFMPEG_API_URL");
     const ffmpegApiSecret = Deno.env.get("FFMPEG_API_SECRET");
+    const ffmpegPublicUrl = Deno.env.get("FFMPEG_PUBLIC_URL");
 
-    const { code, data, msg } = payload;
+    const { code, msg } = payload;
+    const taskId = getTaskId(payload);
+    const originalWavUrl = getWavUrl(payload);
 
-    if (code === 200 && data?.audio_wav_url) {
-      const originalWavUrl = data.audio_wav_url;
-      const taskId = data.task_id;
-
+    if (Number(code) === 200 && originalWavUrl) {
       console.log(`WAV conversion success! taskId: ${taskId}, wavUrl: ${originalWavUrl}`);
 
       const { data: addons } = await supabase
@@ -148,8 +155,8 @@ serve(async (req) => {
         for (const addon of addons) {
           try {
             if (addon.result_url) {
-              const resultData = typeof addon.result_url === 'string' 
-                ? JSON.parse(addon.result_url) 
+              const resultData = typeof addon.result_url === "string"
+                ? JSON.parse(addon.result_url)
                 : addon.result_url;
               if (resultData.wav_task_id === taskId) {
                 matchedAddon = addon;
@@ -164,7 +171,7 @@ serve(async (req) => {
 
       if (!matchedAddon && addons && addons.length > 0) {
         matchedAddon = addons[0];
-        console.log("No task_id match, using most recent addon");
+        console.log("No task_id match, using most recent processing addon");
       }
 
       if (matchedAddon) {
@@ -176,84 +183,72 @@ serve(async (req) => {
           .eq("id", matchedAddon.track_id)
           .maybeSingle();
 
-        const { data: profile } = track ? await supabase
-          .from("profiles")
-          .select("username")
-          .eq("user_id", track.user_id)
-          .single() : { data: null };
+        const { data: profile } = track
+          ? await supabase.from("profiles").select("username").eq("user_id", track.user_id).single()
+          : { data: null };
 
-        // Process through ffmpeg-api for normalization + distribution format
-        let wavUrlToStore = originalWavUrl;
-        if (ffmpegApiUrl && ffmpegApiSecret) {
-          const processedUrl = await processWavViaFfmpeg(
-            originalWavUrl,
-            track?.title || "",
-            profile?.username || "AIMuza Artist",
-            ffmpegApiUrl,
-            ffmpegApiSecret,
-          );
-          if (processedUrl) {
-            wavUrlToStore = processedUrl;
-          } else {
-            console.warn("[wav-cb] ffmpeg processing failed, using raw WAV");
-          }
-        } else {
-          console.log("[wav-cb] FFMPEG_API not configured, using raw WAV");
+        if (!ffmpegApiUrl || !ffmpegApiSecret) {
+          throw new Error("FFmpeg WAV processing unavailable");
         }
 
-        let finalWavUrl = wavUrlToStore;
-        const wavFileName = `${matchedAddon.track_id}.wav`;
-        const storedUrl = await copyFileToStorage(
-          supabase,
-          wavUrlToStore,
-          "tracks",
-          `wav/${wavFileName}`
+        const finalWavUrl = await processWavViaFfmpeg(
+          originalWavUrl,
+          track?.title || "",
+          profile?.username || "AIMuza Artist",
+          ffmpegApiUrl,
+          ffmpegApiSecret,
+          ffmpegPublicUrl ?? undefined,
         );
-        if (storedUrl) {
-          finalWavUrl = storedUrl;
-          console.log(`WAV copied to storage: ${finalWavUrl}`);
-        } else {
-          console.warn(`Failed to copy WAV to storage, using source URL`);
+
+        if (!finalWavUrl) {
+          throw new Error("FFmpeg WAV processing failed");
         }
 
-        const expiresAt = new Date(Date.now() + WAV_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
-        
         await supabase
           .from("track_addons")
-          .update({ 
+          .update({
             status: "completed",
             result_url: finalWavUrl,
             updated_at: new Date().toISOString(),
           })
           .eq("id", matchedAddon.id);
 
-        await supabase
-          .from("tracks")
-          .update({ 
-            wav_url: finalWavUrl,
-            wav_expires_at: expiresAt,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", matchedAddon.track_id);
-
-        if (track) {
-          await supabase.from("notifications").insert({
-            user_id: track.user_id,
-            type: "addon_completed",
-            title: "WAV готов к скачиванию",
-            message: `Трек "${track.title}" конвертирован в WAV (16-bit/44.1kHz). Доступен 7 дней.`,
-            target_type: "track",
-            target_id: matchedAddon.track_id,
-            metadata: { wav_url: finalWavUrl, expires_at: expiresAt },
-          });
-        }
-
-        console.log("WAV conversion completed and saved:", finalWavUrl, "expires:", expiresAt);
+        console.log("WAV conversion completed:", finalWavUrl);
       } else {
         console.error("No matching addon found for task:", taskId);
       }
     } else {
       console.error("WAV conversion failed or unexpected format:", payload);
+      if (taskId) {
+        const { data: addons } = await supabase
+          .from("track_addons")
+          .select("id, track_id, result_url")
+          .eq("status", "processing");
+        for (const addon of addons || []) {
+          try {
+            const resultData = typeof addon.result_url === "string"
+              ? JSON.parse(addon.result_url)
+              : addon.result_url;
+            if (resultData?.wav_task_id === taskId) {
+              const { data: track } = await supabase.from("tracks").select("user_id").eq("id", addon.track_id).single();
+              const { data: svc } = await supabase.from("addon_services").select("price_rub").eq("name", "convert_wav").single();
+              if (track && svc?.price_rub) {
+                await supabase.rpc("refund_generation_failed", {
+                  p_user_id: track.user_id,
+                  p_amount: svc.price_rub,
+                  p_track_id: addon.track_id,
+                  p_description: `Возврат за ошибку конвертации в WAV: ${msg || "Ошибка Suno API"}`,
+                });
+                console.log(`Refunded ${svc.price_rub} ₽ for failed WAV callback`);
+              }
+              await supabase.from("track_addons").update({ status: "failed" }).eq("id", addon.id);
+              break;
+            }
+          } catch (e) {
+            console.error("Refund/update failed for addon:", addon.id, e);
+          }
+        }
+      }
     }
 
     return new Response(JSON.stringify({ success: true }), {
@@ -262,6 +257,50 @@ serve(async (req) => {
   } catch (error: unknown) {
     console.error("Error in wav-callback:", error);
     const message = error instanceof Error ? error.message : "Unknown error";
+
+    try {
+      const taskId = payload ? getTaskId(payload) : null;
+      if (taskId) {
+        const { data: addons } = await createClient(
+          Deno.env.get("SUPABASE_URL")!,
+          Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+        )
+          .from("track_addons")
+          .select("id, track_id, result_url")
+          .eq("status", "processing");
+
+        for (const addon of addons || []) {
+          try {
+            const resultData = typeof addon.result_url === "string"
+              ? JSON.parse(addon.result_url)
+              : addon.result_url;
+            if (resultData?.wav_task_id === taskId) {
+              const supabase = createClient(
+                Deno.env.get("SUPABASE_URL")!,
+                Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+              );
+              const { data: track } = await supabase.from("tracks").select("user_id").eq("id", addon.track_id).single();
+              const { data: svc } = await supabase.from("addon_services").select("price_rub").eq("name", "convert_wav").single();
+              if (track && svc?.price_rub) {
+                await supabase.rpc("refund_generation_failed", {
+                  p_user_id: track.user_id,
+                  p_amount: svc.price_rub,
+                  p_track_id: addon.track_id,
+                  p_description: `Возврат за ошибку конвертации в WAV: ${message}`,
+                });
+              }
+              await supabase.from("track_addons").update({ status: "failed" }).eq("id", addon.id);
+              break;
+            }
+          } catch (innerError) {
+            console.error("wav-callback failure recovery error:", innerError);
+          }
+        }
+      }
+    } catch (recoveryError) {
+      console.error("wav-callback recovery failed:", recoveryError);
+    }
+
     return new Response(
       JSON.stringify({ error: message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

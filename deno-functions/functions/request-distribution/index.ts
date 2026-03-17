@@ -58,6 +58,11 @@ serve(async (req) => {
       throw new Error('Not authorized to request distribution for this track');
     }
 
+    // Check moderation status for uploaded tracks
+    if (track.source_type === 'uploaded' && track.moderation_status !== 'approved') {
+      throw new Error('Загруженный трек должен пройти модерацию перед дистрибуцией');
+    }
+
     // Check if already in distribution process
     if (track.distribution_status !== 'none') {
       throw new Error(`Track is already in distribution process: ${track.distribution_status}`);

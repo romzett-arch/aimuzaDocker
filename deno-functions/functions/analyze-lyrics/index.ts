@@ -5,6 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const AGENT_ACCESS_ID = 'e046a9e4-43f6-47bc-a39f-8a9de8778d02';
 
 // System prompt for generating style prompts from lyrics
 const SYSTEM_PROMPT = `Ты эксперт по созданию музыки с помощью Suno AI. Твоя задача - анализировать текст песни и создавать промт для генерации музыки.
@@ -75,15 +76,13 @@ serve(async (req) => {
       userMessage = `ТРЕБОВАНИЯ ПОЛЬЗОВАТЕЛЯ (учти их в первую очередь): ${userPrompt}\n\n${userMessage}`;
     }
 
-    const agentId = Deno.env.get('TIMEWEB_AGENT_ID') || '';
-    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
+    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${AGENT_ACCESS_ID}/v1/chat/completions`;
 
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${TIMEWEB_TOKEN}`,
         'Content-Type': 'application/json',
-        'x-proxy-source': 'lovable-app',
       },
       body: JSON.stringify({
         model: 'deepseek-v3',

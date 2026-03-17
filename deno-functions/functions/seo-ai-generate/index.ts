@@ -192,7 +192,7 @@ function parseJsonFromResponse(text: string): SeoGenerateResponse | null {
   return null;
 }
 
-const handler = async (req: Request) => {
+serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -202,6 +202,7 @@ const handler = async (req: Request) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
+    // Admin-only: verify JWT and admin role
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
@@ -209,7 +210,6 @@ const handler = async (req: Request) => {
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-
     const token = authHeader.replace("Bearer ", "").trim();
     if (!token) {
       return new Response(
@@ -224,7 +224,6 @@ const handler = async (req: Request) => {
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-
     const { data: hasAdmin } = await supabase.rpc("has_role", { _user_id: user.id, _role: "admin" });
     const { data: hasSuperAdmin } = await supabase.rpc("has_role", { _user_id: user.id, _role: "super_admin" });
     if (!hasAdmin && !hasSuperAdmin) {
@@ -244,6 +243,7 @@ const handler = async (req: Request) => {
       );
     }
 
+    // 1. Читаем доступные ключи из api_keys и env
     const { data: keyRows, error: keyError } = await supabase
       .from("api_keys")
       .select("service_name, key_value")
@@ -263,6 +263,7 @@ const handler = async (req: Request) => {
     const deepseekApiKey = Deno.env.get("DEEPSEEK_API_KEY")?.trim() || keyMap.DEEPSEEK_API_KEY?.trim() || "";
     const timewebToken = Deno.env.get("TIMEWEB_AGENT_TOKEN")?.trim() || keyMap.TIMEWEB_AGENT_TOKEN?.trim() || "";
 
+    // 2. Читаем настройки из seo_ai_config
     const { data: configRows } = await supabase
       .from("seo_ai_config")
       .select("config_key, config_value")
@@ -300,7 +301,9 @@ const handler = async (req: Request) => {
 
     if (!provider) {
       return new Response(
-        JSON.stringify({ error: "AI не настроен. Укажите TIMEWEB_AGENT_TOKEN или DEEPSEEK_API_KEY." }),
+        JSON.stringify({
+          error: "AI не настроен. Укажите TIMEWEB_AGENT_TOKEN или DEEPSEEK_API_KEY.",
+        }),
         { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -312,6 +315,8 @@ const handler = async (req: Request) => {
     const apiKey = provider === "timeweb" ? timewebToken : deepseekApiKey;
 
     const fullPrompt = buildPrompt(entity_type, context, promptTemplate, promptStyle);
+
+    // 3. Вызов AI API (Timeweb Agent или DeepSeek OpenAI-compatible)
     const chatUrl = `${baseUrl}/chat/completions`;
     const buildChatBody = (selectedModel: string, systemContent: string, temperature: number, maxTokens: number) =>
       JSON.stringify({
@@ -395,12 +400,14 @@ const handler = async (req: Request) => {
       );
     }
 
+    // 4. Сохранить в seo_metadata если save_to_db
     if (save_to_db && (entity_id || page_key)) {
-      const token = authHeader.replace("Bearer ", "");
+      const authHeader = req.headers.get("Authorization");
+      const token = authHeader?.replace("Bearer ", "");
       let updatedBy: string | null = null;
       if (token) {
-        const { data: { user: currentUser } } = await supabase.auth.getUser(token);
-        updatedBy = currentUser?.id ?? null;
+        const { data: { user } } = await supabase.auth.getUser(token);
+        updatedBy = user?.id ?? null;
       }
 
       const row = {
@@ -455,10 +462,4 @@ const handler = async (req: Request) => {
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
-};
-
-if (import.meta.main) {
-  serve(handler);
-}
-
-export default handler;
+});

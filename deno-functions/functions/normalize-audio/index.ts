@@ -17,6 +17,39 @@ interface NormalizeResult {
   metadata_branded: boolean;
 }
 
+function normalizeTrackUrl(rawUrl: string | null | undefined, requestUrl: string): string | null {
+  if (!rawUrl) return null;
+
+  try {
+    const baseUrl = Deno.env.get("BASE_URL") || new URL(requestUrl).origin;
+    const normalized = new URL(rawUrl, baseUrl);
+    if (!["http:", "https:"].includes(normalized.protocol)) {
+      return null;
+    }
+    normalized.hash = "";
+    return normalized.toString();
+  } catch {
+    return null;
+  }
+}
+
+function resolveTrustedTrackUrl(
+  candidateUrl: string,
+  allowedUrls: Array<string | null | undefined>,
+  requestUrl: string,
+): string | null {
+  const normalizedCandidate = normalizeTrackUrl(candidateUrl, requestUrl);
+  if (!normalizedCandidate) return null;
+
+  const trustedUrls = new Set(
+    allowedUrls
+      .map((value) => normalizeTrackUrl(value, requestUrl))
+      .filter((value): value is string => Boolean(value)),
+  );
+
+  return trustedUrls.has(normalizedCandidate) ? normalizedCandidate : null;
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -58,16 +91,34 @@ serve(async (req: Request) => {
     // Get track and user info for branding
     const { data: track } = await supabase
       .from("tracks")
-      .select("title, user_id, profiles!tracks_user_id_fkey(username)")
+      .select("title, user_id, audio_url, master_audio_url, normalized_audio_url, profiles!tracks_user_id_fkey(username)")
       .eq("id", track_id)
       .single();
 
+    if (!track) {
+      throw new Error("Track not found");
+    }
+
+    if (track.user_id !== user.id) {
+      throw new Error("Forbidden");
+    }
+
+    const trustedAudioUrl = resolveTrustedTrackUrl(
+      audio_url,
+      [track.audio_url, track.master_audio_url, track.normalized_audio_url],
+      req.url,
+    );
+
+    if (!trustedAudioUrl) {
+      throw new Error("audio_url must match the track file URL");
+    }
+
     const username = (track as any)?.profiles?.username || "Unknown";
 
-    console.log(`Normalizing audio for track ${track_id}: ${audio_url}`);
+    console.log(`Normalizing audio for track ${track_id}: ${trustedAudioUrl}`);
 
     const normalizePayload = {
-      audio_url,
+      audio_url: trustedAudioUrl,
       target_lufs,
       strip_metadata,
       brand_metadata,
@@ -143,17 +194,7 @@ serve(async (req: Request) => {
       result = vpsResult;
       console.log("Using FFmpeg API normalization result");
     } else {
-      console.log("FFmpeg API unavailable, using simulated normalization");
-      result = {
-        success: true,
-        normalized_url: audio_url,
-        original_lufs: -18.5,
-        normalized_lufs: target_lufs,
-        peak_before: -0.8,
-        peak_after: -1.0,
-        metadata_stripped: strip_metadata,
-        metadata_branded: brand_metadata,
-      };
+      throw new Error("FFmpeg API unavailable");
     }
 
     // Update track_health_reports with normalization results
@@ -197,9 +238,10 @@ serve(async (req: Request) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("Normalize error:", errorMessage);
+    const status = errorMessage === "FFmpeg API unavailable" ? 503 : 400;
     return new Response(
       JSON.stringify({ success: false, error: errorMessage }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });

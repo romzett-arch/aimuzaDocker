@@ -1,3 +1,5 @@
+const TIMEWEB_AGENT_ACCESS_ID = 'e046a9e4-43f6-47bc-a39f-8a9de8778d02';
+
 export async function callDeepSeek(systemPrompt: string, userMessage: string): Promise<string | null> {
   const TIMEWEB_TOKEN = Deno.env.get("TIMEWEB_AGENT_TOKEN");
   if (!TIMEWEB_TOKEN) {
@@ -5,13 +7,7 @@ export async function callDeepSeek(systemPrompt: string, userMessage: string): P
     return null;
   }
 
-  const agentId = Deno.env.get("TIMEWEB_AGENT_ID");
-  if (!agentId) {
-    console.warn("[forum-automod] TIMEWEB_AGENT_ID not configured");
-    return null;
-  }
-
-  const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
+  const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
 
   const response = await fetch(apiUrl, {
     method: "POST",

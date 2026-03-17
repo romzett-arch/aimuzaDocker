@@ -1,11 +1,39 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+async function isUsableAudioUrl(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(url, { method: "HEAD" });
+    if (!response.ok) {
+      console.warn(`[convert-wav] HEAD check failed for ${url}: ${response.status}`);
+      return false;
+    }
+
+    const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+    if (contentType.includes("text/html") || contentType.includes("application/json")) {
+      console.warn(`[convert-wav] Unexpected content-type for ${url}: ${contentType}`);
+      return false;
+    }
+
+    const contentLength = Number(response.headers.get("content-length") || "0");
+    if (contentLength > 0 && contentLength < 1000) {
+      console.warn(`[convert-wav] Suspiciously small file for ${url}: ${contentLength} bytes`);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.warn(`[convert-wav] HEAD check error for ${url}:`, error);
+    return false;
+  }
+}
+
 export async function processWavViaFfmpeg(
   rawWavUrl: string,
   trackTitle: string,
   artistName: string,
   ffmpegApiUrl: string,
   ffmpegApiSecret: string,
+  ffmpegPublicUrl?: string,
 ): Promise<string | null> {
   try {
     const baseUrl = ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "");
@@ -42,9 +70,21 @@ export async function processWavViaFfmpeg(
     if (outputUrl && outputUrl.includes("/output/")) {
       const filename = outputUrl.split("/output/").pop();
       if (filename) {
-        outputUrl = `${baseUrl}/output/${filename}`;
-        console.log(`[convert-wav] Rewrote to internal URL: ${outputUrl}`);
+        const publicBase = ffmpegPublicUrl || baseUrl;
+        outputUrl = `${publicBase}/output/${filename}`;
+        console.log(`[convert-wav] Public URL: ${outputUrl}`);
       }
+    }
+
+    if (!outputUrl) {
+      console.warn("[convert-wav] ffmpeg returned empty output_url");
+      return null;
+    }
+
+    const isReachable = await isUsableAudioUrl(outputUrl);
+    if (!isReachable) {
+      console.warn(`[convert-wav] ffmpeg output URL is not downloadable: ${outputUrl}`);
+      return null;
     }
 
     return outputUrl;

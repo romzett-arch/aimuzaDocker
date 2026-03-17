@@ -1,24 +1,14 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { SITE_URL, logBotVisit } from "../../shared/seo.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const blockedAiBots = [
-  "GPTBot",
-  "ChatGPT-User",
-  "CCBot",
-  "anthropic-ai",
-  "Claude-Web",
-  "Google-Extended",
-  "PerplexityBot",
-  "Bytespider",
-];
+const SITE_URL = "https://aimuza.ru";
 
-const handler = async (req: Request) => {
+serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -45,36 +35,15 @@ const handler = async (req: Request) => {
     txt += `Allow: /artist/\n`;
     txt += `Allow: /contests\n`;
     txt += `Allow: /forum\n`;
-    txt += `Allow: /forum/\n`;
     txt += `Allow: /voting\n`;
-    txt += `Allow: /users\n`;
-    txt += `Allow: /playlists\n`;
-    txt += `Allow: /radio\n`;
-    txt += `Allow: /pricing\n`;
-    txt += `Allow: /terms\n`;
-    txt += `Allow: /offer\n`;
-    txt += `Allow: /privacy\n`;
-    txt += `Allow: /requisites\n`;
-    txt += `Allow: /distribution-requirements\n`;
-    txt += `Allow: /audit-policy\n`;
     txt += `Disallow: /admin\n`;
     txt += `Disallow: /admin/\n`;
-    txt += `Disallow: /gallery\n`;
-    txt += `Disallow: /gallery/\n`;
     txt += `Disallow: /messages\n`;
     txt += `Disallow: /my-tracks\n`;
-    txt += `Disallow: /support\n`;
-    txt += `Disallow: /support/\n`;
     txt += `Disallow: /verify\n`;
     txt += `Disallow: /auth\n\n`;
-    txt += `Disallow: /*?*\n\n`;
-    txt += `Host: aimuza.ru\n\n`;
+    txt += `Host: ${SITE_URL}\n\n`;
     txt += `Sitemap: ${SITE_URL}/sitemap.xml\n`;
-
-    for (const bot of blockedAiBots) {
-      txt += `\nUser-agent: ${bot}\n`;
-      txt += `Disallow: /\n`;
-    }
 
     if (rules?.length) {
       const byAgent = (rules as { user_agent: string; rule_type: string; path: string; crawl_delay?: number }[]).reduce(
@@ -94,23 +63,14 @@ const handler = async (req: Request) => {
       }
     }
 
-    const response = new Response(txt, {
+    return new Response(txt, {
       headers: { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" },
     });
-    await logBotVisit(supabase, req, "robots", response.status, "/robots.txt");
-    return response;
   } catch (error) {
     console.error("[robots-txt] Error:", error);
-    const fallback = new Response(`User-agent: *\nAllow: /\nSitemap: ${SITE_URL}/sitemap.xml\n`, {
+    return new Response("User-agent: *\nAllow: /", {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "text/plain" },
     });
-    return fallback;
   }
-};
-
-if (import.meta.main) {
-  serve(handler);
-}
-
-export default handler;
+});

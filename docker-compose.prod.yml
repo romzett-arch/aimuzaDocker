@@ -67,6 +67,8 @@ services:
         condition: service_healthy
       ffmpeg-api:
         condition: service_healthy
+      gotenberg:
+        condition: service_healthy
     env_file: .env
     environment:
       DB_HOST: db
@@ -80,12 +82,36 @@ services:
       FFMPEG_PUBLIC_URL: ${BASE_URL:-https://aimuza.ru}/api/ffmpeg
       FFMPEG_API_SECRET: ${FFMPEG_API_KEY:-}
       BASE_URL: ${BASE_URL:-https://aimuza.ru}
+      GOTENBERG_URL: http://gotenberg:3000
       ROBOKASSA_MERCHANT_LOGIN: ${ROBOKASSA_MERCHANT_LOGIN:-}
       ROBOKASSA_PASSWORD1: ${ROBOKASSA_PASSWORD1:-}
       ROBOKASSA_PASSWORD2: ${ROBOKASSA_PASSWORD2:-}
       ROBOKASSA_TEST_MODE: ${ROBOKASSA_TEST_MODE:-false}
     ports:
       - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aimuza-net
+
+  # ── PDF Service (Gotenberg) ─────────────────
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    container_name: aimuza-gotenberg
+    restart: unless-stopped
+    command:
+      - gotenberg
+      - --chromium-disable-javascript=true
+    ports:
+      - "127.0.0.1:3010:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     networks:
       - aimuza-net
 
@@ -188,6 +214,11 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
     ports:
       - "127.0.0.1:8080:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     networks:
       - aimuza-net
 

@@ -123,32 +123,20 @@ export async function handleFailedTracksWithRefunds(
       .from("generation_logs")
       .select("cost_rub")
       .eq("track_id", track.id)
-      .single();
+      .eq("status", "pending")
+      .maybeSingle();
 
     if (genLog && genLog.cost_rub > 0) {
-      const { data: profile } = await supabaseAdmin
-        .from("profiles")
-        .select("balance")
-        .eq("user_id", track.user_id)
-        .single();
+      const { error: refundError } = await supabaseAdmin.rpc("refund_generation_failed", {
+        p_user_id: track.user_id,
+        p_amount: genLog.cost_rub,
+        p_track_id: track.id,
+        p_description: `Возврат за генерацию: ${failReason}`,
+      });
 
-      if (profile) {
-        const newBalance = (profile.balance || 0) + genLog.cost_rub;
-        await supabaseAdmin
-          .from("profiles")
-          .update({ balance: newBalance })
-          .eq("user_id", track.user_id);
-
-        await supabaseAdmin.from("balance_transactions").insert({
-          user_id: track.user_id,
-          amount: genLog.cost_rub,
-          balance_after: newBalance,
-          type: "refund",
-          description: `Возврат за генерацию: ${failReason}`,
-          reference_id: track.id,
-          reference_type: "track",
-        });
-
+      if (refundError) {
+        console.error(`Refund failed for track ${track.id}:`, refundError);
+      } else {
         console.log(`Refunded ${genLog.cost_rub} ₽ to user ${track.user_id}`);
 
         await supabaseAdmin.from("notifications").insert({
@@ -162,6 +150,10 @@ export async function handleFailedTracksWithRefunds(
       }
     }
 
-    await supabaseAdmin.from("generation_logs").update({ status: "failed" }).eq("track_id", track.id);
+    await supabaseAdmin
+      .from("generation_logs")
+      .update({ status: "failed" })
+      .eq("track_id", track.id)
+      .eq("status", "pending");
   }
 }

@@ -24,6 +24,39 @@ interface AnalysisResult {
   recommendations: string[];
 }
 
+function normalizeTrackUrl(rawUrl: string | null | undefined, requestUrl: string): string | null {
+  if (!rawUrl) return null;
+
+  try {
+    const baseUrl = Deno.env.get("BASE_URL") || new URL(requestUrl).origin;
+    const normalized = new URL(rawUrl, baseUrl);
+    if (!["http:", "https:"].includes(normalized.protocol)) {
+      return null;
+    }
+    normalized.hash = "";
+    return normalized.toString();
+  } catch {
+    return null;
+  }
+}
+
+function resolveTrustedTrackUrl(
+  candidateUrl: string,
+  allowedUrls: Array<string | null | undefined>,
+  requestUrl: string,
+): string | null {
+  const normalizedCandidate = normalizeTrackUrl(candidateUrl, requestUrl);
+  if (!normalizedCandidate) return null;
+
+  const trustedUrls = new Set(
+    allowedUrls
+      .map((value) => normalizeTrackUrl(value, requestUrl))
+      .filter((value): value is string => Boolean(value)),
+  );
+
+  return trustedUrls.has(normalizedCandidate) ? normalizedCandidate : null;
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -56,7 +89,39 @@ serve(async (req: Request) => {
       throw new Error("audio_url is required");
     }
 
-    console.log(`Analyzing audio: ${audio_url}`);
+    let trustedAudioUrl = normalizeTrackUrl(audio_url, req.url);
+
+    if (track_id) {
+      const { data: track, error: trackError } = await supabase
+        .from("tracks")
+        .select("id, user_id, audio_url, master_audio_url, normalized_audio_url")
+        .eq("id", track_id)
+        .maybeSingle();
+
+      if (trackError || !track) {
+        throw new Error("Track not found");
+      }
+
+      if (track.user_id !== user.id) {
+        throw new Error("Forbidden");
+      }
+
+      trustedAudioUrl = resolveTrustedTrackUrl(
+        audio_url,
+        [track.audio_url, track.master_audio_url, track.normalized_audio_url],
+        req.url,
+      );
+
+      if (!trustedAudioUrl) {
+        throw new Error("audio_url must match the track file URL");
+      }
+    }
+
+    if (!trustedAudioUrl) {
+      throw new Error("Invalid audio_url");
+    }
+
+    console.log(`Analyzing audio: ${trustedAudioUrl}`);
 
     let analysisResult: AnalysisResult;
 
@@ -77,7 +142,7 @@ serve(async (req: Request) => {
             "Content-Type": "application/json",
             "x-api-key": ffmpegApiSecret,
           },
-          body: JSON.stringify({ audio_url }),
+          body: JSON.stringify({ audio_url: trustedAudioUrl }),
           signal: controller.signal,
         });
 
@@ -101,8 +166,7 @@ serve(async (req: Request) => {
       analysisResult = vpsResult;
       console.log("Using FFmpeg API analysis result");
     } else {
-      console.log("FFmpeg API unavailable, using simulated analysis");
-      analysisResult = simulateAnalysis(audio_url);
+      throw new Error("FFmpeg API unavailable");
     }
 
     // Save analysis to track_health_reports table if track_id provided
@@ -161,9 +225,10 @@ serve(async (req: Request) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("Analysis error:", errorMessage);
+    const status = errorMessage === "FFmpeg API unavailable" ? 503 : 400;
     return new Response(
       JSON.stringify({ success: false, error: errorMessage }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
@@ -216,45 +281,3 @@ function parseVpsResult(vpsResult: any): AnalysisResult {
   };
 }
 
-function simulateAnalysis(audioUrl: string): AnalysisResult {
-  const urlLower = audioUrl.toLowerCase();
-  const isWav = urlLower.includes(".wav");
-  const isFlac = urlLower.includes(".flac");
-  const isMp3 = urlLower.includes(".mp3");
-
-  const format = isWav ? "wav" : isFlac ? "flac" : "mp3";
-  const bitDepth = isWav ? 24 : isFlac ? 24 : 16;
-  const sampleRate = 44100;
-
-  const originalLufs = -14 + (Math.random() * 8 - 4);
-  const upscaleDetected = isMp3 && Math.random() > 0.7;
-
-  let qualityScore = isWav || isFlac ? 9 : 7;
-  if (upscaleDetected) qualityScore -= 2;
-
-  const recommendations: string[] = [];
-  if (isMp3) {
-    recommendations.push("MP3 формат. Для дистрибуции рекомендуется WAV 24-bit.");
-  }
-  if (Math.abs(originalLufs - (-14)) > 1) {
-    recommendations.push("Громкость будет нормализована до -14 LUFS.");
-  }
-
-  return {
-    spectrum_ok: !upscaleDetected,
-    high_freq_cutoff: upscaleDetected ? 15500 : 20000,
-    upscale_detected: upscaleDetected,
-    quality_score: qualityScore,
-    original_lufs: Math.round(originalLufs * 10) / 10,
-    peak_db: -0.5 + Math.random() * -2,
-    dynamic_range: 6 + Math.random() * 6,
-    needs_normalization: Math.abs(originalLufs - (-14)) > 1,
-    sample_rate: sampleRate,
-    bit_depth: bitDepth,
-    channels: 2,
-    duration: 180 + Math.random() * 120,
-    format,
-    master_quality: bitDepth >= 24 && (isWav || isFlac),
-    recommendations,
-  };
-}

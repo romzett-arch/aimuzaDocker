@@ -18,12 +18,16 @@ function normalizeFetchUrl(sourceUrl: string): string {
   return parsed.toString();
 }
 
+export async function generateHashFromBytes(data: BufferSource): Promise<string> {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export async function generateHash(data: string): Promise<string> {
   const encoder = new TextEncoder();
-  const dataBuffer = encoder.encode(data);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", dataBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+  return generateHashFromBytes(encoder.encode(data));
 }
 
 export async function getAudioHash(audioUrl: string): Promise<string> {
@@ -35,9 +39,7 @@ export async function getAudioHash(audioUrl: string): Promise<string> {
 
     const response = await fetch(fetchUrl);
     const buffer = await response.arrayBuffer();
-    const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+    return generateHashFromBytes(buffer);
   } catch (error) {
     console.error("Error fetching audio for hash:", error);
     throw new Error("Не удалось получить аудиофайл для хеширования");

@@ -14,6 +14,9 @@ export async function executeAction(
         user_id: target_user_id,
         track_id: payload.track_id,
       });
+      if (!result.error && payload.track_id) {
+        await adminClient.rpc('record_track_like_update', { p_track_id: payload.track_id, p_delta: 1 });
+      }
       break;
     }
     case 'unlike_track': {
@@ -21,6 +24,9 @@ export async function executeAction(
         .delete()
         .eq('user_id', target_user_id)
         .eq('track_id', payload.track_id);
+      if (!result.error && payload.track_id) {
+        await adminClient.rpc('record_track_like_update', { p_track_id: payload.track_id, p_delta: -1 });
+      }
       break;
     }
     case 'delete_track': {

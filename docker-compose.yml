@@ -67,6 +67,8 @@ services:
         condition: service_healthy
       ffmpeg-api:
         condition: service_healthy
+      gotenberg:
+        condition: service_healthy
     env_file: .env
     environment:
       DB_HOST: db
@@ -74,6 +76,7 @@ services:
       DENO_PORT: 8081
       SUPABASE_URL: http://api:3000
       BASE_URL: ${BASE_URL:-http://localhost}
+      GOTENBERG_URL: http://gotenberg:3000
       SUPABASE_ANON_KEY: ${ANON_KEY:-placeholder}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       VPS_FFMPEG_URL: http://ffmpeg-api:3001
@@ -90,6 +93,29 @@ services:
     command: ["run", "--allow-all", "--unstable", "server.ts"]
     ports:
       - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aimuza-net
+
+  # ── PDF Service (Gotenberg) ─────────────────
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    container_name: aimuza-gotenberg
+    restart: unless-stopped
+    command:
+      - gotenberg
+      - --chromium-disable-javascript=true
+    ports:
+      - "127.0.0.1:3010:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     networks:
       - aimuza-net
 

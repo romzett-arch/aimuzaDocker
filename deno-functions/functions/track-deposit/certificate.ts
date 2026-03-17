@@ -1,3 +1,6 @@
+import QRCode from "npm:qrcode@1.5.4";
+import { generateHashFromBytes } from "./utils.ts";
+
 interface CertificateAuthorData {
   performer_name: string;
   music_author: string;
@@ -9,6 +12,22 @@ interface TrackForCertificate {
   [key: string]: unknown;
 }
 
+interface CertificateBlockchainData {
+  blockchainTxId?: string | null;
+  blockchainProofUrl?: string | null;
+  blockchainProofStatus?: string | null;
+  blockchainSubmittedAt?: string | null;
+}
+
+export interface CertificateArtifactsResult {
+  certificateUrl: string;
+  pdfUrl: string;
+  registryUrl: string;
+  certificateHtmlHash: string;
+  certificatePdfHash: string;
+  certificateGeneratedAt: string;
+}
+
 function escapeHtml(value: string | null | undefined): string {
   return (value || "")
     .replaceAll("&", "&amp;")
@@ -18,65 +37,102 @@ function escapeHtml(value: string | null | undefined): string {
     .replaceAll("'", "&#39;");
 }
 
-export async function generatePdfCertificate(
-  supabase: { storage: { from: (bucket: string) => { upload: (path: string, blob: Blob, opts: Record<string, string | boolean>) => Promise<{ error: unknown }> } } },
-  track: TrackForCertificate,
-  hash: string,
-  depositId: string,
-  authorData: CertificateAuthorData
-): Promise<string> {
-  const baseUrl = Deno.env.get("BASE_URL") || "https://aimuza.ru";
-  const safeTitle = (track.title || "Сертификат").replace(/[^a-zA-Zа-яА-ЯёЁ0-9\s]/g, "_").trim() || "Сертификат";
-  const certificateUrl = `${baseUrl}/storage/v1/object/public/certificates/certificate_${depositId}.html`;
-  const registryUrl = `${baseUrl}/registry/${encodeURIComponent(depositId)}`;
-  const pdfFileName = `Авторское_свидетельство_${safeTitle}.pdf`;
+function buildStorageUrl(baseUrl: string, fileName: string): string {
+  return `${baseUrl}/storage/v1/object/public/certificates/${fileName}`;
+}
 
-  const certificateData = {
-    trackTitle: escapeHtml(track.title),
-    performer: escapeHtml(authorData.performer_name || "Не указан"),
-    musicAuthor: escapeHtml(authorData.music_author || ""),
-    lyricsAuthor: escapeHtml(authorData.lyrics_author || ""),
-    fileHash: escapeHtml(hash),
-    depositId: escapeHtml(depositId),
-    platform: "aimuza.ru",
-    label: 'ООО "Музыкальный лейбл НОТА-ФЕЯ"',
-    pdfFileName: escapeHtml(pdfFileName),
-  };
+async function renderPdfWithGotenberg(htmlContent: string): Promise<Uint8Array> {
+  const gotenbergUrl = Deno.env.get("GOTENBERG_URL") || "http://gotenberg:3000";
+  const formData = new FormData();
+  formData.append(
+    "files",
+    new Blob([new TextEncoder().encode(htmlContent)], { type: "text/html;charset=utf-8" }),
+    "index.html",
+  );
+  formData.append("preferCssPageSize", "true");
+  formData.append("printBackground", "true");
 
-  const formattedDate = new Date().toLocaleString("ru-RU", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
+  const response = await fetch(`${gotenbergUrl}/forms/chromium/convert/html`, {
+    method: "POST",
+    body: formData,
   });
 
-  const htmlContent = `<!DOCTYPE html>
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    console.error("Gotenberg error:", response.status, errorText);
+    throw new Error("Не удалось сгенерировать PDF сертификата");
+  }
+
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function buildQrSvg(registryUrl: string): Promise<string> {
+  return QRCode.toString(registryUrl, {
+    type: "svg",
+    margin: 0,
+    width: 68,
+    color: {
+      dark: "#1a1a1a",
+      light: "#ffffff",
+    },
+  });
+}
+
+function buildCertificateHtml(params: {
+  authorData: CertificateAuthorData;
+  blockchain: CertificateBlockchainData;
+  depositId: string;
+  fileHash: string;
+  formattedDate: string;
+  pdfUrl: string;
+  proofUrl: string | null;
+  qrSvg: string;
+  registryUrl: string;
+  title: string;
+}): string {
+  const certificateData = {
+    trackTitle: escapeHtml(params.title),
+    performer: escapeHtml(params.authorData.performer_name || "Не указан"),
+    musicAuthor: escapeHtml(params.authorData.music_author || "Не указан"),
+    lyricsAuthor: escapeHtml(params.authorData.lyrics_author || "Не указан"),
+    fileHash: escapeHtml(params.fileHash),
+    depositId: escapeHtml(params.depositId),
+    registryUrl: escapeHtml(params.registryUrl),
+    pdfUrl: escapeHtml(params.pdfUrl),
+    proofUrl: escapeHtml(params.proofUrl),
+    formattedDate: escapeHtml(params.formattedDate),
+    platform: "aimuza.ru",
+    label: 'ООО "Музыкальный лейбл НОТА-ФЕЯ"',
+  };
+
+  return `<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Сертификат депонирования - ${certificateData.trackTitle}</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   <style>
+    @page { size: A4; margin: 10mm; }
     @media print {
       body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       .no-print { display: none !important; }
-      @page { size: A4; margin: 15mm; }
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: 'Times New Roman', 'Georgia', serif;
-      padding: 40px;
+      font-family: "Times New Roman", Georgia, serif;
+      padding: 24px;
       max-width: 900px;
       margin: 0 auto;
       background: #fff;
       color: #1a1a1a;
-      line-height: 1.5;
+      line-height: 1.45;
+    }
+
+    a {
+      color: #2c3e50;
+      text-decoration: underline;
     }
 
     .actions {
@@ -84,33 +140,34 @@ export async function generatePdfCertificate(
       flex-wrap: wrap;
       justify-content: center;
       gap: 12px;
-      margin: 0 auto 20px;
+      margin: 0 auto 14px;
     }
 
-    .action-btn {
+    .action-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       padding: 12px 22px;
       background: #2c3e50;
       color: #fff;
-      border: none;
       border-radius: 6px;
       font-size: 15px;
-      cursor: pointer;
-      font-family: inherit;
+      text-decoration: none;
     }
 
-    .action-btn.secondary {
+    .action-link.secondary {
       background: #465b70;
     }
 
     .certificate {
       border: 3px double #2c3e50;
-      padding: 40px;
+      padding: 30px;
       background: linear-gradient(135deg, #fefefe 0%, #f8f9fa 100%);
       position: relative;
     }
 
     .certificate::before {
-      content: '';
+      content: "";
       position: absolute;
       top: 10px;
       left: 10px;
@@ -123,8 +180,8 @@ export async function generatePdfCertificate(
     .header {
       text-align: center;
       border-bottom: 2px solid #2c3e50;
-      padding-bottom: 25px;
-      margin-bottom: 30px;
+      padding-bottom: 22px;
+      margin-bottom: 24px;
     }
 
     .qr-corner {
@@ -142,8 +199,14 @@ export async function generatePdfCertificate(
       z-index: 1;
     }
 
+    .qr-corner svg {
+      display: block;
+      width: 68px;
+      height: 68px;
+    }
+
     .logo-section {
-      margin-bottom: 15px;
+      margin-bottom: 12px;
     }
 
     .label-name {
@@ -162,12 +225,12 @@ export async function generatePdfCertificate(
     }
 
     .title {
-      font-size: 32px;
+      font-size: 30px;
       font-weight: bold;
       color: #1a1a1a;
       text-transform: uppercase;
       letter-spacing: 3px;
-      margin-top: 20px;
+      margin-top: 18px;
     }
 
     .subtitle {
@@ -179,52 +242,52 @@ export async function generatePdfCertificate(
 
     .content {
       display: grid;
-      gap: 18px;
+      gap: 14px;
     }
 
     .section {
       display: grid;
-      grid-template-columns: 180px 1fr;
+      grid-template-columns: 160px 1fr;
       align-items: start;
-      gap: 15px;
+      gap: 12px;
     }
 
     .label {
       font-weight: bold;
       color: #2c3e50;
       font-size: 14px;
-      padding-top: 10px;
+      padding-top: 9px;
     }
 
     .value {
-      padding: 12px 15px;
+      padding: 11px 14px;
       background: #fff;
       border: 1px solid #ddd;
       border-radius: 4px;
       font-size: 15px;
-      box-shadow: inset 0 1px 3px rgba(0,0,0,0.05);
-      min-height: 48px;
+      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
+      min-height: 45px;
     }
 
     .hash {
-      font-family: 'Courier New', monospace;
-      font-size: 11px;
+      font-family: "Courier New", monospace;
+      font-size: 10.5px;
       word-break: break-all;
       color: #555;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.3px;
     }
 
     .seal {
       text-align: center;
-      margin: 35px 0 25px;
+      margin: 28px 0 20px;
     }
 
     .seal-text {
       display: inline-block;
-      padding: 20px 35px;
+      padding: 16px 30px;
       border: 4px double #2c3e50;
       border-radius: 50%;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: bold;
       color: #2c3e50;
       text-align: center;
@@ -233,24 +296,24 @@ export async function generatePdfCertificate(
     }
 
     .footer {
-      margin-top: 30px;
-      padding-top: 20px;
+      margin-top: 22px;
+      padding-top: 16px;
       border-top: 2px solid #2c3e50;
-      font-size: 12px;
+      font-size: 11.5px;
       color: #666;
       text-align: center;
-      line-height: 1.8;
+      line-height: 1.6;
     }
 
     .footer p {
-      margin: 5px 0;
+      margin: 4px 0;
     }
 
     .footer .platform {
       font-weight: bold;
       color: #2c3e50;
       font-size: 14px;
-      margin-top: 15px;
+      margin-top: 12px;
     }
 
     @media (max-width: 700px) {
@@ -262,18 +325,23 @@ export async function generatePdfCertificate(
         top: 16px;
         left: 16px;
       }
+      .qr-corner svg {
+        width: 56px;
+        height: 56px;
+      }
       .section { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <div class="actions no-print">
-    <button class="action-btn" onclick="downloadPdf()">Скачать PDF</button>
-    <button class="action-btn secondary" onclick="window.print()">Распечатать</button>
+    <a class="action-link" href="${certificateData.pdfUrl}" target="_blank" rel="noopener noreferrer">Скачать PDF</a>
+    <a class="action-link secondary" href="${certificateData.registryUrl}" target="_blank" rel="noopener noreferrer">Запись реестра</a>
+    ${params.proofUrl ? `<a class="action-link secondary" href="${certificateData.proofUrl}" target="_blank" rel="noopener noreferrer">Proof (.ots)</a>` : ""}
   </div>
 
-  <div class="certificate" id="certificate-root">
-    <div class="qr-corner"><div id="qr-code"></div></div>
+  <div class="certificate">
+    <div class="qr-corner">${params.qrSvg}</div>
     <div class="header">
       <div class="logo-section">
         <div class="label-name">${certificateData.label}</div>
@@ -316,7 +384,7 @@ export async function generatePdfCertificate(
 
       <div class="section">
         <div class="label">Дата регистрации:</div>
-        <div class="value">${formattedDate}</div>
+        <div class="value">${certificateData.formattedDate}</div>
       </div>
     </div>
 
@@ -330,56 +398,94 @@ export async function generatePdfCertificate(
       <p class="platform">${certificateData.label} • ${certificateData.platform}</p>
     </div>
   </div>
-
-  <script>
-    const registryUrl = ${JSON.stringify(registryUrl)};
-    const pdfFileName = ${JSON.stringify(pdfFileName)};
-
-    if (window.QRCode) {
-      new QRCode(document.getElementById("qr-code"), {
-        text: registryUrl,
-        width: 68,
-        height: 68,
-        correctLevel: QRCode.CorrectLevel.M,
-      });
-    }
-
-    async function downloadPdf() {
-      const root = document.getElementById("certificate-root");
-      if (!root || !window.html2pdf) {
-        window.print();
-        return;
-      }
-
-      await window.html2pdf().set({
-        margin: 8,
-        filename: pdfFileName,
-        image: { type: "jpeg", quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
-        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-        pagebreak: { mode: ["avoid-all", "css", "legacy"] },
-      }).from(root).save();
-    }
-  </script>
 </body>
 </html>`;
+}
 
-  const fileName = `certificate_${depositId}.html`;
+export async function generatePdfCertificate(
+  supabase: {
+    storage: {
+      from: (
+        bucket: string,
+      ) => {
+        upload: (
+          path: string,
+          blob: Blob,
+          opts: Record<string, string | boolean>,
+        ) => Promise<{ error: unknown }>;
+      };
+    };
+  },
+  track: TrackForCertificate,
+  hash: string,
+  depositId: string,
+  authorData: CertificateAuthorData,
+  blockchain: CertificateBlockchainData = {},
+): Promise<CertificateArtifactsResult> {
+  const baseUrl = Deno.env.get("BASE_URL") || "https://aimuza.ru";
+  const certificateFileName = `certificate_${depositId}.html`;
+  const pdfFileName = `certificate_${depositId}.pdf`;
+  const certificateUrl = buildStorageUrl(baseUrl, certificateFileName);
+  const pdfUrl = buildStorageUrl(baseUrl, pdfFileName);
+  const registryUrl = `${baseUrl}/registry/${encodeURIComponent(depositId)}`;
+  const generatedAt = new Date().toISOString();
+  const formattedDate = `${new Date(generatedAt).toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  })}`;
+  const qrSvg = await buildQrSvg(registryUrl);
+  const htmlContent = buildCertificateHtml({
+    authorData,
+    blockchain,
+    depositId,
+    fileHash: hash,
+    formattedDate,
+    pdfUrl,
+    proofUrl: blockchain.blockchainProofUrl ?? null,
+    qrSvg,
+    registryUrl,
+    title: track.title || "Сертификат",
+  });
+
   const htmlBytes = new TextEncoder().encode(htmlContent);
-  const blob = new Blob([htmlBytes], { type: "text/html;charset=utf-8" });
+  const pdfBytes = await renderPdfWithGotenberg(htmlContent);
 
-  const { error: uploadError } = await supabase.storage
+  const { error: htmlUploadError } = await supabase.storage
     .from("certificates")
-    .upload(fileName, blob, {
+    .upload(certificateFileName, new Blob([htmlBytes], { type: "text/html;charset=utf-8" }), {
       contentType: "text/html;charset=utf-8",
-      cacheControl: "60",
+      cacheControl: "0",
       upsert: true,
     });
 
-  if (uploadError) {
-    console.error("Error uploading certificate:", uploadError);
-    throw new Error("Не удалось сохранить сертификат");
+  if (htmlUploadError) {
+    console.error("Error uploading HTML certificate:", htmlUploadError);
+    throw new Error("Не удалось сохранить HTML сертификат");
   }
 
-  return certificateUrl;
+  const { error: pdfUploadError } = await supabase.storage
+    .from("certificates")
+    .upload(pdfFileName, new Blob([pdfBytes], { type: "application/pdf" }), {
+      contentType: "application/pdf",
+      cacheControl: "31536000",
+      upsert: true,
+    });
+
+  if (pdfUploadError) {
+    console.error("Error uploading PDF certificate:", pdfUploadError);
+    throw new Error("Не удалось сохранить PDF сертификат");
+  }
+
+  return {
+    certificateUrl,
+    pdfUrl,
+    registryUrl,
+    certificateHtmlHash: await generateHashFromBytes(htmlBytes),
+    certificatePdfHash: await generateHashFromBytes(pdfBytes),
+    certificateGeneratedAt: generatedAt,
+  };
 }

@@ -47,13 +47,25 @@ export async function checkAndDeductBalance(
       return { price, newBalance: previousBalance, previousBalance, error: "Ошибка списания баланса" };
     }
 
+    const modeLabels: Record<string, string> = {
+      create_prompt: "Создание промпта",
+      markup: "Разметка текста",
+      improve: "Улучшение текста",
+      generate: "Генерация текста",
+      ideas: "Идеи для текста",
+      suggest_tags: "Подбор тегов",
+      build_style: "Создание стиля",
+      analyze_style: "Анализ стиля",
+      analyze_prompt: "Анализ промпта",
+      auto_tag_all: "Авто-теги",
+      fix_pronunciation: "Исправление произношения",
+    };
     await supabase.from("balance_transactions").insert({
       user_id: userId,
       amount: -price,
       balance_after: newBalance,
       type: "lyrics_gen",
-      description: `Генерация текста (${mode})`,
-      metadata: { mode },
+      description: modeLabels[mode] ?? "Генерация текста",
     });
   }
 

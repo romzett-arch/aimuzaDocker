@@ -6,13 +6,22 @@ type DepositMethod = "internal" | "pdf" | "blockchain" | "nris" | "irma";
 
 interface ProcessResult {
   certificateUrl?: string;
+  pdfUrl?: string;
+  registryUrl?: string;
+  certificateHtmlHash?: string;
+  certificatePdfHash?: string;
+  certificateGeneratedAt?: string;
   blockchainTxId?: string;
+  blockchainProofPath?: string;
+  blockchainProofUrl?: string;
+  blockchainProofStatus?: "pending";
+  blockchainSubmittedAt?: string;
   externalDepositId?: string;
   externalCertificateUrl?: string;
 }
 
 interface SupabaseClient {
-  storage: { from: (bucket: string) => { upload: (path: string, blob: Blob, opts: Record<string, string>) => Promise<{ error: unknown }> } };
+  storage: { from: (bucket: string) => { upload: (path: string, blob: Blob, opts: Record<string, string | boolean>) => Promise<{ error: unknown }> } };
 }
 
 export async function processDepositByMethod(
@@ -28,22 +37,32 @@ export async function processDepositByMethod(
 
   switch (method) {
     case "internal":
-      result.certificateUrl = await generatePdfCertificate(
+      Object.assign(result, await generatePdfCertificate(
         supabase, track, fileHash, depositId, authorData
-      );
+      ));
       break;
 
     case "pdf":
-      result.certificateUrl = await generatePdfCertificate(
+      Object.assign(result, await generatePdfCertificate(
         supabase, track, fileHash, depositId, authorData
-      );
+      ));
       break;
 
     case "blockchain":
-      result.blockchainTxId = await submitToOpenTimestamps(fileHash);
-      result.certificateUrl = await generatePdfCertificate(
-        supabase, track, fileHash, depositId, authorData
-      );
+      Object.assign(result, await submitToOpenTimestamps(supabase, fileHash, depositId));
+      Object.assign(result, await generatePdfCertificate(
+        supabase,
+        track,
+        fileHash,
+        depositId,
+        authorData,
+        {
+          blockchainProofStatus: result.blockchainProofStatus,
+          blockchainProofUrl: result.blockchainProofUrl,
+          blockchainSubmittedAt: result.blockchainSubmittedAt,
+          blockchainTxId: result.blockchainTxId,
+        },
+      ));
       break;
 
     case "nris": {

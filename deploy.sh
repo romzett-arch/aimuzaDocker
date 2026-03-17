@@ -47,6 +47,61 @@ require_container_env() {
     fi
 }
 
+assert_public_url() {
+    local url="$1"
+    local label="$2"
+
+    if ! curl -fsS "$url" >/dev/null; then
+        echo "❌ ${label} недоступен: $url"
+        exit 1
+    fi
+
+    echo "   OK: ${label}"
+}
+
+assert_content_type() {
+    local url="$1"
+    local expected="$2"
+    local label="$3"
+    local headers
+
+    headers="$(curl -fsSI "$url" | tr -d '\r')"
+    if ! printf '%s\n' "$headers" | grep -iq "^Content-Type: ${expected}"; then
+        echo "❌ ${label}: ожидался Content-Type ${expected}, получено:"
+        printf '%s\n' "$headers"
+        exit 1
+    fi
+
+    echo "   OK: ${label} (${expected})"
+}
+
+assert_html_contains() {
+    local url="$1"
+    local needle="$2"
+    local label="$3"
+
+    if ! curl -fsS "$url" | grep -F "$needle" >/dev/null; then
+        echo "❌ ${label}: HTML не содержит ожидаемую ссылку ${needle}"
+        exit 1
+    fi
+
+    echo "   OK: ${label}"
+}
+
+get_latest_certificate_artifacts() {
+    docker exec aimuza-db psql -U aimuza -d aimuza -t -A -F '|' -c \
+        "SELECT COALESCE(registry_url, ''),
+                COALESCE(certificate_url, ''),
+                COALESCE(pdf_url, ''),
+                COALESCE(blockchain_proof_url, ''),
+                COALESCE(blockchain_proof_path, '')
+         FROM public.track_deposits
+         WHERE status = 'completed'
+           AND (certificate_url IS NOT NULL OR pdf_url IS NOT NULL)
+         ORDER BY completed_at DESC NULLS LAST, created_at DESC
+         LIMIT 1;" | tr -d '\r'
+}
+
 resolve_host() {
     local host="$1"
 
@@ -207,7 +262,63 @@ nginx -t && nginx -s reload
 echo "✅ Nginx перезагружен"
 
 echo ""
-echo "🧹 Шаг 8: Очистка старых образов..."
+echo "🧪 Шаг 8: Post-deploy smoke..."
+assert_public_url "https://aimuza.ru/" "Главная"
+assert_public_url "https://www.aimuza.ru/" "WWW домен"
+assert_public_url "https://aimuza.ru/health" "Health endpoint"
+assert_public_url "https://aimuza.ru/functions/v1/maintenance-status" "Maintenance status"
+
+if [ -f "/etc/letsencrypt/live/aimuza.ru/fullchain.pem" ]; then
+    if ! openssl x509 -in /etc/letsencrypt/live/aimuza.ru/fullchain.pem -noout -checkend 1209600 >/dev/null; then
+        echo "❌ SSL-сертификат истекает меньше чем через 14 дней"
+        exit 1
+    fi
+    echo "   OK: SSL-сертификат действителен более 14 дней"
+fi
+
+if [ "$(docker inspect aimuza-gotenberg --format '{{.State.Status}}')" != "running" ]; then
+    echo "❌ aimuza-gotenberg не запущен после деплоя"
+    exit 1
+fi
+
+curl -fsS http://127.0.0.1:3010/health >/dev/null
+echo "   OK: Gotenberg health"
+
+latest_artifacts="$(get_latest_certificate_artifacts)"
+if [ -n "$latest_artifacts" ]; then
+    IFS='|' read -r registry_url html_url pdf_url proof_url proof_path <<< "$latest_artifacts"
+
+    if [ -n "$registry_url" ]; then
+        assert_public_url "$registry_url" "Registry URL"
+    fi
+
+    if [ -n "$html_url" ] && [ -n "$registry_url" ]; then
+        assert_html_contains "$html_url" "$registry_url" "HTML сертификат"
+    elif [ -n "$html_url" ]; then
+        assert_public_url "$html_url" "HTML сертификат"
+    fi
+
+    if [ -n "$pdf_url" ]; then
+        assert_content_type "$pdf_url" "application/pdf" "PDF сертификат"
+    fi
+
+    if [ -n "$proof_url" ]; then
+        assert_public_url "$proof_url" "Proof URL"
+    fi
+
+    if [ -n "$proof_path" ]; then
+        if ! docker exec aimuza-api sh -lc "test -s \"/opt/aimuza/data/uploads/certificates/$proof_path\""; then
+            echo "❌ Proof-файл отсутствует или пустой: $proof_path"
+            exit 1
+        fi
+        echo "   OK: Proof-файл на диске"
+    fi
+else
+    echo "   ⚠ Нет завершённых депонирований для smoke-проверки сертификатов"
+fi
+
+echo ""
+echo "🧹 Шаг 9: Очистка старых образов..."
 docker image prune -f
 
 echo ""

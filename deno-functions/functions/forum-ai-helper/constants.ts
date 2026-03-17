@@ -3,7 +3,6 @@ export type Mode =
   | "expand_topic"
   | "expand_to_topic"
   | "expand_reply"
-  | "improve_text"
   | "summarize_thread"
   | "suggest_arguments"
   | "auto_tags";
@@ -14,14 +13,13 @@ export const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-export const AGENT_ACCESS_ID = "";
+export const AGENT_ACCESS_ID = "e046a9e4-43f6-47bc-a39f-8a9de8778d02";
 
 export const SERVICE_NAMES: Record<Mode, string> = {
   spell_check: "forum_spell_check",
   expand_topic: "forum_expand_topic",
   expand_to_topic: "forum_expand_topic",
   expand_reply: "forum_expand_reply",
-  improve_text: "forum_improve_text",
   summarize_thread: "forum_summarize_thread",
   suggest_arguments: "forum_suggest_arguments",
   auto_tags: "forum_auto_tags",
@@ -32,7 +30,6 @@ export const DEFAULT_PRICES: Record<Mode, number> = {
   expand_topic: 5,
   expand_to_topic: 5,
   expand_reply: 5,
-  improve_text: 4,
   summarize_thread: 3,
   suggest_arguments: 4,
   auto_tags: 0,
@@ -43,7 +40,6 @@ export const MESSAGES: Record<Mode, string> = {
   expand_topic: "Тезисы развёрнуты!",
   expand_to_topic: "Тема сгенерирована!",
   expand_reply: "Ответ развёрнут!",
-  improve_text: "Текст улучшен!",
   summarize_thread: "Резюме готово!",
   suggest_arguments: "Аргументы готовы!",
   auto_tags: "Теги сгенерированы!",

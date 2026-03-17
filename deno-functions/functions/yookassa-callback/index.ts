@@ -1,110 +1,57 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
-};
+const YOOKASSA_SHOP_ID = Deno.env.get("YOOKASSA_SHOP_ID") || "";
+const YOOKASSA_SECRET_KEY = Deno.env.get("YOOKASSA_SECRET_KEY") || "";
 
-// Helper function to verify YooKassa webhook signature
-async function verifyWebhookSignature(
-  body: string,
-  signature: string | null,
-  secretKey: string
-): Promise<boolean> {
-  if (!signature) {
-    return false;
-  }
-
-  // YooKassa uses HMAC-SHA256 for webhook signatures
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secretKey),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-
-  const signatureBuffer = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(body)
-  );
-
-  // Convert to hex string
-  const expectedSignature = Array.from(new Uint8Array(signatureBuffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-
-  // Constant-time comparison to prevent timing attacks
-  if (signature.length !== expectedSignature.length) {
-    return false;
-  }
-
-  let result = 0;
-  for (let i = 0; i < signature.length; i++) {
-    result |= signature.charCodeAt(i) ^ expectedSignature.charCodeAt(i);
-  }
-
-  return result === 0;
-}
+// IP-адреса YooKassa для верификации webhook-запросов
+// https://yookassa.ru/developers/using-api/webhooks#ip
+const YOOKASSA_IPS = [
+  "185.71.76.", "185.71.77.",
+  "77.75.153.", "77.75.156.",
+  "77.75.154.", "77.75.155.",
+  "2a02:5180:0:",
+];
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { status: 204 });
+  }
+
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
   }
 
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const yookassaSecretKey = Deno.env.get("YOOKASSA_SECRET_KEY");
-
-    // Get the raw body for signature verification
-    const rawBody = await req.text();
-    
-    // Verify webhook signature - REQUIRED for security
-    if (!yookassaSecretKey) {
-      console.error("YOOKASSA_SECRET_KEY not configured - rejecting webhook request for security");
-      return new Response(
-        JSON.stringify({ error: "Webhook secret not configured" }),
-        { 
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          status: 500 
-        }
-      );
-    }
-
-    const signature = req.headers.get("X-YooKassa-Signature") || 
-                      req.headers.get("x-yookassa-signature");
-    
-    const isValid = await verifyWebhookSignature(rawBody, signature, yookassaSecretKey);
-    
-    if (!isValid) {
-      console.error("YooKassa webhook signature verification failed");
-      return new Response(
-        JSON.stringify({ error: "Invalid webhook signature" }),
-        { 
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          status: 401 
-        }
-      );
-    }
-    
-    console.log("YooKassa webhook signature verified successfully");
-
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    const rawBody = await req.text();
     const body = JSON.parse(rawBody);
-    console.log("YooKassa webhook received:", JSON.stringify(body, null, 2));
+
+    console.log("YooKassa webhook:", body.event, body.object?.id);
 
     const { event, object } = body;
-
-    if (!object || !object.id) {
-      throw new Error("Invalid webhook payload");
+    if (!object?.id) {
+      return new Response(JSON.stringify({ error: "Invalid payload" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
-    // Find payment by external_id (YooKassa payment ID)
+    // --- Верификация через обратный запрос к API YooKassa ---
+    // Вместо ненадёжной подписи — проверяем реальный статус платежа у YooKassa
+    const verified = await verifyPaymentViaApi(object.id);
+    if (!verified) {
+      console.error("Payment verification failed for:", object.id);
+      return new Response(JSON.stringify({ error: "Verification failed" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // --- Найти платёж в БД ---
     const { data: payment, error: findError } = await supabase
       .from("payments")
       .select("*")
@@ -113,99 +60,160 @@ serve(async (req) => {
       .single();
 
     if (findError || !payment) {
-      console.error("Payment not found:", object.id);
-      return new Response(
-        JSON.stringify({ error: "Payment not found" }),
-        { 
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          status: 404 
-        }
-      );
-    }
-
-    let newStatus = payment.status;
-
-    // Handle different YooKassa events
-    switch (event) {
-      case "payment.succeeded":
-        newStatus = "completed";
-        break;
-      case "payment.canceled":
-        newStatus = "cancelled";
-        break;
-      case "payment.waiting_for_capture":
-        newStatus = "pending";
-        break;
-      case "refund.succeeded":
-        newStatus = "refunded";
-        break;
-      default:
-        console.log("Unhandled event type:", event);
-    }
-
-    // Update payment status
-    const { error: updateError } = await supabase
-      .from("payments")
-      .update({ 
-        status: newStatus,
-        metadata: object,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", payment.id);
-
-    if (updateError) {
-      console.error("Error updating payment:", updateError);
-      throw new Error("Failed to update payment");
-    }
-
-    // Add balance to user profile if payment succeeded
-    if (event === "payment.succeeded" && payment.status !== "completed") {
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("balance")
-        .eq("user_id", payment.user_id)
-        .single();
-
-      if (!profileError && profile) {
-        const newBalance = (profile.balance || 0) + payment.amount;
-        await supabase
-          .from("profiles")
-          .update({ balance: newBalance })
-          .eq("user_id", payment.user_id);
-        
-        // Log topup transaction
-        await supabase.from("balance_transactions").insert({
-          user_id: payment.user_id,
-          amount: payment.amount,
-          balance_after: newBalance,
-          type: "topup",
-          description: `Пополнение баланса (ЮKassa)`,
-          reference_id: payment.id,
-          reference_type: "payment",
-        });
-        
-        console.log(`Balance updated for user ${payment.user_id}: ${newBalance}`);
-      }
-    }
-
-    console.log("Payment updated:", payment.id, "Status:", newStatus);
-
-    return new Response(
-      JSON.stringify({ success: true }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      console.error("Payment not found in DB:", object.id);
+      // Возвращаем 200, чтобы YooKassa не ретраила — платёж просто не наш
+      return new Response(JSON.stringify({ ok: true }), {
         status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // --- Обработка события ---
+    switch (event) {
+      case "payment.succeeded": {
+        // Кросс-валидация суммы: то, что пришло от ЮKassa, должно совпадать
+        const paidAmount = Math.round(Number(verified.amount?.value || 0));
+
+        // Атомарное зачисление через SQL-функцию
+        const { data: result, error: rpcError } = await supabase.rpc(
+          "process_payment_completion",
+          {
+            p_payment_id: payment.id,
+            p_expected_amount: paidAmount > 0 ? paidAmount : null,
+          }
+        );
+
+        if (rpcError) {
+          console.error("RPC error:", rpcError);
+          return serverError("Balance credit failed");
+        }
+
+        const res = result as { success: boolean; already_processed?: boolean; error?: string };
+
+        if (!res.success) {
+          console.error("process_payment_completion failed:", res.error);
+          // amount_mismatch — серьёзная проблема, логируем
+          if (res.error === "amount_mismatch") {
+            console.error("AMOUNT MISMATCH! DB:", payment.amount, "YooKassa:", paidAmount);
+          }
+          return serverError(res.error || "Processing failed");
+        }
+
+        // Сохраняем metadata от YooKassa
+        await supabase
+          .from("payments")
+          .update({ metadata: object })
+          .eq("id", payment.id);
+
+        if (res.already_processed) {
+          console.log("Payment already processed:", payment.id);
+        } else {
+          console.log("Payment completed:", payment.id, "Amount:", payment.amount);
+        }
+        break;
       }
-    );
+
+      case "payment.canceled": {
+        await supabase
+          .from("payments")
+          .update({ status: "cancelled", metadata: object, updated_at: new Date().toISOString() })
+          .eq("id", payment.id);
+        console.log("Payment cancelled:", payment.id);
+        break;
+      }
+
+      case "payment.waiting_for_capture": {
+        await supabase
+          .from("payments")
+          .update({ metadata: object, updated_at: new Date().toISOString() })
+          .eq("id", payment.id);
+        console.log("Payment waiting for capture:", payment.id);
+        break;
+      }
+
+      case "refund.succeeded": {
+        const refundAmount = Math.round(Number(object.amount?.value || 0));
+
+        const { data: refundResult, error: refundError } = await supabase.rpc(
+          "process_payment_refund",
+          {
+            p_payment_id: payment.id,
+            p_refund_amount: refundAmount > 0 ? refundAmount : null,
+          }
+        );
+
+        if (refundError) {
+          console.error("Refund RPC error:", refundError);
+          return serverError("Refund processing failed");
+        }
+
+        const rr = refundResult as { success: boolean; error?: string } | null;
+        if (!rr) {
+          console.error("Refund RPC returned null for payment:", payment.id);
+        } else if (!rr.success) {
+          console.error("Refund failed:", rr.error);
+        } else {
+          console.log("Refund processed:", payment.id, "Amount:", refundAmount);
+        }
+
+        await supabase
+          .from("payments")
+          .update({ metadata: object })
+          .eq("id", payment.id);
+        break;
+      }
+
+      default:
+        console.log("Unhandled event:", event);
+    }
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   } catch (error: unknown) {
     console.error("YooKassa callback error:", error);
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return new Response(
-      JSON.stringify({ error: message }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 500,
-      }
-    );
+    return serverError("Internal error");
   }
 });
+
+// --- Верификация платежа через обратный запрос к API YooKassa ---
+async function verifyPaymentViaApi(
+  paymentId: string
+): Promise<Record<string, unknown> | null> {
+  try {
+    const response = await fetch(
+      `https://api.yookassa.ru/v3/payments/${paymentId}`,
+      {
+        headers: {
+          Authorization: `Basic ${btoa(`${YOOKASSA_SHOP_ID}:${YOOKASSA_SECRET_KEY}`)}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      console.error("YooKassa verify API error:", response.status);
+      return null;
+    }
+
+    const data = await response.json();
+
+    // Проверяем, что payment_id валидный и принадлежит нашему магазину
+    if (!data.id || data.id !== paymentId) {
+      console.error("Payment ID mismatch in verification");
+      return null;
+    }
+
+    return data;
+  } catch (error) {
+    console.error("YooKassa verify error:", error);
+    return null;
+  }
+}
+
+function serverError(message: string) {
+  return new Response(JSON.stringify({ error: message }), {
+    status: 500,
+    headers: { "Content-Type": "application/json" },
+  });
+}

@@ -1,6 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { crypto as stdCrypto } from "https://deno.land/std@0.168.0/crypto/mod.ts";
 
 const ROBOKASSA_PASSWORD2 = Deno.env.get("ROBOKASSA_PASSWORD2") || "";
 
@@ -17,7 +16,16 @@ function getClientIP(req: Request): string {
 async function computeMD5(str: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(str);
-  const hashBuffer = await stdCrypto.subtle.digest("MD5", data);
+
+  // Deno поддерживает MD5 через crypto.subtle (не deprecated в Deno)
+  const hashBuffer = await crypto.subtle.digest("MD5", data).catch(() => null);
+
+  if (!hashBuffer) {
+    throw new Error(
+      "MD5 not available — cannot verify payment signature securely"
+    );
+  }
+
   return Array.from(new Uint8Array(hashBuffer))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -29,6 +37,7 @@ serve(async (req) => {
   }
 
   try {
+    // --- IP-фильтрация (мягкая: логируем, но не блокируем — подпись основная защита) ---
     const clientIP = getClientIP(req);
     const isTest = Deno.env.get("ROBOKASSA_TEST_MODE") === "true";
     const ipTrusted = isTest || ROBOKASSA_ALLOWED_IPS.some((ip) => clientIP.startsWith(ip));
@@ -75,6 +84,7 @@ serve(async (req) => {
     console.log("Robokassa callback:", { outSum, invId, clientIP });
 
     if (!outSum || !invId || !signatureValue) {
+      await logCallback(supabase, { invId, outSum, signatureValid: false, clientIP, result: "bad params" });
       return new Response("bad params", { status: 400 });
     }
 
@@ -93,6 +103,7 @@ serve(async (req) => {
         expected: expectedSignature,
         received: signatureValue,
       });
+      await logCallback(supabase, { invId, outSum, signatureValid: false, clientIP, result: "bad sign" });
       return new Response("bad sign", { status: 400 });
     }
 
@@ -111,7 +122,7 @@ serve(async (req) => {
 
     // --- Кросс-валидация суммы ---
     const paidAmount = Math.round(Number(outSum));
-    if (paidAmount !== Number(payment.amount)) {
+    if (paidAmount !== payment.amount) {
       console.error("Amount mismatch!", {
         paid: paidAmount,
         expected: payment.amount,
@@ -141,6 +152,7 @@ serve(async (req) => {
 
     if (!res.success) {
       console.error("process_payment_completion failed:", res.error);
+      // Если уже обработан — OK для Робокассы
       return new Response("bad", { status: 500 });
     }
 
@@ -150,6 +162,15 @@ serve(async (req) => {
       console.log("Payment completed:", payment.id, "Amount:", payment.amount);
     }
 
+    await logCallback(supabase, {
+      invId,
+      outSum,
+      signatureValid: true,
+      clientIP,
+      result: res.already_processed ? "ok_idempotent" : "ok",
+    });
+
+    // Робокасса ожидает формат OK{InvId}
     return new Response(`OK${invId}`, {
       status: 200,
       headers: { "Content-Type": "text/plain" },
@@ -159,3 +180,29 @@ serve(async (req) => {
     return new Response("bad", { status: 500 });
   }
 });
+
+interface CallbackLog {
+  invId: string;
+  outSum: string;
+  signatureValid: boolean;
+  clientIP: string;
+  result: string;
+}
+
+async function logCallback(
+  supabase: ReturnType<typeof createClient>,
+  log: CallbackLog
+) {
+  try {
+    await supabase.from("payment_callbacks").insert({
+      payment_system: "robokassa",
+      inv_id: log.invId,
+      out_sum: log.outSum,
+      signature_valid: log.signatureValid,
+      client_ip: log.clientIP,
+      result: log.result,
+    });
+  } catch (e) {
+    console.error("Failed to log callback:", e);
+  }
+}

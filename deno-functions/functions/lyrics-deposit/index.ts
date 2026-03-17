@@ -156,6 +156,8 @@ serve(async (req) => {
       .update({ balance: (profile.balance || 0) - depositPrice })
       .eq("user_id", user.id);
 
+    const newBalance = (profile.balance || 0) - depositPrice;
+
     const { data: deposit, error: depositError } = await supabase
       .from("lyrics_deposits")
       .insert({
@@ -179,7 +181,37 @@ serve(async (req) => {
         .from("profiles")
         .update({ balance: profile.balance })
         .eq("user_id", user.id);
-      throw depositError;
+      throw new Error(depositError.message || "Ошибка записи в базу данных");
+    }
+
+    if (depositPrice > 0) {
+      const { error: transactionError } = await supabase.from("balance_transactions").insert({
+        user_id: user.id,
+        amount: -depositPrice,
+        balance_before: profile.balance || 0,
+        balance_after: newBalance,
+        type: "lyrics_deposit",
+        description: `Депонирование текста «${lyrics.title}» (${method})`,
+        reference_id: deposit.id,
+        reference_type: "lyrics_deposit",
+        metadata: {
+          lyrics_id,
+          lyrics_title: lyrics.title,
+          method,
+        },
+      });
+
+      if (transactionError) {
+        await supabase
+          .from("profiles")
+          .update({ balance: profile.balance })
+          .eq("user_id", user.id);
+        await supabase
+          .from("lyrics_deposits")
+          .delete()
+          .eq("id", deposit.id);
+        throw new Error("Ошибка записи истории списания");
+      }
     }
 
     await supabase.from("notifications").insert({

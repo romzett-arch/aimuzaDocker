@@ -6,6 +6,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+const AGENT_ACCESS_ID = "e046a9e4-43f6-47bc-a39f-8a9de8778d02";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -82,8 +83,7 @@ serve(async (req) => {
     const TIMEWEB_TOKEN = Deno.env.get("TIMEWEB_AGENT_TOKEN");
     if (!TIMEWEB_TOKEN) throw new Error("TIMEWEB_AGENT_TOKEN not configured");
 
-    const agentId = Deno.env.get("TIMEWEB_AGENT_ID") || "";
-    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
+    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${AGENT_ACCESS_ID}/v1/chat/completions`;
 
     if (mode === "description") {
       const systemPrompt = `Ты эксперт по описанию музыкальных треков. Создай краткое SEO-описание (2-4 предложения) для трека на основе названия, текста и жанра.

@@ -142,7 +142,7 @@ serve(async (req) => {
     if (!ffmpegApiUrl || !ffmpegApiSecret) {
       console.log("FFmpeg API not configured, returning original");
       if (stream) {
-        return await proxyFile(track.audio_url, filename, corsHeaders);
+        return await proxyFile(track.audio_url, filename, corsHeaders, ffmpegApiUrl ?? undefined);
       }
       return new Response(
         JSON.stringify({ 
@@ -178,19 +178,20 @@ serve(async (req) => {
       const errorText = await ffmpegResponse.text();
       console.error("FFmpeg API error:", ffmpegResponse.status, errorText);
       
-      // Fallback to original
+      // Для скачивания владельцу важны нормализация и метаданные.
+      // Если FFmpeg не смог обработать файл, возвращаем ошибку вместо "тихого" оригинала.
       if (stream) {
-        return await proxyFile(track.audio_url, filename, corsHeaders);
+        return new Response(
+          JSON.stringify({ error: "Не удалось обработать файл через FFmpeg" }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
       return new Response(
         JSON.stringify({ 
-          success: true, 
-          download_url: track.audio_url,
-          filename,
-          cleaned: false,
-          warning: "Normalization unavailable",
+          success: false,
+          error: "Normalization unavailable",
         }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -217,7 +218,7 @@ serve(async (req) => {
     // Stream mode: proxy the file through edge function to avoid CORS
     if (stream) {
       console.log("Streaming file to client:", outputUrl);
-      return await proxyFile(outputUrl, filename, corsHeaders);
+      return await proxyFile(outputUrl, filename, corsHeaders, ffmpegApiUrl ?? undefined);
     }
 
     // JSON mode (legacy)
@@ -254,14 +255,18 @@ serve(async (req) => {
 async function proxyFile(
   url: string, 
   filename: string, 
-  corsHeaders: Record<string, string>
+  corsHeaders: Record<string, string>,
+  ffmpegApiUrl?: string,
 ): Promise<Response> {
   try {
     let internalUrl = url;
+    const ffmpegInternalBase = ffmpegApiUrl
+      ? ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "")
+      : "http://ffmpeg-api:3100";
     if (url.includes('localhost')) {
       internalUrl = url.replace('http://localhost', 'http://nginx');
     } else if (/https?:\/\/(?:www\.)?aimuza\.ru\/api\/ffmpeg/.test(url)) {
-      internalUrl = url.replace(/https?:\/\/(?:www\.)?aimuza\.ru\/api\/ffmpeg/, 'http://ffmpeg-api:3001');
+      internalUrl = url.replace(/https?:\/\/(?:www\.)?aimuza\.ru\/api\/ffmpeg/, ffmpegInternalBase);
     } else if (/https?:\/\/(?:www\.)?aimuza\.ru/.test(url)) {
       internalUrl = url.replace(/https?:\/\/(?:www\.)?aimuza\.ru/, 'http://nginx');
     }

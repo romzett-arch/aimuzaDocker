@@ -2,13 +2,38 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { copyFileToStorage } from "./audio-storage.ts";
 import { classifyTrackWithAI, processTrackAddons } from "./classification.ts";
+import { getDurationFromFfmpeg } from "./ffmpeg-duration.ts";
 import { getSunoErrorMessage, handleFailedTracksWithRefunds } from "./errors.ts";
 import { corsHeaders } from "./types.ts";
 import type { MatchedTrack, SunoCallbackPayload, SunoTrackData, TrackToFail } from "./types.ts";
 
 declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
 
-const handler = async (req: Request) => {
+function getCallbackTaskId(payload: SunoCallbackPayload): string | null {
+  return payload?.data?.task_id ?? payload?.data?.taskId ?? null;
+}
+
+async function resolveTrackDuration(
+  directDuration: unknown,
+  candidateUrls: Array<string | null | undefined>,
+): Promise<number | null> {
+  if (directDuration != null) {
+    const parsed = Math.round(Number(directDuration));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  for (const url of candidateUrls) {
+    if (!url) continue;
+    const ffmpegDur = await getDurationFromFfmpeg(url);
+    if (ffmpegDur != null && ffmpegDur > 0) {
+      return ffmpegDur;
+    }
+  }
+
+  return null;
+}
+
+serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -41,7 +66,7 @@ const handler = async (req: Request) => {
     console.log("Received Suno callback:", JSON.stringify(callbackData));
 
     const tracks = (callbackData?.data?.data || callbackData?.data || []) as SunoTrackData[];
-    const taskId = callbackData?.data?.task_id;
+    const taskId = getCallbackTaskId(callbackData);
     const callbackType = callbackData?.data?.callbackType;
     const responseCode = callbackData?.code;
     const errorMessage = callbackData?.msg;
@@ -60,28 +85,32 @@ const handler = async (req: Request) => {
       const errorInfo = getSunoErrorMessage(responseCode || 500, errorMessage || callbackData?.data?.fail_reason);
       const failReason = errorInfo.short;
 
-      let tracksToFail: TrackToFail[] = [];
-
-      if (taskId) {
-        const { data: taskTracks } = await supabaseAdmin
-          .from("tracks")
-          .select("id, user_id, description")
-          .in("status", ["processing", "pending"])
-          .ilike("description", `%${taskId}%`)
-          .limit(2);
-
-        if (taskTracks && taskTracks.length > 0) {
-          tracksToFail = taskTracks;
-          console.log(`Found ${taskTracks.length} tracks matching task_id ${taskId}`);
-        }
+      if (!taskId) {
+        console.warn("Failure callback received without taskId. Ignoring to prevent cross-user refunds.");
+        return new Response(
+          JSON.stringify({ received: true, warning: "Failure callback ignored: missing taskId" }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
 
-      if (tracksToFail.length > 0) {
-        await handleFailedTracksWithRefunds(supabaseAdmin, tracksToFail, failReason, errorInfo);
-        console.log(`Marked ${tracksToFail.length} tracks as failed with refunds`);
-      } else {
-        console.warn(`No tracks found for failed callback task_id=${taskId}. Skipping refund to avoid cross-user mismatch.`);
+      const { data: taskTracks } = await supabaseAdmin
+        .from("tracks")
+        .select("id, user_id, description")
+        .in("status", ["processing", "pending"])
+        .ilike("description", `%[task_id: ${taskId}]%`)
+        .limit(2);
+
+      if (!taskTracks || taskTracks.length === 0) {
+        console.warn(`Failure callback ignored: no tracks found for task_id ${taskId}`);
+        return new Response(
+          JSON.stringify({ received: true, warning: "Failure callback ignored: no matching tracks", task_id: taskId }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
+
+      const tracksToFail: TrackToFail[] = taskTracks;
+      await handleFailedTracksWithRefunds(supabaseAdmin, tracksToFail, failReason, errorInfo);
+      console.log(`Marked ${tracksToFail.length} tracks as failed with refunds`);
 
       return new Response(
         JSON.stringify({ received: true, message: "Failure callback processed with refunds" }),
@@ -140,15 +169,24 @@ const handler = async (req: Request) => {
     // Normalize ALL Suno results — keep original indices intact, collect all URL variants
     const normalizedSunoResults = tracks.map((track: SunoTrackData, idx: number) => {
       const audioUrls = [
-        track.source_audio_url, track.audio_url,
-        track.source_stream_audio_url, track.stream_audio_url,
+        track.sourceAudioUrl, track.source_audio_url,
+        track.audioUrl, track.audio_url,
+        track.sourceStreamAudioUrl, track.source_stream_audio_url,
+        track.streamAudioUrl, track.stream_audio_url,
+      ].filter((u): u is string => typeof u === "string" && u.startsWith("http"));
+      const coverUrls = [
+        track.sourceImageUrl, track.source_image_url,
+        track.imageUrl, track.image_url,
       ].filter((u): u is string => typeof u === "string" && u.startsWith("http"));
       const audioUrl = audioUrls[0] || null;
-      return { ...track, audioUrl, audioUrls, originalIndex: idx };
+      const coverUrl = coverUrls[0] || null;
+      return { ...track, audioUrl, audioUrls, coverUrl, coverUrls, originalIndex: idx };
     });
 
     // Pending DB tracks (not yet completed/failed)
-    const pendingDbTracks = allMatchedTracks.filter((t) => t.status !== "completed");
+    const pendingDbTracks = allMatchedTracks.filter(
+      (t) => t.status !== "completed" && t.status !== "failed"
+    );
 
     console.log(`Matching ${normalizedSunoResults.length} Suno results to ${pendingDbTracks.length} pending DB tracks (total DB: ${allMatchedTracks.length})`);
 
@@ -172,12 +210,10 @@ const handler = async (req: Request) => {
       const {
         id: sunoAudioId,
         audioUrl,
-        image_url,
-        source_image_url,
         duration,
       } = track;
 
-      const coverUrl = image_url || source_image_url;
+      const coverUrl = track.coverUrl;
 
       console.log(`Updating track ${trackToUpdate.id} (${trackToUpdate.title}) with Suno record[${recordIndex}]: ${audioUrl}`);
 
@@ -218,15 +254,14 @@ const handler = async (req: Request) => {
         ? trackToUpdate.description
         : (trackToUpdate.description ? `${trackToUpdate.description}\n\n[task_id: ${taskId}]` : `[task_id: ${taskId}]`);
 
-      // API erweima.ai часто возвращает duration: null — fallback 180 (FFmpeg убран из критического пути — блокировал callback)
-      const durationSec = duration != null ? Math.round(Number(duration)) : 180;
+      const durationSec = await resolveTrackDuration(duration, [finalAudioUrl, ...track.audioUrls]);
 
       const { error: updateError } = await supabaseAdmin
         .from("tracks")
         .update({
           audio_url: finalAudioUrl,
           cover_url: finalCoverUrl || null,
-          duration: durationSec,
+          ...(durationSec != null ? { duration: durationSec } : {}),
           status: "completed",
           suno_audio_id: sunoAudioId || null,
           description: updatedDescription,
@@ -261,10 +296,4 @@ const handler = async (req: Request) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
-};
-
-if (import.meta.main) {
-  serve(handler);
-}
-
-export default handler;
+});

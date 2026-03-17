@@ -1,4 +1,5 @@
 import type { AIAnalysisResult } from "./types.ts";
+import { TIMEWEB_AGENT_ACCESS_ID } from "./constants.ts";
 
 export async function analyzeWithAI(
   content: string,
@@ -37,8 +38,7 @@ ${reportDetails ? `Детали: "${reportDetails}"` : ""}
 Отвечай СТРОГО JSON: {"verdict": "violation"|"clean"|"uncertain", "confidence": 0.0-1.0, "category": "...", "reason": "краткое пояснение на русском до 100 символов"}`;
 
   try {
-    const agentId = Deno.env.get("TIMEWEB_AGENT_ID") || "";
-    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
+    const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
 
     const response = await fetch(apiUrl, {
       method: "POST",

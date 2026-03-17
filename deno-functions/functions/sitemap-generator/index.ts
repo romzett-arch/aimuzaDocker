@@ -1,15 +1,12 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import {
-  SITE_URL,
-  STATIC_SEO_PAGES,
-  logBotVisit,
-} from "../../shared/seo.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+const SITE_URL = "https://aimuza.ru";
 
 function urlEntry(loc: string, lastmod?: string, changefreq?: string, priority?: number): string {
   let entry = `  <url>\n    <loc>${loc}</loc>`;
@@ -20,11 +17,7 @@ function urlEntry(loc: string, lastmod?: string, changefreq?: string, priority?:
   return entry;
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-const handler = async (req: Request) => {
+serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -50,42 +43,47 @@ const handler = async (req: Request) => {
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <sitemap>
     <loc>${SITE_URL}/sitemap-pages.xml</loc>
-    <lastmod>${nowIso()}</lastmod>
+    <lastmod>${new Date().toISOString()}</lastmod>
   </sitemap>
   <sitemap>
     <loc>${SITE_URL}/sitemap-tracks.xml</loc>
-    <lastmod>${nowIso()}</lastmod>
+    <lastmod>${new Date().toISOString()}</lastmod>
   </sitemap>
   <sitemap>
     <loc>${SITE_URL}/sitemap-artists.xml</loc>
-    <lastmod>${nowIso()}</lastmod>
+    <lastmod>${new Date().toISOString()}</lastmod>
   </sitemap>
   <sitemap>
     <loc>${SITE_URL}/sitemap-forum.xml</loc>
-    <lastmod>${nowIso()}</lastmod>
+    <lastmod>${new Date().toISOString()}</lastmod>
   </sitemap>
   <sitemap>
     <loc>${SITE_URL}/sitemap-contests.xml</loc>
-    <lastmod>${nowIso()}</lastmod>
+    <lastmod>${new Date().toISOString()}</lastmod>
   </sitemap>
 </sitemapindex>`;
-      const response = new Response(indexXml, {
+      return new Response(indexXml, {
         headers: { ...corsHeaders, "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600" },
       });
-      await logBotVisit(supabase, req, "sitemap-index", response.status, "/sitemap.xml");
-      return response;
     }
 
     let urls: string[] = [];
 
     if (type === "pages") {
-      urls = STATIC_SEO_PAGES
-        .filter((page) => page.indexable)
-        .map((page) =>
-          urlEntry(`${SITE_URL}${page.path}`, nowIso(), page.changefreq, page.priority)
-        );
-      urls.push(
-        urlEntry(`${SITE_URL}/forum/tags`, nowIso(), "daily", 0.55),
+      const staticPages = [
+        { path: "/", priority: 1, changefreq: "hourly" },
+        { path: "/catalog", priority: 0.9, changefreq: "daily" },
+        { path: "/feed", priority: 0.9, changefreq: "hourly" },
+        { path: "/voting", priority: 0.9, changefreq: "daily" },
+        { path: "/contests", priority: 0.8, changefreq: "daily" },
+        { path: "/gallery", priority: 0.7, changefreq: "daily" },
+        { path: "/playlists", priority: 0.7, changefreq: "daily" },
+        { path: "/support", priority: 0.6, changefreq: "weekly" },
+        { path: "/forum", priority: 0.8, changefreq: "hourly" },
+        { path: "/radio", priority: 0.8, changefreq: "daily" },
+      ];
+      urls = staticPages.map(
+        (p) => urlEntry(`${SITE_URL}${p.path}`, new Date().toISOString(), p.changefreq, p.priority)
       );
     } else if (type === "tracks") {
       const { data: tracks } = await supabase
@@ -108,40 +106,20 @@ const handler = async (req: Request) => {
         urls.push(urlEntry(`${SITE_URL}${path}`, new Date(p.updated_at).toISOString(), "weekly", 0.6));
       }
     } else if (type === "forum") {
-      urls.push(urlEntry(`${SITE_URL}/forum`, nowIso(), "hourly", 0.8));
-      urls.push(urlEntry(`${SITE_URL}/forum/tags`, nowIso(), "daily", 0.5));
+      urls.push(urlEntry(`${SITE_URL}/forum`, new Date().toISOString(), "hourly", 0.8));
+      urls.push(urlEntry(`${SITE_URL}/forum/tags`, new Date().toISOString(), "daily", 0.5));
       const { data: categories } = await supabase.from("forum_categories").select("slug, updated_at").eq("is_active", true);
       for (const c of categories || []) {
         urls.push(urlEntry(`${SITE_URL}/forum/c/${c.slug}`, new Date(c.updated_at).toISOString(), "daily", 0.7));
       }
-      const { data: tags } = await supabase
-        .from("forum_tags")
-        .select("name, usage_count")
-        .gt("usage_count", 0)
-        .limit(500);
-      for (const tag of tags || []) {
-        urls.push(urlEntry(`${SITE_URL}/forum/tag/${encodeURIComponent(tag.name)}`, nowIso(), "weekly", 0.45));
-      }
       const { data: topics } = await supabase
         .from("forum_topics")
-        .select("id, updated_at, user_id")
+        .select("id, updated_at")
         .eq("is_hidden", false)
         .order("updated_at", { ascending: false })
         .limit(5000);
-      const forumUserIds = new Set<string>();
       for (const t of topics || []) {
         urls.push(urlEntry(`${SITE_URL}/forum/t/${t.id}`, new Date(t.updated_at).toISOString(), "weekly", 0.6));
-        if (t.user_id) forumUserIds.add(t.user_id);
-      }
-      if (forumUserIds.size > 0) {
-        const { data: forumProfiles } = await supabase
-          .from("profiles_public")
-          .select("user_id, username")
-          .in("user_id", [...forumUserIds].slice(0, 1000));
-        for (const profile of forumProfiles || []) {
-          if (!profile.username) continue;
-          urls.push(urlEntry(`${SITE_URL}/forum/u/${encodeURIComponent(profile.username)}`, nowIso(), "weekly", 0.4));
-        }
       }
     } else if (type === "contests") {
       const { data: contests } = await supabase.from("contests").select("id, updated_at").limit(500);
@@ -155,12 +133,9 @@ const handler = async (req: Request) => {
 ${urls.join("\n")}
 </urlset>`;
 
-    const response = new Response(xml, {
+    return new Response(xml, {
       headers: { ...corsHeaders, "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600" },
     });
-    const resolvedPath = type === "index" ? "/sitemap.xml" : `/sitemap-${type}.xml`;
-    await logBotVisit(supabase, req, "sitemap", response.status, resolvedPath);
-    return response;
   } catch (error) {
     console.error("[sitemap-generator] Error:", error);
     return new Response(JSON.stringify({ error: String(error) }), {
@@ -168,10 +143,4 @@ ${urls.join("\n")}
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
-};
-
-if (import.meta.main) {
-  serve(handler);
-}
-
-export default handler;
+});
