@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { requireApiKey } = require('./utils');
-const { createNormalizeHandler, createProcessWavHandler, createCleanMetadataHandler } = require('./handlers');
+const { createAnalyzeHandler, createNormalizeHandler, createProcessWavHandler, createCleanMetadataHandler } = require('./handlers');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -40,7 +40,7 @@ app.use((err, req, res, next) => {
   next(err);
 });
 app.use((req, res, next) => {
-  if (req.body && typeof req.body === 'string' && (req.path === '/normalize' || req.path === '/clean-metadata' || req.path === '/process-wav')) {
+  if (req.body && typeof req.body === 'string' && (req.path === '/analyze' || req.path === '/normalize' || req.path === '/clean-metadata' || req.path === '/process-wav')) {
     const s = req.body.trim();
     if (s.startsWith('{')) {
       try { req.body = JSON.parse(s); } catch (_) {}
@@ -48,6 +48,9 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+app.use('/analyze', requireApiKey(API_KEY));
+app.post('/analyze', createAnalyzeHandler(UPLOAD_DIR));
 
 app.use('/normalize', requireApiKey(API_KEY));
 app.post('/normalize', createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR));
