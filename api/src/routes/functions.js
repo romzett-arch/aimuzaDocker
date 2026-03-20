@@ -19,6 +19,7 @@ const ALLOWED_FUNCTIONS = new Set([
   'generate-promo-video',
   'indexnow-notify', 'lyrics-callback', 'lyrics-deposit',
   'maintenance-status', 'normalize-audio', 'og-renderer', 'process-master-audio',
+  'qa-generate-spec',
   'promo-video-callback', 'request-distribution', 'resolve-voting',
   'robokassa-callback', 'robokassa-create', 'robots-txt', 'send-admin-email',
   'send-auth-email', 'seo-ai-generate', 'sitemap-generator', 'submit-to-distributor',

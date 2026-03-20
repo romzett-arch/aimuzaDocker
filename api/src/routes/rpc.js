@@ -8,6 +8,8 @@ import { pool } from '../db.js';
 import { rpcAnonLimiter, votingIpLimiter, votingUserLimiter } from '../middleware/votingRateLimit.js';
 
 const router = Router();
+const RPC_ERROR_SQL_BLACKLIST = /\b(select|insert|update|delete|syntax|column|relation|constraint|violates|duplicate key|null value|permission denied|operator does not exist|invalid input syntax)\b/i;
+const RPC_BUSINESS_CODE_RE = /^[a-z][a-z0-9_]+$/i;
 
 const ALLOWED_RPC = new Set([
   'accept_role_invitation', 'add_user_credits', 'admin_add_xp',   'admin_annul_vote', 'admin_approve_purchase',
@@ -28,7 +30,7 @@ const ALLOWED_RPC = new Set([
   'finalize_contest_winners', 'find_similar_qa_tickets', 'find_user_by_short_id',
   'fn_add_xp', 'forum_authority_leaderboard', 'forum_boost_topic',
   'forum_calculate_content_quality', 'forum_find_similar_topics', 'forum_get_hub_stats',
-  'forum_get_leaderboard', 'forum_get_user_profile', 'forum_increment_topic_views',
+  'forum_get_leaderboard', 'forum_get_user_profile', 'forum_get_users_profiles', 'forum_increment_topic_views',
   'forum_mark_read', 'forum_mark_solution', 'forum_moderate_promo',
   'forum_recalculate_authority', 'forum_search', 'forum_update_category_on_topic',
   'forum_update_topic_on_post', 'forum_update_user_stats_on_post',
@@ -36,14 +38,15 @@ const ALLOWED_RPC = new Set([
   'generate_share_token', 'get_ad_for_slot', 'get_boosted_tracks',
   'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
   'get_direct_message_state', 'get_feed_tracks_with_profiles', 'get_hero_stats', 'get_last_messages',
-  'get_marketplace_items', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
-  'get_qa_leaderboard', 'get_radio_listeners', 'get_radio_smart_queue',
+  'get_marketplace_items', 'get_message_notification_payload', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
+  'get_qa_leaderboard', 'get_qa_ticket_comment_counts', 'get_radio_listeners', 'get_radio_smart_queue',
   'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',
   'get_reputation_leaderboard', 'get_reputation_profile', 'get_smart_feed',
-  'get_track_by_share_token', 'get_track_prompt_if_accessible',
-  'get_track_prompt_info', 'get_unread_counts', 'get_user_block_info',
-  'get_user_contest_rating', 'get_user_emails', 'get_user_role',
-  'get_user_stats', 'get_user_vote_weight', 'get_velocity_tracks',
+  'get_sidebar_pending_counts', 'get_track_by_share_token', 'get_track_comments_counts',
+  'get_track_prompt_if_accessible', 'get_track_prompt_info', 'get_unread_counts', 'get_user_block_info',
+  'get_user_contest_rating', 'get_user_conversations', 'get_user_emails', 'get_user_role',
+  'get_user_stats', 'get_user_subscription_tier', 'get_user_unread_message_count', 'get_user_vote_weight',
+  'get_users_roles', 'get_users_subscription_tiers', 'get_velocity_tracks',
   'get_voter_profile', 'get_voting_live_stats', 'has_permission',
   'has_purchased_item', 'has_purchased_prompt', 'has_role',
   'hide_contest_comment', 'hide_track_comment', 'increment_promotion_click',
@@ -52,12 +55,13 @@ const ALLOWED_RPC = new Set([
   'is_participant_in_conversation', 'is_super_admin', 'is_user_blocked',
   'pin_comment', 'process_payment_completion', 'process_payment_refund',
   'process_store_item_purchase', 'purchase_ad_free', 'purchase_track_boost',
+  'process_contest_lifecycle',
   'qa_recalculate_priority', 'qa_update_tester_tier',
   'radio_award_listen_xp', 'radio_create_next_slot', 'radio_heartbeat',
   'radio_place_bid', 'radio_place_prediction', 'radio_skip_ad',
   'cancel_subscription_with_refund', 'check_deposit_limit', 'check_track_upload_limit',
-  'get_my_radio_stats', 'get_user_subscription_tier', 'purchase_track_upload_pack', 'record_track_upload',
-  'subscribe_to_plan', 'reorder_user_tracks',
+  'get_my_radio_stats', 'purchase_track_upload_pack', 'record_track_upload',
+  'refund_generation_failed', 'subscribe_to_plan', 'reorder_user_tracks',
   'recalculate_feed_scores', 'record_ad_click', 'record_ad_impression',
   'resolve_qa_ticket', 'resolve_track_voting', 'revoke_share_token',
   'revoke_verification', 'revoke_vote', 'safe_award_xp',
@@ -81,6 +85,20 @@ function votingRateLimit(req, res, next) {
     if (err) return next(err);
     votingUserLimiter(req, res, next);
   });
+}
+
+function getSafeRpcMessage(message) {
+  const cleanMessage = String(message || '').trim();
+  if (!cleanMessage) return 'RPC call failed';
+  if (cleanMessage.startsWith('RAISE:')) return cleanMessage.replace(/^RAISE:\s*/, '');
+  if (cleanMessage.includes('Insufficient') || cleanMessage.includes('Unauthorized')) return cleanMessage;
+  if (RPC_BUSINESS_CODE_RE.test(cleanMessage) && !RPC_ERROR_SQL_BLACKLIST.test(cleanMessage)) {
+    return cleanMessage;
+  }
+  if (/[А-Яа-яЁё]/.test(cleanMessage) && !RPC_ERROR_SQL_BLACKLIST.test(cleanMessage)) {
+    return cleanMessage;
+  }
+  return 'RPC call failed';
 }
 
 async function handleRpc(req, res) {
@@ -155,8 +173,7 @@ async function handleRpc(req, res) {
       return res.json(null);
     }
     console.error('[RPC]', req.params.fn, err.message);
-    const safeMsg = err.message?.startsWith('RAISE:') || err.message?.includes('Insufficient') || err.message?.includes('Unauthorized')
-      ? err.message : 'RPC call failed';
+    const safeMsg = getSafeRpcMessage(err.message);
     res.status(400).json({ message: safeMsg, error: safeMsg, code: 'RPC_ERROR', details: null, hint: null });
   } finally {
     client.release();

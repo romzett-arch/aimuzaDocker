@@ -1,5 +1,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  AUDIO_RECOVERY_REQUIRED_MESSAGE,
+  copyFirstAvailableFileToStorage,
+  isManagedTrackStorageUrl,
+} from "../suno-callback/audio-storage.ts";
 import { getDurationFromFfmpeg } from "../suno-callback/ffmpeg-duration.ts";
 
 const corsHeaders = {
@@ -8,10 +13,17 @@ const corsHeaders = {
 };
 
 const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
-const SUNO_API_BASE = "https://apibox.erweima.ai";
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "http://api:3000";
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const BASE_URL = Deno.env.get("BASE_URL") || "http://localhost";
+const SUNO_API_BASE = "https://api.sunoapi.org";
+
+type MatchedTrack = {
+  id: string;
+  title: string | null;
+  description: string | null;
+  status: string;
+  audio_url: string | null;
+  suno_audio_id: string | null;
+  error_message: string | null;
+};
 
 async function resolveTrackDuration(
   directDuration: unknown,
@@ -33,60 +45,8 @@ async function resolveTrackDuration(
   return null;
 }
 
-// Download external file and save to local storage via API (with retry for transient errors)
-async function downloadToLocalStorage(
-  externalUrl: string,
-  bucket: string,
-  filePath: string,
-  maxRetries = 2
-): Promise<string | null> {
-  let lastErr: Error | null = null;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      console.log(`Downloading ${externalUrl} → ${bucket}/${filePath} (attempt ${attempt + 1})`);
-      const resp = await fetch(externalUrl);
-      if (!resp.ok) {
-        console.log(`Download failed: ${resp.status}`);
-        if (attempt < maxRetries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
-        continue;
-      }
-      const blob = await resp.blob();
-      const buffer = new Uint8Array(await blob.arrayBuffer());
-      if (buffer.length < 1000) {
-        console.log(`File too small (${buffer.length} bytes), likely invalid`);
-        if (attempt < maxRetries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
-        continue;
-      }
-
-      const uploadResp = await fetch(
-        `${SUPABASE_URL}/storage/v1/object/${bucket}/${filePath}`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": blob.type || "application/octet-stream",
-            "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
-          },
-          body: buffer,
-        }
-      );
-
-      if (!uploadResp.ok) {
-        const errText = await uploadResp.text();
-        console.log(`Upload to storage failed: ${uploadResp.status} ${errText}`);
-        if (attempt < maxRetries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
-        continue;
-      }
-
-      const localUrl = `${BASE_URL}/storage/v1/object/public/${bucket}/${filePath}`;
-      console.log(`Saved to local storage: ${localUrl}`);
-      return localUrl;
-    } catch (err) {
-      lastErr = err instanceof Error ? err : new Error(String(err));
-      console.error(`Download attempt ${attempt + 1} failed:`, lastErr.message);
-      if (attempt < maxRetries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
-    }
-  }
-  return null;
+function isRecoveryRequiredError(message: string | null | undefined): boolean {
+  return typeof message === "string" && message.includes("не удалось сохранить");
 }
 
 // Fetch with retry logic for connection issues
@@ -142,6 +102,11 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_ANON_KEY") ?? "",
       { global: { headers: { Authorization: authHeader } } }
+    );
+
+    const supabaseAdmin = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
     );
 
     // Get user via API-compatible auth endpoint
@@ -268,18 +233,57 @@ serve(async (req) => {
       });
 
       if (normalizedRecords.length > 0 && normalizedRecords.some((r: { audioUrl: string | null }) => r.audioUrl)) {
-        // Include "failed" tracks — if Suno says SUCCESS, we can resurrect them.
-        // This handles the case when callback never arrived and frontend timed out.
-        const { data: matchedTracks } = await supabaseClient
-          .from("tracks")
-          .select("id, title, description, status")
-          .eq("user_id", userId)
-          .in("status", ["processing", "pending", "failed"])
-          .order("created_at", { ascending: true });
+        let completedByPolling = false;
+        let tracksWithTask: MatchedTrack[] = [];
 
-        const tracksWithTask = (matchedTracks || []).filter(
-          (t: { description?: string }) => t.description?.includes(`[task_id: ${taskId}]`) || t.description?.includes(`[task_id:${taskId}]`)
-        );
+        if (trackId) {
+          const { data: targetTrack, error: targetTrackError } = await supabaseClient
+            .from("tracks")
+            .select("id, title, description, status, audio_url, suno_audio_id, error_message")
+            .eq("id", trackId)
+            .eq("user_id", userId)
+            .maybeSingle();
+
+          if (targetTrackError) {
+            console.error(`Error loading target track ${trackId}:`, targetTrackError);
+          } else if (targetTrack) {
+            const belongsToTask =
+              targetTrack.description?.includes(`[task_id: ${taskId}]`) ||
+              targetTrack.description?.includes(`[task_id:${taskId}]`);
+
+            if (!belongsToTask) {
+              console.warn(`Track ${trackId} does not belong to task ${taskId}, skipping polling recovery`);
+            } else if (targetTrack.status === "completed" && isManagedTrackStorageUrl(targetTrack.audio_url)) {
+              return new Response(
+                JSON.stringify({
+                  success: true,
+                  status: "completed",
+                  records: normalizedRecords,
+                }),
+                { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              );
+            } else if (
+              targetTrack.status === "failed" &&
+              !isRecoveryRequiredError(targetTrack.error_message)
+            ) {
+              console.log(`Track ${trackId} is failed for another reason, skipping auto-recovery`);
+            } else {
+              tracksWithTask = [targetTrack as MatchedTrack];
+            }
+          }
+        } else {
+          // Backward-compatible fallback for callers without trackId.
+          const { data: matchedTracks } = await supabaseClient
+            .from("tracks")
+            .select("id, title, description, status, audio_url, suno_audio_id, error_message")
+            .eq("user_id", userId)
+            .in("status", ["processing", "pending", "failed"])
+            .order("created_at", { ascending: true });
+
+          tracksWithTask = (matchedTracks || []).filter(
+            (t: { description?: string }) => t.description?.includes(`[task_id: ${taskId}]`) || t.description?.includes(`[task_id:${taskId}]`)
+          ) as MatchedTrack[];
+        }
 
         console.log(`Found ${tracksWithTask.length} tracks matching task_id ${taskId} (statuses: ${tracksWithTask.map((t: { status: string }) => t.status).join(",")})`);
 
@@ -298,22 +302,54 @@ serve(async (req) => {
             continue;
           }
 
-          // Download audio with fallback chain (try all URLs until one succeeds)
-          let finalAudioUrl: string | null = null;
-          for (const url of rec.audioUrls) {
-            const local = await downloadToLocalStorage(url, "tracks", `audio/${trk.id}.mp3`);
-            if (local) { finalAudioUrl = local; break; }
+          if (
+            rec.id &&
+            trk.suno_audio_id === String(rec.id) &&
+            isManagedTrackStorageUrl(trk.audio_url)
+          ) {
+            console.log(`Track ${trk.id} already saved for Suno audio ${rec.id}, skipping duplicate polling processing`);
+            completedByPolling = true;
+            continue;
           }
-          if (!finalAudioUrl) finalAudioUrl = rec.audioUrl;
+
+          const finalAudioUrl = await copyFirstAvailableFileToStorage(
+            supabaseAdmin,
+            rec.audioUrls,
+            "tracks",
+            `audio/${trk.id}.mp3`,
+          );
 
           // Download cover with fallback chain
           let finalCoverUrl: string | null = null;
           if (rec.imageUrls.length > 0) {
-            for (const url of rec.imageUrls) {
-              const local = await downloadToLocalStorage(url, "tracks", `covers/${trk.id}.jpg`);
-              if (local) { finalCoverUrl = local; break; }
-            }
+            finalCoverUrl = await copyFirstAvailableFileToStorage(
+              supabaseAdmin,
+              rec.imageUrls,
+              "tracks",
+              `covers/${trk.id}.jpg`,
+            );
             if (!finalCoverUrl) finalCoverUrl = rec.imageUrl;
+          }
+
+          if (!finalAudioUrl) {
+            const { error: recoveryError } = await supabaseClient
+              .from("tracks")
+              .update({
+                audio_url: null,
+                cover_url: finalCoverUrl,
+                status: "failed",
+                error_message: AUDIO_RECOVERY_REQUIRED_MESSAGE,
+                suno_audio_id: rec.id ? String(rec.id) : null,
+              })
+              .eq("id", trk.id)
+              .eq("user_id", userId);
+
+            if (recoveryError) {
+              console.error(`Error marking track ${trk.id} as recovery-required:`, recoveryError);
+            } else {
+              await supabaseAdmin.from("generation_logs").update({ status: "failed" }).eq("track_id", trk.id);
+            }
+            continue;
           }
 
           const durationSec = await resolveTrackDuration(rec.duration, [finalAudioUrl, ...rec.audioUrls]);
@@ -334,8 +370,21 @@ serve(async (req) => {
           if (updateError) {
             console.error(`Error updating track ${trk.id}:`, updateError);
           } else {
+            completedByPolling = true;
+            await supabaseAdmin.from("generation_logs").update({ status: "completed" }).eq("track_id", trk.id);
             console.log(`Track ${trk.id} (${trk.title}) completed via polling, record[${recordIndex}], suno_audio_id=${rec.id}`);
           }
+        }
+
+        if (completedByPolling) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              status: "completed",
+              records: normalizedRecords,
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
         }
       }
 

@@ -1,9 +1,17 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { TrackToFail } from "./types.ts";
 
+function extractBlockedArtistName(originalMessage?: string): string | null {
+  if (!originalMessage) return null;
+
+  const match = originalMessage.match(/artist name\s+([^.,!]+?)(?:\s*-\s*we don't reference|\s+please change|[.,!]|$)/i);
+  return match?.[1]?.trim() || null;
+}
+
 export function getSunoErrorMessage(code: number, originalMessage?: string): { short: string; full: string } {
   if (originalMessage) {
     const lowerMsg = originalMessage.toLowerCase();
+    const blockedArtistName = extractBlockedArtistName(originalMessage);
 
     if (
       lowerMsg.includes("matches existing work") ||
@@ -14,6 +22,14 @@ export function getSunoErrorMessage(code: number, originalMessage?: string): { s
       return {
         short: "Контент защищён авторским правом",
         full: "Загруженный аудиофайл или текст распознан как существующее произведение. Система защиты авторских прав Suno заблокировала генерацию. Попробуйте использовать оригинальный контент.",
+      };
+    }
+
+    if (blockedArtistName || lowerMsg.includes("artist name")) {
+      const quotedName = blockedArtistName ? ` «${blockedArtistName}»` : "";
+      return {
+        short: `Suno отклонил описание: найдено имя артиста${quotedName}`,
+        full: `Suno посчитал часть описания или стиля ссылкой на конкретного артиста${quotedName}. Уберите это слово или замените формулировку на более нейтральную и запустите генерацию снова.`,
       };
     }
 

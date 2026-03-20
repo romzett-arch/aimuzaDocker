@@ -42,6 +42,8 @@ export interface MatchedTrack {
   lyrics: string | null;
   user_id: string;
   status: string;
+  audio_url?: string | null;
+  suno_audio_id?: string | null;
 }
 
 export interface TrackToFail {

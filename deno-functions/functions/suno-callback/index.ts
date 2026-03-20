@@ -1,16 +1,42 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { copyFileToStorage } from "./audio-storage.ts";
+import {
+  AUDIO_RECOVERY_REQUIRED_MESSAGE,
+  copyFirstAvailableFileToStorage,
+  isManagedTrackStorageUrl,
+} from "./audio-storage.ts";
 import { classifyTrackWithAI, processTrackAddons } from "./classification.ts";
 import { getDurationFromFfmpeg } from "./ffmpeg-duration.ts";
 import { getSunoErrorMessage, handleFailedTracksWithRefunds } from "./errors.ts";
 import { corsHeaders } from "./types.ts";
 import type { MatchedTrack, SunoCallbackPayload, SunoTrackData, TrackToFail } from "./types.ts";
 
-declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
-
 function getCallbackTaskId(payload: SunoCallbackPayload): string | null {
   return payload?.data?.task_id ?? payload?.data?.taskId ?? null;
+}
+
+function runBackgroundTask(task: Promise<unknown>) {
+  const runtime = (globalThis as typeof globalThis & {
+    EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void };
+  }).EdgeRuntime;
+
+  if (runtime?.waitUntil) {
+    runtime.waitUntil(task);
+    return;
+  }
+
+  void task.catch((error) => {
+    console.error("Background task failed:", error);
+  });
+}
+
+function hasDirectAudioSource(track: SunoTrackData): boolean {
+  return [
+    track.sourceAudioUrl,
+    track.source_audio_url,
+    track.audioUrl,
+    track.audio_url,
+  ].some((url) => typeof url === "string" && url.startsWith("http"));
 }
 
 async function resolveTrackDuration(
@@ -125,6 +151,15 @@ serve(async (req) => {
       });
     }
 
+    // "text" часто приходит раньше прямых CDN/temp URL и содержит только stream-ссылки.
+    // Если начать копирование на этом этапе, параллельный polling/callback начинает дублировать upload-ы.
+    if (callbackType === "text" && !tracks.some(hasDirectAudioSource)) {
+      console.log(`Skipping text callback for task ${taskId} until direct audio URLs are available`);
+      return new Response(JSON.stringify({ received: true, message: "Waiting for direct audio URLs" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // "text" = промежуточный/финальный callback от erweima.ai с готовыми треками
     if (callbackType !== "complete" && callbackType !== "first" && callbackType !== "text") {
       console.log(`Skipping callback type: ${callbackType}`);
@@ -138,7 +173,7 @@ serve(async (req) => {
     if (taskId) {
       const { data: taskTracks, error: taskFindError } = await supabaseAdmin
         .from("tracks")
-        .select("id, title, description, lyrics, user_id, status")
+        .select("id, title, description, lyrics, user_id, status, audio_url, suno_audio_id")
         .ilike("description", `%[task_id: ${taskId}]%`)
         .order("created_at", { ascending: true })
         .limit(4);
@@ -207,6 +242,11 @@ serve(async (req) => {
         continue;
       }
 
+      if (callbackType !== "complete" && !hasDirectAudioSource(track)) {
+        console.log(`Skipping stream-only record[${recordIndex}] for track ${trackToUpdate.id} until direct audio URL is available`);
+        continue;
+      }
+
       const {
         id: sunoAudioId,
         audioUrl,
@@ -215,19 +255,33 @@ serve(async (req) => {
 
       const coverUrl = track.coverUrl;
 
+      if (
+        sunoAudioId &&
+        trackToUpdate.suno_audio_id === sunoAudioId &&
+        isManagedTrackStorageUrl(trackToUpdate.audio_url)
+      ) {
+        console.log(`Track ${trackToUpdate.id} already saved for Suno audio ${sunoAudioId}, skipping duplicate callback processing`);
+        continue;
+      }
+
       console.log(`Updating track ${trackToUpdate.id} (${trackToUpdate.title}) with Suno record[${recordIndex}]: ${audioUrl}`);
 
-      let finalAudioUrl = audioUrl;
+      let finalAudioUrl: string | null = null;
       let finalCoverUrl = coverUrl;
 
       try {
         const audioFileName = `${trackToUpdate.id}.mp3`;
-        const storedAudioUrl = await copyFileToStorage(supabaseAdmin, audioUrl, "tracks", `audio/${audioFileName}`);
+        const storedAudioUrl = await copyFirstAvailableFileToStorage(
+          supabaseAdmin,
+          track.audioUrls,
+          "tracks",
+          `audio/${audioFileName}`,
+        );
         if (storedAudioUrl) {
           finalAudioUrl = storedAudioUrl;
           console.log(`Audio copied to storage: ${finalAudioUrl}`);
         } else {
-          console.log(`Failed to copy audio, using original URL`);
+          console.error(`Failed to copy audio for track ${trackToUpdate.id}; keeping track in recovery-required state`);
         }
       } catch (audioErr) {
         console.error(`Error copying audio:`, audioErr);
@@ -236,7 +290,12 @@ serve(async (req) => {
       if (coverUrl) {
         try {
           const coverFileName = `${trackToUpdate.id}.jpg`;
-          const storedCoverUrl = await copyFileToStorage(supabaseAdmin, coverUrl, "tracks", `covers/${coverFileName}`);
+          const storedCoverUrl = await copyFirstAvailableFileToStorage(
+            supabaseAdmin,
+            track.coverUrls,
+            "tracks",
+            `covers/${coverFileName}`,
+          );
           if (storedCoverUrl) {
             finalCoverUrl = storedCoverUrl;
             console.log(`Cover copied to storage: ${finalCoverUrl}`);
@@ -253,6 +312,27 @@ serve(async (req) => {
       const updatedDescription = descAlreadyHasTaskId
         ? trackToUpdate.description
         : (trackToUpdate.description ? `${trackToUpdate.description}\n\n[task_id: ${taskId}]` : `[task_id: ${taskId}]`);
+
+      if (!finalAudioUrl) {
+        const { error: recoveryError } = await supabaseAdmin
+          .from("tracks")
+          .update({
+            audio_url: null,
+            cover_url: finalCoverUrl || null,
+            status: "failed",
+            error_message: AUDIO_RECOVERY_REQUIRED_MESSAGE,
+            suno_audio_id: sunoAudioId || null,
+            description: updatedDescription,
+          })
+          .eq("id", trackToUpdate.id);
+
+        if (recoveryError) {
+          console.error("Error marking track as recovery-required:", recoveryError);
+        } else {
+          await supabaseAdmin.from("generation_logs").update({ status: "failed" }).eq("track_id", trackToUpdate.id);
+        }
+        continue;
+      }
 
       const durationSec = await resolveTrackDuration(duration, [finalAudioUrl, ...track.audioUrls]);
 
@@ -281,7 +361,9 @@ serve(async (req) => {
         const originalDescription = trackToUpdate.description?.replace(/\n\n\[task_id:.*\]$/, "") || null;
         const trackLyrics = trackToUpdate.lyrics || null;
 
-        EdgeRuntime.waitUntil(classifyTrackWithAI(supabaseAdmin, trackToUpdate.id, originalDescription, trackLyrics));
+        runBackgroundTask(
+          classifyTrackWithAI(supabaseAdmin, trackToUpdate.id, originalDescription, trackLyrics),
+        );
       }
     }
 

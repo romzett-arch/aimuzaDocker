@@ -7,6 +7,26 @@ export interface CheckStep {
   id: string;
   name: string;
   database: string;
+  status: "pending" | "checking" | "done" | "error";
+  result?: {
+    found: boolean;
+    matches?: Array<{
+      title: string;
+      artist: string;
+      similarity: number;
+      source: string;
+    }>;
+  };
+}
+export interface PlagiarismRequest {
+  trackId: string;
+  audioUrl: string;
+}
+
+export interface CheckStep {
+  id: string;
+  name: string;
+  database: string;
   status: 'pending' | 'checking' | 'done' | 'error';
   result?: {
     found: boolean;

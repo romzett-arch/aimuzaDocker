@@ -1,5 +1,50 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+const TRACKS_PUBLIC_PREFIX = "/storage/v1/object/public/tracks/";
+const STORAGE_UPLOAD_MAX_ATTEMPTS = 6;
+const STORAGE_UPLOAD_BASE_DELAY_MS = 750;
+
+export const AUDIO_RECOVERY_REQUIRED_MESSAGE =
+  "Аудио сгенерировано, но временно не удалось сохранить его в библиотеку. Нажмите «Проверить статус» на карточке трека и попробуйте снова чуть позже.";
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStorageError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const status = Reflect.get(error, "status");
+  const statusCode = Reflect.get(error, "statusCode");
+  const message = String(Reflect.get(error, "message") ?? "").toLowerCase();
+
+  if (status === 429 || statusCode === 429 || statusCode === "429") {
+    return true;
+  }
+
+  return message.includes("rate limit") || message.includes("too many requests");
+}
+
+export function isManagedTrackStorageUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+
+  const normalized = url.trim();
+  if (!normalized) return false;
+
+  if (normalized.startsWith(TRACKS_PUBLIC_PREFIX) || normalized.startsWith(TRACKS_PUBLIC_PREFIX.slice(1))) {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    return parsed.pathname.startsWith(TRACKS_PUBLIC_PREFIX);
+  } catch {
+    return false;
+  }
+}
+
 export async function copyFileToStorage(
   supabaseAdmin: SupabaseClient,
   externalUrl: string,
@@ -43,25 +88,52 @@ export async function copyFileToStorage(
 
     console.log(`Downloaded ${uint8Array.length} bytes, uploading to ${bucket}/${filePath}`);
 
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from(bucket)
-      .upload(filePath, uint8Array, {
-        contentType: blob.type || "application/octet-stream",
-        upsert: true,
-      });
+    for (let attempt = 1; attempt <= STORAGE_UPLOAD_MAX_ATTEMPTS; attempt++) {
+      const { error: uploadError } = await supabaseAdmin.storage
+        .from(bucket)
+        .upload(filePath, uint8Array, {
+          contentType: blob.type || "application/octet-stream",
+          upsert: true,
+        });
 
-    if (uploadError) {
-      console.error(`Upload error:`, uploadError);
-      return null;
+      if (!uploadError) {
+        const BASE_URL = Deno.env.get("BASE_URL") || "https://aimuza.ru";
+        const publicUrl = `${BASE_URL}/storage/v1/object/public/${bucket}/${filePath}`;
+
+        console.log(`File uploaded successfully: ${publicUrl}`);
+        return publicUrl;
+      }
+
+      console.error(`Upload error on attempt ${attempt}/${STORAGE_UPLOAD_MAX_ATTEMPTS}:`, uploadError);
+
+      if (!isRetryableStorageError(uploadError) || attempt === STORAGE_UPLOAD_MAX_ATTEMPTS) {
+        return null;
+      }
+
+      const delayMs = STORAGE_UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+      console.warn(`Storage rate limit hit, retrying in ${delayMs}ms...`);
+      await sleep(delayMs);
     }
-
-    const BASE_URL = Deno.env.get("BASE_URL") || "https://aimuza.ru";
-    const publicUrl = `${BASE_URL}/storage/v1/object/public/${bucket}/${filePath}`;
-
-    console.log(`File uploaded successfully: ${publicUrl}`);
-    return publicUrl;
   } catch (err) {
     console.error(`Error copying file to storage:`, err);
     return null;
   }
+}
+
+export async function copyFirstAvailableFileToStorage(
+  supabaseAdmin: SupabaseClient,
+  externalUrls: Array<string | null | undefined>,
+  bucket: string,
+  filePath: string,
+): Promise<string | null> {
+  for (const url of externalUrls) {
+    if (!url) continue;
+
+    const storedUrl = await copyFileToStorage(supabaseAdmin, url, bucket, filePath);
+    if (storedUrl) {
+      return storedUrl;
+    }
+  }
+
+  return null;
 }

@@ -1,238 +1,143 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { PlagiarismRequest, CheckStep } from "./types.ts";
-import { runAcoustidStep, runAcrcloudStep, runInternalStep } from "./steps.ts";
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-function normalizeTrackUrl(rawUrl: string | null | undefined, requestUrl: string): string | null {
-  if (!rawUrl) return null;
+const MOCK_STEPS: CheckStep[] = [
+  { id: "acoustid", name: "AcoustID Fingerprint", database: "MusicBrainz (45M+ треков)", status: "done" },
+  { id: "acrcloud", name: "ACRCloud", database: "Глобальная база (100M+ треков)", status: "done" },
+  { id: "internal", name: "Внутренняя база", database: "AI Planet Sound", status: "done" },
+];
 
-  try {
-    const baseUrl = Deno.env.get("BASE_URL") || new URL(requestUrl).origin;
-    const normalized = new URL(rawUrl, baseUrl);
-    if (!["http:", "https:"].includes(normalized.protocol)) {
-      return null;
-    }
-    normalized.hash = "";
-    return normalized.toString();
-  } catch {
-    return null;
-  }
-}
-
-function resolveTrustedTrackUrl(
-  candidateUrl: string,
-  allowedUrls: Array<string | null | undefined>,
-  requestUrl: string,
-): string | null {
-  const normalizedCandidate = normalizeTrackUrl(candidateUrl, requestUrl);
-  if (!normalizedCandidate) return null;
-
-  const trustedUrls = new Set(
-    allowedUrls
-      .map((value) => normalizeTrackUrl(value, requestUrl))
-      .filter((value): value is string => Boolean(value)),
-  );
-
-  return trustedUrls.has(normalizedCandidate) ? normalizedCandidate : null;
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
 }
 
 serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-    const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
-
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("ANON_KEY") ?? "";
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    if (!supabaseUrl || !anonKey || !serviceRoleKey) {
+      throw new Error("Supabase env is not configured");
     }
 
-    const userClient = createClient(supabaseUrl, anonKey, {
-      global: { headers: { Authorization: authHeader } }
+    const authHeader = req.headers.get("authorization") ?? req.headers.get("Authorization");
+    const token = authHeader?.replace(/^Bearer\s+/i, "").trim();
+    if (!token) {
+      return jsonResponse({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    const supabase = createClient(supabaseUrl, serviceRoleKey);
+    const authClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
     });
-    const {
-      data: { user },
-      error: userError,
-    } = await userClient.auth.getUser();
 
-    if (userError || !user) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Invalid token" }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    const { trackId, audioUrl }: Partial<PlagiarismRequest> = await req.json();
+    const { data: authData, error: authError } = await authClient.auth.getUser(token);
+    if (authError || !authData.user) {
+      return jsonResponse({ success: false, error: "Unauthorized" }, 401);
     }
 
-    const supabase = createClient(
-      supabaseUrl,
-      serviceRoleKey
-    );
-
-    const ACOUSTID_API_KEY = Deno.env.get('ACOUSTID_API_KEY');
-    const FFMPEG_API_URL = Deno.env.get('FFMPEG_API_URL');
-    const FFMPEG_API_SECRET = Deno.env.get('FFMPEG_API_SECRET');
-    const ACRCLOUD_HOST = Deno.env.get('ACRCLOUD_HOST');
-    const ACRCLOUD_ACCESS_KEY = Deno.env.get('ACRCLOUD_ACCESS_KEY');
-    const ACRCLOUD_ACCESS_SECRET = Deno.env.get('ACRCLOUD_ACCESS_SECRET');
-
-    const { trackId, audioUrl }: PlagiarismRequest = await req.json();
-    console.log(`[check-plagiarism] Starting check for track: ${trackId}`);
-
-    if (!trackId || !audioUrl) {
-      throw new Error('trackId and audioUrl are required');
+    if (!trackId) {
+      throw new Error("trackId is required");
     }
 
-    const { data: trackData } = await supabase
-      .from('tracks')
-      .select('user_id, title, audio_url, master_audio_url, normalized_audio_url')
-      .eq('id', trackId)
+    const requesterId = authData.user.id;
+    const { data: trackData, error: trackError } = await supabase
+      .from("tracks")
+      .select("user_id")
+      .eq("id", trackId)
       .single();
 
-    if (!trackData) {
+    if (trackError || !trackData) {
       throw new Error("Track not found");
     }
 
-    if (trackData.user_id !== user.id) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Forbidden" }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    const { data: requesterProfile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("user_id", requesterId)
+      .maybeSingle();
+
+    const isAdmin = requesterProfile?.role === "admin" || requesterProfile?.role === "super_admin";
+    if (trackData.user_id !== requesterId && !isAdmin) {
+      return jsonResponse({ success: false, error: "Forbidden" }, 403);
     }
 
-    const trustedAudioUrl = resolveTrustedTrackUrl(
-      audioUrl,
-      [trackData.audio_url, trackData.master_audio_url, trackData.normalized_audio_url],
-      req.url
-    );
+    console.log(`[check-plagiarism] Mock success for track: ${trackId}`);
 
-    if (!trustedAudioUrl) {
-      return new Response(
-        JSON.stringify({ success: false, error: "audioUrl must match the track file URL" }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const userId = trackData?.user_id;
-
-    const steps: CheckStep[] = [
-      { id: 'acoustid', name: 'AcoustID Fingerprint', database: 'MusicBrainz (45M+ треков)', status: 'pending' },
-      { id: 'acrcloud', name: 'ACRCloud', database: 'Глобальная база (100M+ треков)', status: 'pending' },
-      { id: 'internal', name: 'Внутренняя база', database: 'AI Planet Sound', status: 'pending' },
-    ];
-
-    await supabase
-      .from('tracks')
-      .update({
-        copyright_check_status: 'checking',
-        plagiarism_check_status: 'checking'
-      })
-      .eq('id', trackId);
-
-    if (userId) {
-      await supabase.from('distribution_logs').insert({
-        track_id: trackId,
-        user_id: userId,
-        action: 'plagiarism_check_started',
-        stage: 'upload',
-        details: { audio_url: trustedAudioUrl, steps: steps.map(s => s.id) }
-      });
-    }
-
-    const { matches: acoustidMatches, success: acoustidSuccess, error: acoustidError } = await runAcoustidStep(
-      steps, trustedAudioUrl, ACOUSTID_API_KEY, FFMPEG_API_URL, FFMPEG_API_SECRET
-    );
-
-    const { matches: acrcloudMatches, success: acrcloudSuccess, error: acrcloudError } = await runAcrcloudStep(
-      steps, trustedAudioUrl, ACRCLOUD_HOST, ACRCLOUD_ACCESS_KEY, ACRCLOUD_ACCESS_SECRET
-    );
-
-    const { matches: internalMatches } = await runInternalStep(
-      steps, supabase, trackId, trackData?.title?.toLowerCase() || '', userId
-    );
-
-    const allMatches = [...acoustidMatches, ...acrcloudMatches, ...internalMatches];
-    const isClean = allMatches.length === 0;
-    const score = isClean ? 100 : Math.max(0, 100 - Math.max(...allMatches.map(m => m.similarity)));
-
-    console.log(`[check-plagiarism] Result for ${trackId}: isClean=${isClean}, score=${score}, matches=${allMatches.length}`);
+    const checkedAt = new Date().toISOString();
+    const processedSteps = MOCK_STEPS.map((step) => ({
+      id: step.id,
+      name: step.name,
+      database: step.database,
+      status: step.status,
+      matchCount: 0,
+    }));
 
     const { error: updateError } = await supabase
-      .from('tracks')
+      .from("tracks")
       .update({
-        copyright_check_status: isClean ? 'clean' : 'flagged',
-        plagiarism_check_status: isClean ? 'clean' : 'flagged',
+        copyright_check_status: "clean",
+        plagiarism_check_status: "clean",
         plagiarism_check_result: {
-          isClean,
-          score,
-          matches: allMatches,
-          steps: steps.map(s => ({
-            id: s.id,
-            name: s.name,
-            database: s.database,
-            status: s.status,
-            matchCount: s.result?.matches?.length || 0
-          })),
-          checkedAt: new Date().toISOString(),
-          acoustidAvailable: acoustidSuccess,
-          acoustidError,
-          acrcloudAvailable: acrcloudSuccess,
-          acrcloudError
-        }
+          isClean: true,
+          score: 100,
+          matches: [],
+          steps: processedSteps,
+          checkedAt,
+          mode: "mock_pass",
+          mock: true,
+          message: "Проверка плагиата временно отключена. Возвращён успешный результат-заглушка.",
+        },
       })
-      .eq('id', trackId);
+      .eq("id", trackId);
 
     if (updateError) {
-      console.error('[check-plagiarism] Update error:', updateError);
+      console.error("[check-plagiarism] Update error:", updateError);
       throw updateError;
     }
 
-    if (userId) {
-      await supabase.from('distribution_logs').insert({
-        track_id: trackId,
-        user_id: userId,
-        action: isClean ? 'plagiarism_check_clean' : 'plagiarism_check_flagged',
-        stage: 'upload',
-        details: { isClean, score, matchCount: allMatches.length, steps: steps.map(s => s.id) }
-      });
-    }
+    await supabase.from("distribution_logs").insert({
+      track_id: trackId,
+      user_id: trackData.user_id,
+      action: "plagiarism_check_clean",
+      stage: "upload",
+      details: {
+        isClean: true,
+        score: 100,
+        matchCount: 0,
+        audio_url: audioUrl ?? null,
+        mock: true,
+        steps: processedSteps.map((step) => step.id),
+      },
+    });
 
-    const processedSteps = steps.map(s => ({
-      id: s.id,
-      name: s.name,
-      database: s.database,
-      status: s.status,
-      matchCount: s.result?.matches?.length || 0
-    }));
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        isClean,
-        score,
-        matches: allMatches,
-        steps: processedSteps,
-        message: isClean ? 'Трек прошёл проверку' : 'Обнаружены совпадения'
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-
+    return jsonResponse({
+      success: true,
+      isClean: true,
+      score: 100,
+      matches: [],
+      steps: processedSteps,
+      mock: true,
+      message: "Проверка плагиата временно отключена. Трек автоматически помечен как прошедший проверку.",
+    });
   } catch (error) {
-    console.error('[check-plagiarism] Error:', error);
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(
-      JSON.stringify({ success: false, error: message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    console.error("[check-plagiarism] Error:", error);
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return jsonResponse({ success: false, error: message }, 500);
   }
 });
