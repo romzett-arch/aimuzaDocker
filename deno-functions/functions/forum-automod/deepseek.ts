@@ -1,4 +1,5 @@
-const TIMEWEB_AGENT_ACCESS_ID = 'e046a9e4-43f6-47bc-a39f-8a9de8778d02';
+const TIMEWEB_AGENT_ACCESS_ID =
+  Deno.env.get("TIMEWEB_AGENT_ID") || "df42cd86-5e91-459e-a95a-a7befb625292";
 
 export async function callDeepSeek(systemPrompt: string, userMessage: string): Promise<string | null> {
   const TIMEWEB_TOKEN = Deno.env.get("TIMEWEB_AGENT_TOKEN");
@@ -16,7 +17,7 @@ export async function callDeepSeek(systemPrompt: string, userMessage: string): P
       "Authorization": `Bearer ${TIMEWEB_TOKEN}`,
     },
     body: JSON.stringify({
-      model: "deepseek-v3",
+      model: "qwen3.5-flash",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },

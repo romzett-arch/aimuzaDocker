@@ -15,7 +15,8 @@ export const MODE_SERVICE_MAP: Record<string, string> = {
   auto_tag_all: "prompt_suggest_tags",
 };
 
-export const DEEPSEEK_AGENT_ID = 'e046a9e4-43f6-47bc-a39f-8a9de8778d02';
+export const DEEPSEEK_AGENT_ID =
+  Deno.env.get("TIMEWEB_AGENT_ID") || "df42cd86-5e91-459e-a95a-a7befb625292";
 
 export type RequestBody = {
   mode: Mode;

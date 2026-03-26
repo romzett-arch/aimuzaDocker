@@ -47,7 +47,7 @@ ${reportDetails ? `Детали: "${reportDetails}"` : ""}
         Authorization: `Bearer ${TIMEWEB_TOKEN}`,
       },
       body: JSON.stringify({
-        model: "deepseek-v3",
+        model: "qwen3.5-flash",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: content.substring(0, 1500) },

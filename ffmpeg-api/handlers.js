@@ -36,6 +36,11 @@ function safeNumber(value, fallback = null) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function getPublicFfmpegBaseUrl() {
+  const rawBaseUrl = process.env.BASE_URL || 'https://aimuza.ru';
+  return rawBaseUrl.endsWith('/api/ffmpeg') ? rawBaseUrl : `${rawBaseUrl}/api/ffmpeg`;
+}
+
 function createAnalyzeHandler(UPLOAD_DIR) {
   return async (req, res) => {
     const body = req.body;
@@ -212,7 +217,7 @@ function createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR) {
             message: 'FFmpeg: ' + (stderr || err.message || String(err))
           }));
         }
-        const baseUrl = process.env.BASE_URL || 'https://aimuza.ru/api/ffmpeg';
+        const baseUrl = getPublicFfmpegBaseUrl();
         const output_url = `${baseUrl}/output/${outName}`;
         const normalized_url = output_url;
         const original_lufs = parseFloat(analysis.input_i);
@@ -318,7 +323,7 @@ function createProcessWavHandler(UPLOAD_DIR, OUTPUT_DIR) {
             message: 'FFmpeg: ' + (stderr || err.message || String(err))
           }));
         }
-        const baseUrl = process.env.BASE_URL || 'https://aimuza.ru/api/ffmpeg';
+        const baseUrl = getPublicFfmpegBaseUrl();
         const output_url = `${baseUrl}/output/${outName}`;
         const original_lufs = parseFloat(analysis.input_i);
         const normalized_lufs = target_lufs;
@@ -422,10 +427,10 @@ function createCleanMetadataHandler(UPLOAD_DIR, OUTPUT_DIR) {
             message: 'FFmpeg error: ' + (stderr || err.message || String(err))
           }));
         }
-        const baseUrl = process.env.BASE_URL || 'https://aimuza.ru/api/ffmpeg';
+        const baseUrl = getPublicFfmpegBaseUrl();
         const outName = path.basename(outputFile);
         const output_url = `${baseUrl}/output/${outName}`;
-        resolve(res.json({ output_url, metadata }));
+        resolve(res.json({ output_url, cleaned_url: output_url, metadata }));
       });
     });
   };

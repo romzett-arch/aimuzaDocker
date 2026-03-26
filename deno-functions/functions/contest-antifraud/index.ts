@@ -1,6 +1,6 @@
 /**
  * D4: AI-антифрод конкурсов
- * SQL-правила + DeepSeek при аномалиях. Результат в contest_entries.fraud_flags
+ * SQL-правила + Qwen 3.5 Flash при аномалиях. Результат в contest_entries.fraud_flags
  */
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -189,7 +189,7 @@ serve(async (req: Request) => {
             Authorization: `Bearer ${TIMEWEB_TOKEN}`,
           },
           body: JSON.stringify({
-            model: "deepseek-v3",
+            model: "qwen3.5-flash",
             messages: [
               { role: "system", content: systemPrompt },
               { role: "user", content: userPrompt },

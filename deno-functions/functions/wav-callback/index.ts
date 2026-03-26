@@ -22,9 +22,25 @@ function getWavUrl(payload: Record<string, any>): string | null {
     ?? null;
 }
 
-async function isUsableAudioUrl(url: string): Promise<boolean> {
+function toReachableAudioUrl(url: string, ffmpegApiUrl?: string): string {
+  if (!ffmpegApiUrl) return url;
+
   try {
-    const response = await fetch(url, { method: "HEAD" });
+    const target = new URL(url);
+    if (target.pathname.startsWith("/api/ffmpeg/")) {
+      const baseUrl = ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "").replace(/\/$/, "");
+      return `${baseUrl}${target.pathname.replace(/^\/api\/ffmpeg/, "")}${target.search}`;
+    }
+  } catch {
+    return url;
+  }
+
+  return url;
+}
+
+async function isUsableAudioUrl(url: string, ffmpegApiUrl?: string): Promise<boolean> {
+  try {
+    const response = await fetch(toReachableAudioUrl(url, ffmpegApiUrl), { method: "HEAD" });
     if (!response.ok) {
       console.warn(`[wav-cb] HEAD check failed for ${url}: ${response.status}`);
       return false;
@@ -53,6 +69,8 @@ async function processWavViaFfmpeg(
   rawWavUrl: string,
   trackTitle: string,
   artistName: string,
+  publisherName: string,
+  cabinetId: string,
   ffmpegApiUrl: string,
   ffmpegApiSecret: string,
   ffmpegPublicUrl?: string,
@@ -73,8 +91,12 @@ async function processWavViaFfmpeg(
         metadata: {
           title: trackTitle || "",
           artist: artistName || "AIMuza Artist",
-          copyright: `© ${new Date().getFullYear()} ${artistName || "AIMuza Artist"} via AIMuza`,
-          comment: "Generated with AIMuza - aimuza.ru",
+          album: "AIMuza WAV Export",
+          publisher: publisherName || "AIMuza",
+          copyright: `© ${new Date().getFullYear()} ${artistName || "AIMuza Artist"} via ${publisherName || "AIMuza"}`,
+          comment: `Generated with AIMuza - aimuza.ru | Cabinet ID: ${cabinetId}`,
+          TXXX_AIMUZA_CABINET_ID: cabinetId || "",
+          TXXX_AIMUZA_PUBLISHER: publisherName || "AIMuza",
         },
       }),
     });
@@ -103,7 +125,7 @@ async function processWavViaFfmpeg(
       return null;
     }
 
-    const isReachable = await isUsableAudioUrl(outputUrl);
+    const isReachable = await isUsableAudioUrl(outputUrl, ffmpegApiUrl);
     if (!isReachable) {
       console.warn(`[wav-cb] ffmpeg output URL is not downloadable: ${outputUrl}`);
       return null;
@@ -113,6 +135,66 @@ async function processWavViaFfmpeg(
   } catch (err) {
     console.error(`[wav-cb] ffmpeg processing error:`, err);
     return null;
+  }
+}
+
+async function copyWavToStorage(
+  supabase: ReturnType<typeof createClient>,
+  externalUrl: string,
+  trackId: string,
+): Promise<string | null> {
+  try {
+    const response = await fetch(externalUrl);
+    if (!response.ok) {
+      console.error(`[wav-cb] Storage copy download failed: ${response.status}`);
+      return null;
+    }
+
+    const uint8Array = new Uint8Array(await response.arrayBuffer());
+    if (uint8Array.length < 1000) {
+      console.error(`[wav-cb] Storage copy file too small: ${uint8Array.length} bytes`);
+      return null;
+    }
+
+    const filePath = `wav/${trackId}.wav`;
+    const { error } = await supabase.storage
+      .from("tracks")
+      .upload(filePath, uint8Array, { contentType: "audio/wav", upsert: true });
+
+    if (error) {
+      console.error("[wav-cb] Storage upload error:", error);
+      return null;
+    }
+
+    const baseUrl = Deno.env.get("BASE_URL") || "https://aimuza.ru";
+    return `${baseUrl}/storage/v1/object/public/tracks/${filePath}`;
+  } catch (error) {
+    console.error("[wav-cb] Storage copy error:", error);
+    return null;
+  }
+}
+
+async function resumeReleasePackageBuild(
+  trackId: string,
+): Promise<void> {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !supabaseServiceKey) return;
+
+  try {
+    const response = await fetch(`${supabaseUrl.replace(/\/$/, "")}/functions/v1/generate-release-package`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Authorization": `Bearer ${supabaseServiceKey}`,
+      },
+      body: JSON.stringify({ track_id: trackId }),
+    });
+
+    const payload = await response.text();
+    console.log(`[wav-cb] release-package resume ${response.status}: ${payload}`);
+  } catch (error) {
+    console.error("[wav-cb] release-package resume failed:", error);
   }
 }
 
@@ -179,12 +261,12 @@ serve(async (req) => {
 
         const { data: track } = await supabase
           .from("tracks")
-          .select("user_id, title")
+          .select("user_id, title, performer_name, label_name")
           .eq("id", matchedAddon.track_id)
           .maybeSingle();
 
         const { data: profile } = track
-          ? await supabase.from("profiles").select("username").eq("user_id", track.user_id).single()
+          ? await supabase.from("profiles").select("username, display_name, short_id").eq("user_id", track.user_id).single()
           : { data: null };
 
         if (!ffmpegApiUrl || !ffmpegApiSecret) {
@@ -194,7 +276,9 @@ serve(async (req) => {
         const finalWavUrl = await processWavViaFfmpeg(
           originalWavUrl,
           track?.title || "",
-          profile?.username || "AIMuza Artist",
+          track?.performer_name || profile?.display_name || profile?.username || "AIMuza Artist",
+          track?.label_name || "AIMuza",
+          profile?.short_id || track?.user_id || "",
           ffmpegApiUrl,
           ffmpegApiSecret,
           ffmpegPublicUrl ?? undefined,
@@ -204,16 +288,32 @@ serve(async (req) => {
           throw new Error("FFmpeg WAV processing failed");
         }
 
+        const stableWavUrl = await copyWavToStorage(supabase, finalWavUrl, matchedAddon.track_id);
+        if (!stableWavUrl) {
+          throw new Error("Failed to persist WAV to storage");
+        }
+
         await supabase
           .from("track_addons")
           .update({
             status: "completed",
-            result_url: finalWavUrl,
+            result_url: stableWavUrl,
             updated_at: new Date().toISOString(),
           })
           .eq("id", matchedAddon.id);
 
-        console.log("WAV conversion completed:", finalWavUrl);
+        console.log("WAV conversion completed:", stableWavUrl);
+
+        const { data: pendingReleasePackage } = await supabase
+          .from("release_packages")
+          .select("id")
+          .eq("track_id", matchedAddon.track_id)
+          .eq("status", "processing")
+          .maybeSingle();
+
+        if (pendingReleasePackage?.id) {
+          await resumeReleasePackageBuild(matchedAddon.track_id);
+        }
       } else {
         console.error("No matching addon found for task:", taskId);
       }

@@ -6,8 +6,9 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const TIMEWEB_AGENT_ACCESS_ID = "e046a9e4-43f6-47bc-a39f-8a9de8778d02";
-const MODEL_NAME = "deepseek-v3";
+const TIMEWEB_AGENT_ACCESS_ID =
+  Deno.env.get("TIMEWEB_AGENT_ID") || "df42cd86-5e91-459e-a95a-a7befb625292";
+const MODEL_NAME = "qwen3.5-flash";
 const PROMPT_VERSION = "qa_bug_spec_v1";
 
 type RawBugReport = {

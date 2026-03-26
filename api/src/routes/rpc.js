@@ -61,6 +61,7 @@ const ALLOWED_RPC = new Set([
   'radio_place_bid', 'radio_place_prediction', 'radio_skip_ad',
   'cancel_subscription_with_refund', 'check_deposit_limit', 'check_track_upload_limit',
   'get_my_radio_stats', 'purchase_track_upload_pack', 'record_track_upload',
+  'record_track_play', 'record_track_like_update',
   'refund_generation_failed', 'subscribe_to_plan', 'reorder_user_tracks',
   'recalculate_feed_scores', 'record_ad_click', 'record_ad_impression',
   'resolve_qa_ticket', 'resolve_track_voting', 'revoke_share_token',

@@ -6,7 +6,8 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const TIMEWEB_AGENT_ACCESS_ID = "e046a9e4-43f6-47bc-a39f-8a9de8778d02";
+const TIMEWEB_AGENT_ACCESS_ID =
+  Deno.env.get("TIMEWEB_AGENT_ID") || "df42cd86-5e91-459e-a95a-a7befb625292";
 
 interface SeoGenerateRequest {
   entity_type: "track" | "profile" | "forum_topic" | "page";
@@ -58,17 +59,18 @@ interface ChatCompletionResponse {
 function normalizeModel(provider: AiProvider, configuredModel?: string): string {
   const rawModel = configuredModel?.trim();
   if (!rawModel) {
-    return provider === "timeweb" ? "deepseek-v3" : "deepseek-chat";
+    return provider === "timeweb" ? "qwen3.5-flash" : "deepseek-chat";
   }
 
   if (provider === "timeweb") {
     const lowered = rawModel.toLowerCase();
     if (
       lowered === "deepseek-v3.2" ||
+      lowered === "deepseek-v3" ||
       lowered.includes("reasoner") ||
       lowered.includes("deepseek/deepseek-reasoner")
     ) {
-      return "deepseek-v3";
+      return "qwen3.5-flash";
     }
   }
 
@@ -366,7 +368,7 @@ serve(async (req) => {
         hasReasoning: Boolean(reasoning),
       });
 
-      const retryModel = provider === "timeweb" ? "deepseek-v3" : model;
+      const retryModel = provider === "timeweb" ? "qwen3.5-flash" : model;
       const retryRes = await fetch(chatUrl, {
         method: "POST",
         headers: {

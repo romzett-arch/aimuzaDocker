@@ -10,6 +10,8 @@ const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
 const SUNO_API_BASE = "https://api.sunoapi.org";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const MIN_CLIP_DURATION_SECONDS = 10;
+const MAX_CLIP_DURATION_SECONDS = 30;
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -63,7 +65,7 @@ serve(async (req) => {
     // Use admin client to read track (avoids RLS issues with select on tracks)
     const { data: track, error: trackError } = await adminClient
       .from("tracks")
-      .select("id, title, description, status, suno_audio_id, user_id")
+      .select("id, title, description, status, suno_audio_id, user_id, duration")
       .eq("id", trackId)
       .single();
 
@@ -104,8 +106,30 @@ serve(async (req) => {
     console.log(`[Persona] Found Suno IDs: taskId=${taskId}, audioId=${audioId}`);
 
     // Build Suno API payload per docs: https://docs.sunoapi.org/suno-api/generate-persona
-    const vocalStart = typeof clipStart === "number" ? clipStart : 0;
-    const vocalEnd = typeof clipEnd === "number" ? clipEnd : 30;
+    const vocalStart = typeof clipStart === "number" && Number.isFinite(clipStart) ? clipStart : 0;
+    const vocalEnd = typeof clipEnd === "number" && Number.isFinite(clipEnd) ? clipEnd : 30;
+    const clipDuration = vocalEnd - vocalStart;
+
+    if (vocalStart < 0 || vocalEnd <= vocalStart) {
+      return new Response(
+        JSON.stringify({ error: "Некорректный диапазон фрагмента" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (clipDuration < MIN_CLIP_DURATION_SECONDS || clipDuration > MAX_CLIP_DURATION_SECONDS) {
+      return new Response(
+        JSON.stringify({ error: `Длина фрагмента должна быть от ${MIN_CLIP_DURATION_SECONDS} до ${MAX_CLIP_DURATION_SECONDS} секунд` }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (typeof track.duration === "number" && vocalEnd > track.duration) {
+      return new Response(
+        JSON.stringify({ error: "Конец фрагмента выходит за пределы длительности трека" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     const sunoPayload: Record<string, unknown> = {
       taskId,

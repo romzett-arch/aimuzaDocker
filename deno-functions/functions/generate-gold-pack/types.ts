@@ -1,6 +1,7 @@
 export interface GoldPackRequest {
   trackId: string;
   registeredAt?: string;
+  finalizeTrack?: boolean;
 }
 
 export interface TrackMetadata {
@@ -16,9 +17,11 @@ export interface TrackMetadata {
   blockchain_hash: string | null;
   cover_url: string | null;
   master_audio_url: string | null;
+  normalized_audio_url?: string | null;
   certificate_url: string | null;
   created_at: string;
   processing_completed_at: string | null;
+  distribution_status?: string | null;
   profiles: { username: string | null }[] | null;
 }
 

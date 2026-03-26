@@ -10,7 +10,8 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const TIMEWEB_AGENT_ACCESS_ID = "e046a9e4-43f6-47bc-a39f-8a9de8778d02";
+const TIMEWEB_AGENT_ACCESS_ID =
+  Deno.env.get("TIMEWEB_AGENT_ID") || "df42cd86-5e91-459e-a95a-a7befb625292";
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -275,7 +276,7 @@ serve(async (req: Request) => {
         Authorization: `Bearer ${TIMEWEB_TOKEN}`,
       },
       body: JSON.stringify({
-        model: "deepseek-v3",
+        model: "qwen3.5-flash",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },

@@ -1,8 +1,24 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-async function isUsableAudioUrl(url: string): Promise<boolean> {
+function toReachableAudioUrl(url: string, ffmpegApiUrl?: string): string {
+  if (!ffmpegApiUrl) return url;
+
   try {
-    const response = await fetch(url, { method: "HEAD" });
+    const target = new URL(url);
+    if (target.pathname.startsWith("/api/ffmpeg/")) {
+      const baseUrl = ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "").replace(/\/$/, "");
+      return `${baseUrl}${target.pathname.replace(/^\/api\/ffmpeg/, "")}${target.search}`;
+    }
+  } catch {
+    return url;
+  }
+
+  return url;
+}
+
+async function isUsableAudioUrl(url: string, ffmpegApiUrl?: string): Promise<boolean> {
+  try {
+    const response = await fetch(toReachableAudioUrl(url, ffmpegApiUrl), { method: "HEAD" });
     if (!response.ok) {
       console.warn(`[convert-wav] HEAD check failed for ${url}: ${response.status}`);
       return false;
@@ -31,6 +47,8 @@ export async function processWavViaFfmpeg(
   rawWavUrl: string,
   trackTitle: string,
   artistName: string,
+  publisherName: string,
+  cabinetId: string,
   ffmpegApiUrl: string,
   ffmpegApiSecret: string,
   ffmpegPublicUrl?: string,
@@ -51,8 +69,12 @@ export async function processWavViaFfmpeg(
         metadata: {
           title: trackTitle || "",
           artist: artistName || "AIMuza Artist",
-          copyright: `© ${new Date().getFullYear()} ${artistName || "AIMuza Artist"} via AIMuza`,
-          comment: "Generated with AIMuza - aimuza.ru",
+          album: "AIMuza WAV Export",
+          publisher: publisherName || "AIMuza",
+          copyright: `© ${new Date().getFullYear()} ${artistName || "AIMuza Artist"} via ${publisherName || "AIMuza"}`,
+          comment: `Generated with AIMuza - aimuza.ru | Cabinet ID: ${cabinetId}`,
+          TXXX_AIMUZA_CABINET_ID: cabinetId || "",
+          TXXX_AIMUZA_PUBLISHER: publisherName || "AIMuza",
         },
       }),
     });
@@ -81,7 +103,7 @@ export async function processWavViaFfmpeg(
       return null;
     }
 
-    const isReachable = await isUsableAudioUrl(outputUrl);
+    const isReachable = await isUsableAudioUrl(outputUrl, ffmpegApiUrl);
     if (!isReachable) {
       console.warn(`[convert-wav] ffmpeg output URL is not downloadable: ${outputUrl}`);
       return null;

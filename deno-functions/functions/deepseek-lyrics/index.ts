@@ -5,7 +5,7 @@ import type { RequestBody } from "./types.ts";
 import { checkAndDeductBalance } from "./billing.ts";
 import { buildPrompts } from "./prompts.ts";
 
-const modelName = "deepseek-v3.2";
+const modelName = "qwen3.5-flash";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {

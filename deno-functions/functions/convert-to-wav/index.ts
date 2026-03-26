@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "./constants.ts";
 import { validateAuth, AuthError } from "./auth.ts";
-import { processWavViaFfmpeg } from "./utils.ts";
+import { copyWavToStorage, processWavViaFfmpeg } from "./utils.ts";
 
 async function fetchReadyWavUrl(taskId: string, apiKey: string): Promise<string | null> {
   const statusResponse = await fetch(
@@ -30,6 +30,67 @@ function getResponseTaskId(result: Record<string, any>): string | null {
     ?? result?.taskId
     ?? result?.task_id
     ?? null;
+}
+
+async function persistAddonState(
+  supabase: ReturnType<typeof createClient>,
+  params: {
+    trackId: string;
+    userId: string;
+    addonServiceId: string;
+    status: string;
+    resultUrl: string;
+  },
+): Promise<string> {
+  const { trackId, userId, addonServiceId, status, resultUrl } = params;
+
+  const { data: existingAddon, error: existingAddonError } = await supabase
+    .from("track_addons")
+    .select("id")
+    .eq("track_id", trackId)
+    .eq("addon_service_id", addonServiceId)
+    .maybeSingle();
+
+  if (existingAddonError) {
+    throw new Error(`track_addons_lookup_failed: ${existingAddonError.message}`);
+  }
+
+  if (existingAddon?.id) {
+    const { error: updateError } = await supabase
+      .from("track_addons")
+      .update({
+        user_id: userId,
+        status,
+        result_url: resultUrl,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", existingAddon.id);
+
+    if (updateError) {
+      throw new Error(`track_addons_update_failed: ${updateError.message}`);
+    }
+
+    return existingAddon.id;
+  }
+
+  const { data: insertedAddon, error: insertError } = await supabase
+    .from("track_addons")
+    .insert({
+      track_id: trackId,
+      user_id: userId,
+      addon_service_id: addonServiceId,
+      status,
+      result_url: resultUrl,
+      updated_at: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+
+  if (insertError || !insertedAddon?.id) {
+    throw new Error(`track_addons_insert_failed: ${insertError?.message || "missing_inserted_id"}`);
+  }
+
+  return insertedAddon.id;
 }
 
 serve(async (req) => {
@@ -78,7 +139,7 @@ serve(async (req) => {
 
     const { data: track, error: trackError } = await supabase
       .from("tracks")
-      .select("id, user_id, suno_audio_id, title, description, audio_url")
+      .select("id, user_id, suno_audio_id, title, description, audio_url, performer_name, label_name")
       .eq("id", track_id)
       .single();
 
@@ -114,10 +175,12 @@ serve(async (req) => {
     const finalizeWavAddon = async (originalWavUrl: string, addonId?: string) => {
       const { data: profile } = await supabase
         .from("profiles")
-        .select("username")
+        .select("username, display_name, short_id")
         .eq("user_id", track.user_id)
         .single();
-      const artistName = profile?.username || "AIMuza Artist";
+      const artistName = track.performer_name || profile?.display_name || profile?.username || "AIMuza Artist";
+      const publisherName = track.label_name || "AIMuza";
+      const cabinetId = profile?.short_id || track.user_id;
 
       if (!ffmpegApiUrl || !ffmpegApiSecret) {
         await markAddonFailed(addonId);
@@ -128,6 +191,8 @@ serve(async (req) => {
         originalWavUrl,
         track.title,
         artistName,
+        publisherName,
+        cabinetId,
         ffmpegApiUrl,
         ffmpegApiSecret,
         ffmpegPublicUrl ?? undefined,
@@ -138,15 +203,21 @@ serve(async (req) => {
         throw new Error("FFmpeg WAV processing failed");
       }
 
-      await supabase.from("track_addons").upsert({
-        track_id,
-        addon_service_id: addonService.id,
-        status: "completed",
-        result_url: finalWavUrl,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "track_id,addon_service_id" });
+      const stableWavUrl = await copyWavToStorage(supabase, finalWavUrl, track_id);
+      if (!stableWavUrl) {
+        await markAddonFailed(addonId);
+        throw new Error("Failed to persist WAV to storage");
+      }
 
-      return finalWavUrl;
+      await persistAddonState(supabase, {
+        trackId: track_id,
+        userId: track.user_id,
+        addonServiceId: addonService.id,
+        status: "completed",
+        resultUrl: stableWavUrl,
+      });
+
+      return stableWavUrl;
     };
 
     // Проверяем существующий addon — не списываем повторно если уже processing/completed
@@ -321,13 +392,13 @@ serve(async (req) => {
       }
 
       // WAV у Suno ещё в обработке
-      await supabase.from("track_addons").upsert({
-        track_id,
-        addon_service_id: addonService.id,
+      await persistAddonState(supabase, {
+        trackId: track_id,
+        userId: track.user_id,
+        addonServiceId: addonService.id,
         status: "processing",
-        result_url: JSON.stringify({ wav_task_id: responseTaskId, suno_audio_id: audioId }),
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "track_id,addon_service_id" });
+        resultUrl: JSON.stringify({ wav_task_id: responseTaskId, suno_audio_id: audioId }),
+      });
 
       return new Response(
         JSON.stringify({ success: true, taskId: responseTaskId, message: "WAV conversion in progress" }),
@@ -339,13 +410,13 @@ serve(async (req) => {
       throw new Error(result.msg || "Failed to start WAV conversion");
     }
 
-    await supabase.from("track_addons").upsert({
-      track_id,
-      addon_service_id: addonService.id,
+    await persistAddonState(supabase, {
+      trackId: track_id,
+      userId: track.user_id,
+      addonServiceId: addonService.id,
       status: "processing",
-      result_url: JSON.stringify({ wav_task_id: responseTaskId, suno_audio_id: audioId }),
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "track_id,addon_service_id" });
+      resultUrl: JSON.stringify({ wav_task_id: responseTaskId, suno_audio_id: audioId }),
+    });
 
     return new Response(
       JSON.stringify({ success: true, taskId: responseTaskId }),

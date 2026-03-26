@@ -85,7 +85,7 @@ ${artistStylesList}
         "x-proxy-source": "lovable-app",
       },
       body: JSON.stringify({
-        model: "deepseek-v3",
+        model: "qwen3.5-flash",
         messages: [
           { role: "system", content: "Ты музыкальный классификатор. Отвечай только JSON." },
           { role: "user", content: prompt },

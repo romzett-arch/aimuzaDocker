@@ -187,8 +187,9 @@ export async function runMasterProcessing(
         },
       },
     }, 60000, { 'x-api-key': FFMPEG_API_SECRET });
-    if (metaResult?.cleaned_url) {
-      processedUrl = metaResult.cleaned_url;
+    const cleanedUrl = metaResult?.cleaned_url || metaResult?.output_url || metaResult?.normalized_url;
+    if (cleanedUrl) {
+      processedUrl = cleanedUrl;
       metadataCleaned = true;
       metadataBranded = true;
       console.log(`[process-master-audio] ✓ Metadata cleaned via FFMPEG API`);
@@ -290,36 +291,46 @@ export async function runMasterProcessing(
   const certificateUrl = `${Deno.env.get('BASE_URL') || 'https://aimuza.ru'}/storage/v1/object/public/tracks/${certificateFileName}`;
   await supabase.from('tracks').update({
     certificate_url: certificateUrl,
+    master_audio_url: processedUrl,
   }).eq('id', trackId);
 
   await updateStage('gold_pack_assembly');
-  try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const goldPackResponse = await fetch(
-      `${supabaseUrl}/functions/v1/generate-gold-pack`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceKey}`,
-        },
-        body: JSON.stringify({ trackId, registeredAt }),
-      }
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  const goldPackResponse = await fetch(
+    `${supabaseUrl}/functions/v1/generate-gold-pack`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${serviceKey}`,
+      },
+      body: JSON.stringify({ trackId, registeredAt, finalizeTrack: true }),
+    }
+  );
+
+  const goldPackResult = await goldPackResponse.json();
+  if (!goldPackResponse.ok || !goldPackResult?.success) {
+    console.error('[process-master-audio] Gold pack error:', goldPackResult);
+    await supabase.from('notifications').insert({
+      user_id: track.user_id,
+      type: 'system',
+      title: '⚠️ Gold Pack требует повторной сборки',
+      message: `Обработка трека "${track.title}" завершилась, но финальная упаковка не собралась автоматически. Нажмите "Повторить сборку" в Level Pro.`,
+      target_type: 'track',
+      target_id: trackId,
+    });
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: goldPackResult?.error || 'gold_pack_assembly_failed',
+        message: 'Финальная сборка Gold Pack не завершилась',
+      }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
-    const goldPackResult = await goldPackResponse.json();
-    console.log(`[process-master-audio] ✓ Gold pack:`, goldPackResult);
-  } catch (gpError) {
-    console.error('[process-master-audio] Gold pack error:', gpError);
   }
 
-  await supabase.from('tracks').update({
-    distribution_status: 'completed',
-    processing_stage: 'completed',
-    processing_progress: 100,
-    processing_completed_at: new Date().toISOString(),
-    master_audio_url: processedUrl,
-  }).eq('id', trackId);
+  console.log(`[process-master-audio] ✓ Gold pack:`, goldPackResult);
 
   const completionDetails = {
     real_processing: true,
@@ -346,7 +357,8 @@ export async function runMasterProcessing(
       branded: metadataBranded,
       artist: username,
     },
-    gold_pack_ready: true,
+    gold_pack_ready: goldPackResult?.goldPack?.releaseReady ?? false,
+    gold_pack: goldPackResult?.goldPack ?? null,
   };
 
   await supabase.from('distribution_logs').insert({
@@ -355,15 +367,6 @@ export async function runMasterProcessing(
     action: 'processing_completed',
     stage: 'level_pro',
     details: completionDetails,
-  });
-
-  await supabase.from('notifications').insert({
-    user_id: track.user_id,
-    type: 'system',
-    title: '🎉 Золотой пакет готов!',
-    message: `Трек "${track.title}" полностью обработан. WAV (-14 LUFS), XML-метаданные, сертификат и OTS-доказательство доступны для скачивания.`,
-    target_type: 'track',
-    target_id: trackId,
   });
 
   console.log(`[process-master-audio] ✅ COMPLETED. All stages passed with real processing.`);

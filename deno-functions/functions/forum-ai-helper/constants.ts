@@ -13,7 +13,8 @@ export const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-export const AGENT_ACCESS_ID = "e046a9e4-43f6-47bc-a39f-8a9de8778d02";
+export const AGENT_ACCESS_ID =
+  Deno.env.get("TIMEWEB_AGENT_ID") || "df42cd86-5e91-459e-a95a-a7befb625292";
 
 export const SERVICE_NAMES: Record<Mode, string> = {
   spell_check: "forum_spell_check",

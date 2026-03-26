@@ -6,7 +6,8 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const AGENT_ACCESS_ID = "e046a9e4-43f6-47bc-a39f-8a9de8778d02";
+const AGENT_ACCESS_ID =
+  Deno.env.get("TIMEWEB_AGENT_ID") || "df42cd86-5e91-459e-a95a-a7befb625292";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -94,7 +95,7 @@ serve(async (req) => {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
         body: JSON.stringify({
-          model: "deepseek-v3.2",
+          model: "qwen3.5-flash",
           messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
           temperature: 0.5,
           max_tokens: 300,
@@ -116,7 +117,7 @@ serve(async (req) => {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
       body: JSON.stringify({
-        model: "deepseek-v3.2",
+        model: "qwen3.5-flash",
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
         temperature: 0.3,
         max_tokens: 150,
