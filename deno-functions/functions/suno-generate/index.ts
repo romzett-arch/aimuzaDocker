@@ -11,6 +11,32 @@ const corsHeaders = {
 const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
 const SUNO_API_BASE = "https://api.sunoapi.org";
 
+function mapAiModelVersionToSunoModel(version: string | null | undefined): string {
+  const normalized = (version || "").trim().toUpperCase().replace(/\s+/g, "");
+
+  switch (normalized) {
+    case "V5.5":
+    case "V5_5":
+      return "V5_5";
+    case "V5":
+      return "V5";
+    case "V4.5ALL":
+    case "V4_5ALL":
+      return "V4_5ALL";
+    case "V4.5PLUS":
+    case "V4.5+":
+    case "V4_5PLUS":
+      return "V4_5PLUS";
+    case "V4.5":
+    case "V4_5":
+      return "V4_5";
+    case "V4":
+      return "V4";
+    default:
+      return "V5";
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -44,7 +70,7 @@ serve(async (req) => {
       );
     }
 
-    const { trackId, trackIds, prompt, lyrics, style, title, instrumental, audioReferenceUrl, negativeTags, vocalGender, personaId } = await req.json();
+    const { trackId, trackIds, prompt, lyrics, style, title, instrumental, modelId, audioReferenceUrl, negativeTags, vocalGender, personaId } = await req.json();
 
     if (!trackId) {
       return new Response(
@@ -63,9 +89,26 @@ serve(async (req) => {
     console.log(`Negative tags: ${negativeTags || 'none'}`);
     console.log(`Vocal gender: ${vocalGender || 'none'}`);
     console.log(`Persona ID: ${personaId || 'none'}`);
+    console.log(`Model ID: ${modelId || 'default'}`);
 
     const cleanedStyle = cleanStyleForSuno(style || "");
     console.log(`Cleaned style: ${cleanedStyle}`);
+
+    let resolvedSunoModel = "V5";
+    if (modelId) {
+      const { data: aiModel, error: modelError } = await supabaseClient
+        .from("ai_models")
+        .select("id, version")
+        .eq("id", modelId)
+        .maybeSingle();
+
+      if (modelError) {
+        console.error("Failed to resolve ai_models version:", modelError);
+      } else {
+        resolvedSunoModel = mapAiModelVersionToSunoModel(aiModel?.version);
+        console.log(`Resolved Suno model: ${resolvedSunoModel} from version "${aiModel?.version}"`);
+      }
+    }
 
     const { error: updateError } = await supabaseClient
       .from("tracks")
@@ -93,7 +136,7 @@ serve(async (req) => {
       : baseCallbackUrl;
 
     const sunoPayload: Record<string, unknown> = {
-      model: "V5",
+      model: resolvedSunoModel,
       customMode: useCustomMode,
       instrumental: instrumental || false,
       callBackUrl,
