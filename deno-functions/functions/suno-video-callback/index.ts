@@ -124,6 +124,31 @@ async function resumeReleasePackageBuild(trackId: string): Promise<void> {
   }
 }
 
+async function loadTrackData(
+  supabase: ReturnType<typeof createClient>,
+  trackId: string | null | undefined,
+): Promise<{
+  id: string;
+  user_id: string;
+  title: string;
+  suno_audio_id: string | null;
+} | null> {
+  if (!trackId) return null;
+
+  const { data, error } = await supabase
+    .from("tracks")
+    .select("id, user_id, title, suno_audio_id")
+    .eq("id", trackId)
+    .maybeSingle();
+
+  if (error) {
+    console.error(`Failed to load track ${trackId}:`, error);
+    return null;
+  }
+
+  return normalizeTrackData(data);
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -166,7 +191,7 @@ serve(async (req) => {
 
     const { data: addons, error: findError } = await supabase
       .from("track_addons")
-      .select("id, track_id, user_id, addon_service_id, status, result_url, tracks!inner(id, user_id, title, suno_audio_id)")
+      .select("id, track_id, user_id, addon_service_id, status, result_url, tracks(id, user_id, title, suno_audio_id)")
       .eq("addon_service_id", addonService.id)
       .in("status", ["processing", "completed"]);
 
@@ -226,7 +251,10 @@ serve(async (req) => {
       });
     }
 
-    const trackData = normalizeTrackData(matchedAddon.tracks);
+    let trackData = normalizeTrackData(matchedAddon.tracks);
+    if (!trackData) {
+      trackData = await loadTrackData(supabase, matchedAddon.track_id);
+    }
     if (!trackData) {
       throw new Error(`track_relation_missing_for_addon:${matchedAddon.id}`);
     }

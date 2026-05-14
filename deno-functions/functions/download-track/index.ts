@@ -6,6 +6,26 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+function toInternalAssetUrl(url: string, supabaseUrl: string, ffmpegApiUrl?: string | null): string {
+  const ffmpegInternalBase = ffmpegApiUrl
+    ? ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "")
+    : "http://ffmpeg-api:3001";
+
+  if (url.includes("localhost")) {
+    return url.replace("http://localhost", supabaseUrl.replace(/\/$/, ""));
+  }
+
+  if (/https?:\/\/(?:www\.)?aimuza\.ru\/api\/ffmpeg/.test(url)) {
+    return url.replace(/https?:\/\/(?:www\.)?aimuza\.ru\/api\/ffmpeg/, ffmpegInternalBase);
+  }
+
+  if (/https?:\/\/(?:www\.)?aimuza\.ru/.test(url)) {
+    return url.replace(/https?:\/\/(?:www\.)?aimuza\.ru/, supabaseUrl.replace(/\/$/, ""));
+  }
+
+  return url;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -166,7 +186,7 @@ serve(async (req) => {
         "x-api-key": ffmpegApiSecret!,
       },
       body: JSON.stringify({
-        audio_url: track.audio_url,
+        audio_url: toInternalAssetUrl(track.audio_url, supabaseUrl, ffmpegApiUrl),
         target_lufs: -14,
         strip_metadata: true,
         brand_metadata: true,

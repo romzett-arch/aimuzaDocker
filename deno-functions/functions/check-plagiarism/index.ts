@@ -11,7 +11,7 @@ const corsHeaders = {
 const MOCK_STEPS: CheckStep[] = [
   { id: "acoustid", name: "AcoustID Fingerprint", database: "MusicBrainz (45M+ треков)", status: "done" },
   { id: "acrcloud", name: "ACRCloud", database: "Глобальная база (100M+ треков)", status: "done" },
-  { id: "internal", name: "Внутренняя база", database: "AI Planet Sound", status: "done" },
+  { id: "internal", name: "Внутренняя база", database: "AIMUZA", status: "done" },
 ];
 
 function jsonResponse(body: unknown, status = 200) {

@@ -10,6 +10,9 @@ const corsHeaders = {
 
 const TRACKS_BUCKET = "tracks";
 const DEFAULT_BASE_URL = "https://aimuza.ru";
+const STORAGE_UPLOAD_MAX_ATTEMPTS = 12;
+const STORAGE_UPLOAD_BASE_DELAY_MS = 5_000;
+const STORAGE_UPLOAD_MAX_DELAY_MS = 45_000;
 
 type ReleasePackageStatus = "processing" | "completed" | "failed";
 
@@ -32,6 +35,7 @@ interface ReleasePackageRow {
   requested_genre: string | null;
   requested_has_lyrics: boolean | null;
   requested_include_deposit: boolean | null;
+  requested_move_to_my_releases: boolean | null;
   error_message: string | null;
 }
 
@@ -43,6 +47,7 @@ interface ExistingReleasePackageState {
   requested_genre: string | null;
   requested_has_lyrics: boolean | null;
   requested_include_deposit: boolean | null;
+  requested_move_to_my_releases: boolean | null;
 }
 
 interface WavPreparationResult {
@@ -62,6 +67,25 @@ interface ReleaseMetadata {
   publisherName: string;
   cabinetId: string;
   metadata: Record<string, string>;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStorageError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const candidate = error as { status?: number; statusCode?: string | number; message?: string };
+  const statusCode = String(candidate.statusCode ?? candidate.status ?? "");
+  const message = String(candidate.message ?? "");
+
+  return statusCode === "429"
+    || statusCode === "408"
+    || statusCode === "409"
+    || /rate limit/i.test(message)
+    || /too many requests/i.test(message)
+    || /resource already exists/i.test(message);
 }
 
 function stripFfmpegRoute(url: string): string {
@@ -211,16 +235,31 @@ async function uploadBytes(
   bytes: Uint8Array,
   contentType: string,
 ): Promise<void> {
-  const { error } = await supabase.storage
-    .from(TRACKS_BUCKET)
-    .upload(fileName, new Blob([bytes], { type: contentType }), {
-      upsert: true,
-      contentType,
-      cacheControl: "0",
-    });
+  for (let attempt = 1; attempt <= STORAGE_UPLOAD_MAX_ATTEMPTS; attempt++) {
+    const { error } = await supabase.storage
+      .from(TRACKS_BUCKET)
+      .upload(fileName, new Blob([bytes], { type: contentType }), {
+        upsert: true,
+        contentType,
+        cacheControl: "0",
+      });
 
-  if (error) {
-    throw new Error(`upload_failed:${fileName}:${error.message}`);
+    if (!error) {
+      return;
+    }
+
+    console.error(`[generate-release-package] Upload error on attempt ${attempt}/${STORAGE_UPLOAD_MAX_ATTEMPTS}:`, error);
+
+    if (!isRetryableStorageError(error) || attempt === STORAGE_UPLOAD_MAX_ATTEMPTS) {
+      throw new Error(`upload_failed:${fileName}:${error.message}`);
+    }
+
+    const delayMs = Math.min(
+      STORAGE_UPLOAD_MAX_DELAY_MS,
+      STORAGE_UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt - 1),
+    );
+    console.warn(`[generate-release-package] Storage rate limit hit, retrying in ${delayMs}ms...`);
+    await sleep(delayMs);
   }
 }
 
@@ -238,7 +277,7 @@ async function upsertReleasePackage(
   const now = new Date().toISOString();
   const { data: existing, error: selectError } = await supabase
     .from("release_packages")
-    .select("id, requested_title, requested_performer_name, requested_author_name, requested_genre, requested_has_lyrics, requested_include_deposit")
+    .select("id, requested_title, requested_performer_name, requested_author_name, requested_genre, requested_has_lyrics, requested_include_deposit, requested_move_to_my_releases")
     .eq("track_id", trackId)
     .maybeSingle<ExistingReleasePackageState>();
 
@@ -263,6 +302,7 @@ async function upsertReleasePackage(
     requested_genre: updates.requested_genre ?? existing?.requested_genre ?? null,
     requested_has_lyrics: updates.requested_has_lyrics ?? existing?.requested_has_lyrics ?? null,
     requested_include_deposit: updates.requested_include_deposit ?? existing?.requested_include_deposit ?? null,
+    requested_move_to_my_releases: updates.requested_move_to_my_releases ?? existing?.requested_move_to_my_releases ?? null,
     error_message: updates.error_message ?? null,
     updated_at: now,
   };
@@ -301,8 +341,11 @@ function buildReleaseInfoText(input: {
   genreName: string;
   publisherName: string;
   includeDeposit: boolean;
+  promptText?: string | null;
+  lyricsText?: string | null;
+  includeLyricsBlock: boolean;
 }): string {
-  return [
+  const sections = [
     "AIMuza Release Package",
     "",
     `Title: ${input.title}`,
@@ -312,7 +355,37 @@ function buildReleaseInfoText(input: {
     `Publisher: ${input.publisherName}`,
     `Deposit included: ${input.includeDeposit ? "yes" : "no"}`,
     `Generated at: ${new Date().toISOString()}`,
-  ].join("\n");
+  ];
+
+  if (input.includeLyricsBlock) {
+    sections.push("", "Lyrics:");
+    sections.push(input.lyricsText?.trim() || "Текст отсутствует");
+    sections.push("", "Prompt:");
+    sections.push(input.promptText?.trim() || "Промт отсутствует");
+  }
+
+  return sections.join("\n");
+}
+
+function buildGenreText(input: {
+  genreName: string;
+  hasLyrics: boolean;
+  lyricsText?: string | null;
+  promptText?: string | null;
+}): string {
+  const sections = [
+    input.genreName,
+    input.hasLyrics ? "с текстом" : "без текста",
+  ];
+
+  if (input.hasLyrics) {
+    sections.push("", "Текст трека:");
+    sections.push(input.lyricsText?.trim() || "Текст отсутствует");
+    sections.push("", "Промт:");
+    sections.push(input.promptText?.trim() || "Промт отсутствует");
+  }
+
+  return `${sections.join("\n")}\n`;
 }
 
 async function callFfmpegJson(
@@ -543,6 +616,7 @@ serve(async (req) => {
     const requestedReleaseGenre = typeof body?.release_genre === "string" ? body.release_genre.trim() : "";
     const requestedHasLyrics = typeof body?.has_lyrics === "boolean" ? body.has_lyrics : null;
     const requestedIncludeDeposit = typeof body?.include_deposit === "boolean" ? body.include_deposit : null;
+    const requestedMoveToMyReleases = typeof body?.move_to_my_releases === "boolean" ? body.move_to_my_releases : null;
     const forceRegenerate = body?.force_regenerate === true;
     requestedTrackId = trackId || null;
 
@@ -575,7 +649,7 @@ serve(async (req) => {
     const { data: track, error: trackError } = await supabase
       .from("tracks")
       .select(`
-        id, user_id, title, audio_url, wav_url, cover_url, status, source_type, created_at, suno_audio_id, lyrics,
+        id, user_id, title, description, audio_url, wav_url, cover_url, status, source_type, created_at, suno_audio_id, lyrics,
         performer_name, label_name, music_author, lyrics_author,
         genre:genres(name_ru, name)
       `)
@@ -614,7 +688,7 @@ serve(async (req) => {
 
     const { data: existingPackage } = await supabase
       .from("release_packages")
-      .select("status, zip_url, mp3_url, wav_url, cover_url, genre_txt_url, certificate_url, certificate_pdf_url, blockchain_proof_url, requested_title, requested_performer_name, requested_author_name, requested_genre, requested_has_lyrics, requested_include_deposit, error_message")
+      .select("status, zip_url, mp3_url, wav_url, cover_url, genre_txt_url, certificate_url, certificate_pdf_url, blockchain_proof_url, requested_title, requested_performer_name, requested_author_name, requested_genre, requested_has_lyrics, requested_include_deposit, requested_move_to_my_releases, error_message")
       .eq("track_id", trackId)
       .maybeSingle();
 
@@ -643,6 +717,7 @@ serve(async (req) => {
       requested_genre: genreName,
       requested_has_lyrics: hasLyrics,
       requested_include_deposit: includeDeposit,
+      requested_move_to_my_releases: requestedMoveToMyReleases,
       error_message: null,
     });
 
@@ -699,7 +774,14 @@ serve(async (req) => {
     const wavBytes = await fetchBytes(wavUrl, req.url, ffmpegBaseUrl, storageOrigin);
     const musicVideoBytes = await fetchBytes(musicVideoPreparation.videoUrl, req.url, ffmpegBaseUrl, storageOrigin);
 
-    const genreBytes = new TextEncoder().encode(`${genreName}\n${hasLyrics ? "с текстом" : "без текста"}\n`);
+    const promptText = track.description || null;
+    const lyricsText = track.lyrics || null;
+    const genreBytes = new TextEncoder().encode(buildGenreText({
+      genreName,
+      hasLyrics,
+      lyricsText,
+      promptText,
+    }));
     const releaseInfoBytes = new TextEncoder().encode(buildReleaseInfoText({
       title: trackTitle,
       artistName: releaseMeta.artistName,
@@ -707,6 +789,9 @@ serve(async (req) => {
       genreName,
       publisherName: releaseMeta.publisherName,
       includeDeposit,
+      promptText,
+      lyricsText,
+      includeLyricsBlock: hasLyrics,
     }));
     const genreTxtUrl = null;
 

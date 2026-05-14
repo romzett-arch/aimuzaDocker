@@ -37,7 +37,7 @@ function safePath(bucket, filePath) {
 
 // Multer — принимаем файлы в память (any field name)
 const upload = multer({
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+  limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB for release masters
   storage: multer.memoryStorage(),
 });
 
@@ -45,7 +45,7 @@ const ALLOWED_UPLOAD_EXTENSIONS = new Set([
   '.mp3', '.wav', '.ogg', '.flac', '.aac',
   '.mp4', '.webm',
   '.jpg', '.jpeg', '.png', '.gif', '.webp',
-  '.pdf', '.zip', '.json',
+  '.pdf', '.zip', '.json', '.txt', '.csv', '.xml', '.xlsx',
   '.html', // сертификаты депонирования (lyrics-deposit, track-deposit)
 ]);
 
@@ -73,7 +73,7 @@ router.get('/bucket/:bucketId', (req, res) => {
     name: bucketId,
     public: false,
     allowed_mime_types: null,
-    file_size_limit: 52428800,
+    file_size_limit: 1073741824,
   };
   res.json(config);
 });
@@ -207,6 +207,10 @@ router.get('/object/public/:bucket/*', (req, res) => {
       '.pdf': 'application/pdf',
       '.json': 'application/json',
       '.zip': 'application/zip',
+      '.txt': 'text/plain; charset=utf-8',
+      '.csv': 'text/csv; charset=utf-8',
+      '.xml': 'application/xml',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       '.html': 'text/html; charset=utf-8',
     };
 

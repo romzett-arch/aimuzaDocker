@@ -8,6 +8,86 @@ const corsHeaders = {
 
 const SITE_URL = "https://aimuza.ru";
 
+const DEFAULT_TITLE = "AIMUZA — социальная сеть AI-музыкантов и релизы через НОТА-ФЕЯ";
+const DEFAULT_DESCRIPTION =
+  "AIMUZA — социальная платформа для AI-музыкантов: публикуйте треки, развивайте профиль артиста, находите слушателей и выпускайте релизы через лейбл НОТА-ФЕЯ.";
+
+const STATIC_PAGE_KEYS: Record<string, string> = {
+  "/": "home",
+  "/catalog": "catalog",
+  "/feed": "feed",
+  "/users": "users",
+  "/playlists": "playlists",
+  "/forum": "forum",
+  "/radio": "radio",
+  "/pricing": "pricing",
+  "/terms": "terms",
+  "/offer": "offer",
+  "/privacy": "privacy",
+  "/requisites": "requisites",
+  "/distribution-requirements": "distribution-requirements",
+  "/audit-policy": "audit-policy",
+};
+
+const STATIC_PAGE_FALLBACKS: Record<string, { title: string; description: string }> = {
+  home: {
+    title: "AIMUZA — социальная сеть AI-музыкантов",
+    description: "Публикуйте треки, находите слушателей и выпускайте релизы через музыкальный лейбл НОТА-ФЕЯ.",
+  },
+  catalog: {
+    title: "Каталог треков и артистов AIMUZA",
+    description: "Слушайте треки AI-музыкантов, открывайте новых артистов, жанры и релизы в каталоге AIMUZA.",
+  },
+  feed: {
+    title: "Музыкальная лента AIMUZA",
+    description: "Следите за новыми треками, активностью артистов, подборками и релизами сообщества AIMUZA.",
+  },
+  users: {
+    title: "AI-музыканты и артисты AIMUZA",
+    description: "Изучайте профили AI-музыкантов, находите авторов, слушателей и новые музыкальные коллаборации.",
+  },
+  playlists: {
+    title: "Плейлисты AIMUZA",
+    description: "Слушайте подборки треков AIMUZA, открывайте новые жанры и сохраняйте музыкальные коллекции сообщества.",
+  },
+  forum: {
+    title: "Форум AI-музыкантов AIMUZA",
+    description: "Обсуждайте релизы, продакшн, AI-инструменты и дистрибуцию с музыкальным сообществом AIMUZA.",
+  },
+  radio: {
+    title: "Онлайн-радио AIMUZA",
+    description: "Слушайте радио AIMUZA с треками артистов сообщества, новыми релизами и музыкальными открытиями.",
+  },
+  pricing: {
+    title: "Тарифы AIMUZA для артистов",
+    description: "Тарифы для публикации треков, AI-инструментов, депонирования, продвижения и дистрибуции релизов.",
+  },
+  terms: {
+    title: "Пользовательское соглашение AIMUZA",
+    description: "Официальное пользовательское соглашение сервиса AIMUZA для артистов и пользователей платформы.",
+  },
+  offer: {
+    title: "Публичная оферта AIMUZA",
+    description: "Публичная оферта AIMUZA с условиями оказания услуг, публикации контента и платных функций платформы.",
+  },
+  privacy: {
+    title: "Политика конфиденциальности AIMUZA",
+    description: "Политика конфиденциальности AIMUZA: обработка персональных данных, безопасность и права пользователей.",
+  },
+  requisites: {
+    title: "Реквизиты AIMUZA",
+    description: "Юридические и платёжные реквизиты AIMUZA и музыкального лейбла НОТА-ФЕЯ.",
+  },
+  "distribution-requirements": {
+    title: "Требования к релизам для дистрибуции",
+    description: "Проверьте требования AIMUZA к трекам, метаданным и материалам перед отправкой релиза на дистрибуцию.",
+  },
+  "audit-policy": {
+    title: "Политика модерации и аудита AIMUZA",
+    description: "Как AIMUZA проверяет релизы, контент и соблюдение правил перед публикацией и дистрибуцией.",
+  },
+};
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -38,8 +118,8 @@ serve(async (req) => {
     const url = new URL(req.url);
     const path = normalizeOgPath(url.searchParams.get("url") || url.searchParams.get("path"));
 
-    let title = "AIMUZA — Хаб AI музыкантов";
-    let description = "Создавайте уникальную музыку с помощью искусственного интеллекта.";
+    let title = DEFAULT_TITLE;
+    let description = DEFAULT_DESCRIPTION;
     let image = `${SITE_URL}/pwa-512x512.png`;
     let type = "website";
 
@@ -48,7 +128,29 @@ serve(async (req) => {
     const matchArtist = path.match(/^\/artist\/([^\/\?]+)/);
     const matchForumTopic = path.match(/^\/forum\/t\/([^\/\?]+)/);
 
-    if (matchTrack) {
+    const staticPageKey = STATIC_PAGE_KEYS[path.replace(/\/$/, "") || "/"];
+
+    if (staticPageKey) {
+      const fallback = STATIC_PAGE_FALLBACKS[staticPageKey];
+      if (fallback) {
+        title = fallback.title;
+        description = fallback.description;
+      }
+
+      const { data: meta } = await supabase
+        .from("seo_metadata")
+        .select("title, description, og_title, og_description, og_image_url")
+        .eq("entity_type", "page")
+        .eq("page_key", staticPageKey)
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (meta) {
+        title = meta.og_title || meta.title || title;
+        description = meta.og_description || meta.description || description;
+        if (meta.og_image_url) image = meta.og_image_url.startsWith("http") ? meta.og_image_url : `${SITE_URL}${meta.og_image_url}`;
+      }
+    } else if (matchTrack) {
       const slugOrId = matchTrack[1];
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slugOrId);
       const { data: track } = await supabase
@@ -112,13 +214,19 @@ serve(async (req) => {
   <meta property="og:image" content="${safeImage}">
   <meta property="og:site_name" content="AIMUZA">
   <meta property="og:locale" content="ru_RU">
+  <link rel="canonical" href="${safeFullUrl}">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="${safeTitle}">
   <meta name="twitter:description" content="${safeDescription}">
   <meta name="twitter:image" content="${safeImage}">
-  <meta http-equiv="refresh" content="0;url=${safeFullUrl}">
 </head>
-<body><p>Redirecting...</p></body>
+<body>
+  <main>
+    <h1>${safeTitle}</h1>
+    <p>${safeDescription}</p>
+    <p><a href="${safeFullUrl}">Открыть страницу на AIMUZA</a></p>
+  </main>
+</body>
 </html>`;
 
     return new Response(html, {

@@ -61,7 +61,7 @@ app.use('/storage/v1/object', express.raw({
     const ct = (req.headers['content-type'] || '').toLowerCase();
     return !ct.includes('multipart');
   },
-  limit: '100mb',
+  limit: '1024mb',
 }));
 
 // Raw body для multipart → functions proxy (чтобы передать файлы в Deno as-is)
