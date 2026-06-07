@@ -9,7 +9,7 @@ const router = Router();
 const DENO_URL = process.env.DENO_FUNCTIONS_URL || 'http://deno-functions:8081';
 
 const ALLOWED_FUNCTIONS = new Set([
-  'admin-create-user', 'admin-delete-user', 'admin-impersonate', 'admin-recheck-track',
+  'admin-change-user-password', 'admin-create-user', 'admin-delete-user', 'admin-impersonate', 'admin-recheck-track',
   'ad-targeting', 'aggregate-votes', 'analyze-audio',
   'approve-distribution', 'check-plagiarism',
   'classify-audio', 'cleanup-wav', 'convert-to-wav', 'create-persona', 'db-admin',
