@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
+import { logBotVisit } from "../../shared/seo.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -229,11 +230,23 @@ serve(async (req) => {
 </body>
 </html>`;
 
+    await logBotVisit(supabase, req, "og-renderer", 200, path);
+
     return new Response(html, {
       headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" },
     });
   } catch (error) {
     console.error("[og-renderer] Error:", error);
+    try {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+      const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+      const supabase = createClient(supabaseUrl, supabaseKey);
+      const url = new URL(req.url);
+      const path = normalizeOgPath(url.searchParams.get("url") || url.searchParams.get("path"));
+      await logBotVisit(supabase, req, "og-renderer", 500, path);
+    } catch (logError) {
+      console.error("[og-renderer] Log error:", logError);
+    }
     return new Response("<!DOCTYPE html><html><body>Error</body></html>", {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "text/html" },

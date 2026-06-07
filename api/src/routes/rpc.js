@@ -26,7 +26,7 @@ const ALLOWED_RPC = new Set([
   'close_admin_conversation', 'close_voting_topic_on_rejection',
   'create_admin_conversation', 'create_conversation_with_user',
   'create_voting_forum_topic', 'deactivate_expired_promotions', 'debit_balance', 'debit_for_generation',
-  'deduct_user_xp', 'delete_forum_topic_cascade', 'finalize_contest',
+  'deduct_user_xp', 'delete_forum_topic_cascade', 'delete_user_prompt', 'delete_user_prompts', 'finalize_contest',
   'finalize_contest_winners', 'find_similar_qa_tickets', 'find_user_by_short_id',
   'fn_add_xp', 'forum_authority_leaderboard', 'forum_boost_topic',
   'forum_calculate_content_quality', 'forum_find_similar_topics', 'forum_get_hub_stats',

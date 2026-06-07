@@ -47,6 +47,24 @@ router.all('/:name', async (req, res) => {
       'Content-Type': req.headers['content-type'] || 'application/json',
     };
 
+    const passthroughHeaders = [
+      'user-agent',
+      'referer',
+      'x-forwarded-for',
+      'x-real-ip',
+      'x-forwarded-host',
+      'x-forwarded-proto',
+    ];
+
+    for (const headerName of passthroughHeaders) {
+      const value = req.headers[headerName];
+      if (typeof value === 'string') {
+        headers[headerName] = value;
+      } else if (Array.isArray(value) && value.length > 0) {
+        headers[headerName] = value.join(', ');
+      }
+    }
+
     // Прокидываем авторизацию
     if (req.headers.authorization) {
       headers['Authorization'] = req.headers.authorization;
