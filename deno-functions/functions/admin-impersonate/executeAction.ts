@@ -226,13 +226,12 @@ export async function executeAction(
     }
 
     case 'send_message': {
-      result = await adminClient.from('messages').insert({
-        conversation_id: payload.conversation_id,
-        sender_id: target_user_id,
-        content: payload.content,
-        attachment_url: payload.attachment_url || null,
-        attachment_type: payload.attachment_type || null,
-      }).select().single();
+      result = await adminClient.rpc('messaging_send_message', {
+        p_conversation_id: payload.conversation_id,
+        p_content: payload.content,
+        p_attachments: Array.isArray(payload.attachments) ? payload.attachments : [],
+        p_sender_id: target_user_id,
+      });
       break;
     }
 

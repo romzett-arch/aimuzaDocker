@@ -10,12 +10,13 @@ import {
 export function createConnectionHandler(wss, clientSubs, presenceState, jwt, JWT_SECRET) {
   const sendMsg = (ws, msg) => {
     if (ws.readyState === 1) {
-      ws.send(JSON.stringify({
-        topic: msg.topic ?? '',
-        event: msg.event ?? '',
-        payload: msg.payload ?? {},
-        ref: msg.ref ?? null,
-      }));
+      ws.send(JSON.stringify([
+        msg.join_ref ?? null,
+        msg.ref ?? null,
+        msg.topic ?? '',
+        msg.event ?? '',
+        msg.payload ?? {},
+      ]));
     }
   };
 
@@ -51,6 +52,7 @@ export function createConnectionHandler(wss, clientSubs, presenceState, jwt, JWT
         break;
 
       case 'presence':
+      case 'track':
         handlePresenceTrack(wss, clientSubs, presenceState, sendMsg, broadcastPresenceDiff, ws, topic, payload, ref, subs);
         break;
 
@@ -59,6 +61,7 @@ export function createConnectionHandler(wss, clientSubs, presenceState, jwt, JWT
         break;
 
       case 'presence_untrack':
+      case 'untrack':
         handlePresenceUntrack(wss, clientSubs, presenceState, sendMsg, removePresence, ws, topic, ref, subs);
         break;
 

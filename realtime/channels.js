@@ -6,18 +6,28 @@ export function matchFilter(filter, record) {
 }
 
 export function encodeMessage(msg) {
-  return JSON.stringify({
-    topic: msg.topic ?? '',
-    event: msg.event ?? '',
-    payload: msg.payload ?? {},
-    ref: msg.ref ?? null,
-  });
+  return JSON.stringify([
+    msg.join_ref ?? null,
+    msg.ref ?? null,
+    msg.topic ?? '',
+    msg.event ?? '',
+    msg.payload ?? {},
+  ]);
 }
 
 export function send(ws, msg) {
   if (ws.readyState === 1) {
     ws.send(encodeMessage(msg));
   }
+}
+
+export function buildColumns(record, oldRecord) {
+  const names = new Set([
+    ...Object.keys(record || {}),
+    ...Object.keys(oldRecord || {}),
+  ]);
+
+  return Array.from(names).map((name) => ({ name, type: 'text' }));
 }
 
 export function getPresenceState(presenceState, topic) {
@@ -34,15 +44,29 @@ export function removePresence(wss, clientSubs, presenceState, topic, key, ws) {
   const topicState = presenceState.get(topic);
   if (!topicState) return;
 
-  const leaving = topicState.get(key);
-  if (!leaving) return;
+  const current = topicState.get(key);
+  if (!current) return;
 
-  topicState.delete(key);
+  const ref = ws?.__presenceRefs?.get(topic);
+  const leavingMetas = ref
+    ? current.metas.filter((meta) => meta.phx_ref === ref)
+    : current.metas;
+  if (leavingMetas.length === 0) return;
+
+  const remainingMetas = ref
+    ? current.metas.filter((meta) => meta.phx_ref !== ref)
+    : [];
+  if (remainingMetas.length > 0) {
+    topicState.set(key, { metas: remainingMetas });
+  } else {
+    topicState.delete(key);
+  }
+  ws?.__presenceRefs?.delete(topic);
   if (topicState.size === 0) presenceState.delete(topic);
 
   const diff = {
     joins: {},
-    leaves: { [key]: { metas: leaving.metas } },
+    leaves: { [key]: { metas: leavingMetas } },
   };
   broadcastPresenceDiff(wss, clientSubs, topic, diff);
 }
@@ -60,6 +84,7 @@ export function broadcastPresenceDiff(wss, clientSubs, topic, diff) {
 export function broadcastChange(wss, clientSubs, data) {
   const { table, schema, type, record, old_record } = data;
   const eventType = type === 'INSERT' ? 'INSERT' : type === 'UPDATE' ? 'UPDATE' : 'DELETE';
+  const columns = buildColumns(record, old_record);
 
   wss.clients.forEach((ws) => {
     if (ws.readyState !== 1) return;
@@ -85,11 +110,12 @@ export function broadcastChange(wss, clientSubs, data) {
               table,
               schema,
               type: eventType,
+              columns,
               record: record || null,
               old_record: old_record || null,
               commit_timestamp: new Date().toISOString(),
             },
-            ids: [0],
+            ids: [pgConf.id],
           },
           ref: null,
         }));
@@ -103,7 +129,10 @@ export function handleJoin(wss, clientSubs, presenceState, send, ws, topic, payl
   const config = {};
 
   if (payload?.config?.postgres_changes) {
-    config.pgConfigs = payload.config.postgres_changes;
+    config.pgConfigs = payload.config.postgres_changes.map((pgConfig, index) => ({
+      id: index + 1,
+      ...pgConfig,
+    }));
   }
 
   if (payload?.config?.presence) {
@@ -118,10 +147,11 @@ export function handleJoin(wss, clientSubs, presenceState, send, ws, topic, payl
   }
 
   if (config.pgConfigs) {
-    response.postgres_changes = config.pgConfigs.map((pc, i) => ({ id: i, ...pc }));
+    response.postgres_changes = config.pgConfigs;
   }
 
   send(ws, {
+    join_ref: null,
     topic,
     event: 'phx_reply',
     payload: { status: 'ok', response },
@@ -129,6 +159,7 @@ export function handleJoin(wss, clientSubs, presenceState, send, ws, topic, payl
   });
 
   send(ws, {
+    join_ref: null,
     topic,
     event: 'presence_state',
     payload: response.presence_state || {},
@@ -136,6 +167,7 @@ export function handleJoin(wss, clientSubs, presenceState, send, ws, topic, payl
   });
 
   send(ws, {
+    join_ref: null,
     topic,
     event: 'system',
     payload: { status: 'ok', channel: topic, extension: 'postgres_changes' },
@@ -165,10 +197,17 @@ export function handlePresenceTrack(wss, clientSubs, presenceState, send, broadc
 
   if (!presenceState.has(topic)) presenceState.set(topic, new Map());
   const topicState = presenceState.get(topic);
-  topicState.set(key, { metas: [{ ...meta, phx_ref: String(Date.now()) }] });
+  if (!ws.__presenceRefs) ws.__presenceRefs = new Map();
+  const phxRef = ws.__presenceRefs.get(topic) || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  ws.__presenceRefs.set(topic, phxRef);
+
+  const existing = topicState.get(key);
+  const metas = existing?.metas?.filter((item) => item.phx_ref !== phxRef) || [];
+  const trackedMeta = { ...meta, phx_ref: phxRef };
+  topicState.set(key, { metas: [...metas, trackedMeta] });
 
   const diff = {
-    joins: { [key]: { metas: topicState.get(key).metas } },
+    joins: { [key]: { metas: [trackedMeta] } },
     leaves: {},
   };
   broadcastPresenceDiffFn(wss, clientSubs, topic, diff);

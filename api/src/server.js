@@ -86,7 +86,10 @@ app.use(authMiddleware);
 const restMutationLimiter = rateLimit({ windowMs: 60 * 1000, max: 100, message: { error: 'Rate limit exceeded' }, keyGenerator: (req) => req.user?.id || req.ip });
 const restReadLimiter = rateLimit({ windowMs: 60 * 1000, max: 600, message: { error: 'Rate limit exceeded' }, keyGenerator: (req) => req.user?.id || req.ip });
 const storageLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: { error: 'Upload rate limit exceeded' }, keyGenerator: (req) => req.user?.id || req.ip });
-app.use('/rest/v1', (req, res, next) => { ['POST','PATCH','DELETE'].includes(req.method) ? restMutationLimiter(req, res, next) : restReadLimiter(req, res, next); });
+app.use('/rest/v1', (req, res, next) => {
+  if (req.path.startsWith('/rpc/')) return next();
+  ['POST','PATCH','DELETE'].includes(req.method) ? restMutationLimiter(req, res, next) : restReadLimiter(req, res, next);
+});
 app.use('/storage/v1/object', (req, res, next) => { ['POST','PUT'].includes(req.method) ? storageLimiter(req, res, next) : next(); });
 
 // Maintenance mode guard — blocks writes for non-admin users during maintenance
