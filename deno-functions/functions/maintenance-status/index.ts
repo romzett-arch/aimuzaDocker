@@ -96,15 +96,14 @@ serve(async (req) => {
     });
   } catch (err) {
     console.error("maintenance-status error:", err);
-    // Fail-closed: on error assume maintenance is active (safer than exposing a broken app)
     return new Response(JSON.stringify({
-      enabled: true,
+      enabled: false,
       eta: null,
-      message: "Сервис временно недоступен. Попробуйте позже.",
+      message: null,
       updated_at: null,
       whitelisted: false,
     }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-cache" },
+      headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
   }
 });

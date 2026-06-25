@@ -26,18 +26,20 @@ const ALLOWED_RPC = new Set([
   'close_voting_topic_on_rejection',
   'create_voting_forum_topic', 'deactivate_expired_promotions', 'debit_balance', 'debit_for_generation',
   'deduct_user_xp', 'delete_forum_topic_cascade', 'delete_user_prompt', 'delete_user_prompts', 'finalize_contest',
-  'finalize_contest_winners', 'find_similar_qa_tickets', 'find_user_by_short_id',
+  'expire_blocks', 'finalize_contest_winners', 'find_similar_qa_tickets', 'find_user_by_short_id',
   'fn_add_xp', 'forum_authority_leaderboard', 'forum_boost_topic',
-  'forum_calculate_content_quality', 'forum_find_similar_topics', 'forum_get_hub_stats',
+  'forum_calculate_content_quality', 'forum_expire_sanctions', 'forum_expire_warnings',
+  'forum_find_similar_topics', 'forum_get_hub_stats',
   'forum_get_leaderboard', 'forum_get_user_profile', 'forum_get_users_profiles', 'forum_increment_topic_views',
+  'forum_issue_sanction', 'forum_lift_sanction',
   'forum_mark_read', 'forum_mark_solution', 'forum_moderate_promo',
   'forum_recalculate_authority', 'forum_search', 'forum_update_category_on_topic',
   'forum_update_topic_on_post', 'forum_update_user_stats_on_post',
   'forum_update_user_stats_on_topic', 'forum_user_is_banned',
   'generate_share_token', 'get_ad_for_slot', 'get_boosted_tracks',
-  'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
+  'get_catalog_visible_author_ids', 'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
   'get_feed_tracks_with_profiles', 'get_hero_stats', 'get_last_messages',
-  'get_marketplace_items', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
+  'get_marketplace_items', 'get_my_sanction_status', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
   'get_qa_leaderboard', 'get_qa_ticket_comment_counts', 'get_radio_listeners', 'get_radio_smart_queue',
   'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',
   'get_reputation_leaderboard', 'get_reputation_profile', 'get_smart_feed',
@@ -173,10 +175,6 @@ async function handleRpc(req, res) {
     res.json(result.rows);
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    // Return null only for "function does not exist" (PostgREST compatibility)
-    if (err.message.includes('function') && err.message.includes('does not exist')) {
-      return res.json(null);
-    }
     console.error('[RPC]', req.params.fn, err.message);
     const safeMsg = getSafeRpcMessage(err.message);
     res.status(400).json({ message: safeMsg, error: safeMsg, code: 'RPC_ERROR', details: null, hint: null });

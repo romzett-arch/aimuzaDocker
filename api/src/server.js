@@ -33,6 +33,7 @@ import emailRouter from './routes/email.js';
 import functionsRouter from './routes/functions.js';
 import { authMiddleware } from './middleware/auth.js';
 import { maintenanceGuard } from './middleware/maintenance.js';
+import { blockedUserGuard } from './middleware/blocked-user.js';
 
 dotenv.config();
 
@@ -94,6 +95,7 @@ app.use('/storage/v1/object', (req, res, next) => { ['POST','PUT'].includes(req.
 
 // Maintenance mode guard — blocks writes for non-admin users during maintenance
 app.use(maintenanceGuard);
+app.use(blockedUserGuard);
 
 // Healthcheck
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
