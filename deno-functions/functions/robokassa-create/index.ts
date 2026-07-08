@@ -126,11 +126,9 @@ function computeMD5(str: string): string {
 // Робокасса InvId: числовой ID из последовательности, хранится как external_id
 // Вместо обрезки UUID используем timestamp + random для уникальности
 function generateInvId(): string {
-  // Робокасса принимает числовой InvId до 2^31-1 (2147483647)
-  // 9 цифр timestamp + 3 случайных = 12 цифр — обрезаем до 10, чтобы уложиться
-  const numericId = (Date.now() % 1_000_000_000).toString() +
-    Math.floor(Math.random() * 1000).toString().padStart(3, "0");
-  return numericId;
+  const min = 100_000_000;
+  const max = 2_147_483_647;
+  return String(Math.floor(Math.random() * (max - min + 1)) + min);
 }
 
 serve(async (req) => {
