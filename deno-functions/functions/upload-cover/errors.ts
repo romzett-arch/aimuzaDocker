@@ -3,7 +3,9 @@ export function getSunoErrorMessage(code: number, originalMessage?: string): { s
     const lowerMsg = originalMessage.toLowerCase();
 
     if (lowerMsg.includes("matches existing work") ||
+        lowerMsg.includes("matches an existing recording") ||
         lowerMsg.includes("existing work of art") ||
+        lowerMsg.includes("existing recording in our catalog") ||
         lowerMsg.includes("copyright") ||
         lowerMsg.includes("protected content")) {
       return {
@@ -22,10 +24,29 @@ export function getSunoErrorMessage(code: number, originalMessage?: string): { s
       };
     }
 
+    if (lowerMsg.includes("couldn't verify your audio") ||
+        lowerMsg.includes("could not verify your audio") ||
+        lowerMsg.includes("verify your audio")) {
+      return {
+        short: "Suno не смог проверить аудио",
+        full: "Suno не смог проверить загруженный аудиореференс. Попробуйте загрузить другой файл или предварительно экспортировать его заново в MP3/WAV."
+      };
+    }
+
+    if (lowerMsg.includes("can't parse uploaded audio") ||
+        lowerMsg.includes("cannot parse uploaded audio") ||
+        lowerMsg.includes("source is corrupted") ||
+        lowerMsg.includes("corrupted")) {
+      return {
+        short: "Suno не смог прочитать аудиофайл",
+        full: "Suno считает загруженный аудиофайл повреждённым или неподдерживаемым. Экспортируйте файл заново в MP3/WAV и повторите генерацию."
+      };
+    }
+
     if (lowerMsg.includes("too long") || lowerMsg.includes("too large") || lowerMsg.includes("exceeds")) {
       return {
         short: "Превышен лимит символов",
-        full: "Описание, стиль или текст песни слишком длинные. Сократите текст и попробуйте снова."
+        full: "Описание, стиль или текст песни слишком длинные. Для upload-cover в V5/V5.5 лимиты Suno: до 5000 символов lyrics/prompt и до 1000 символов style."
       };
     }
 
@@ -43,7 +64,12 @@ export function getSunoErrorMessage(code: number, originalMessage?: string): { s
     403: { short: "Контент заблокирован", full: "Запрос содержит запрещённый контент. Измените текст или описание." },
     404: { short: "Ресурс не найден", full: "Запрашиваемый ресурс не найден. Попробуйте ещё раз." },
     405: { short: "Превышена частота запросов", full: "Слишком много запросов. Подождите несколько минут." },
-    413: { short: "Превышен лимит символов", full: "Текст слишком длинный (макс. ~5000 символов для lyrics, 1000 для style). Сократите и попробуйте снова." },
+    413: {
+      short: "Suno отклонил запрос",
+      full: originalMessage
+        ? `Suno отклонил запрос: ${originalMessage}`
+        : "Suno отклонил upload-cover с кодом 413. Этот код может означать не только лимит текста, но и проблему с аудиореференсом или проверкой контента."
+    },
     429: { short: "Недостаточно кредитов", full: "На аккаунте Suno недостаточно кредитов. Обратитесь в поддержку." },
     455: { short: "Сервис на обслуживании", full: "Suno проходит техническое обслуживание. Попробуйте позже." },
     500: { short: "Ошибка сервера Suno", full: "Внутренняя ошибка на сервере Suno. Попробуйте позже." },

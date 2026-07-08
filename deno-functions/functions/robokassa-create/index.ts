@@ -232,35 +232,27 @@ serve(async (req) => {
         },
       ],
     });
-    const receiptUrlEncoded = encodeURIComponent(receipt);
-
     // OutSum в формате "число.00" — Robokassa требует для совпадения подписи
     const outSum = amount.toFixed(2);
 
-    // --- Подпись с Receipt: MD5(MerchantLogin:OutSum:InvId:Receipt:Password1) ---
+    // --- Подпись для Robokassa.pay.startOp с Receipt ---
     const signatureString =
-      `${ROBOKASSA_MERCHANT_LOGIN}:${outSum}:${invId}:${receiptUrlEncoded}:${ROBOKASSA_PASSWORD1}`;
+      `${ROBOKASSA_MERCHANT_LOGIN}:${outSum}:${invId}:${receipt}:${ROBOKASSA_PASSWORD1}`;
     const signature = computeMD5(signatureString);
-
-    // Robokassa сейчас перенаправляет .ru -> .kz, поэтому сразу отдаём
-    // финальный origin и избегаем CSP-блокировки на редиректе формы.
-    const paymentUrl = "https://auth.robokassa.kz/Merchant/Index.aspx";
-    const paymentParams: Record<string, string> = {
-      MerchantLogin: ROBOKASSA_MERCHANT_LOGIN,
-      OutSum: outSum,
-      InvId: invId,
-      Description: description.slice(0, 100),
-      SignatureValue: signature,
-      Receipt: receiptUrlEncoded,
-      IsTest: ROBOKASSA_TEST_MODE ? "1" : "0",
-      Culture: "ru",
-    };
 
     return json(cors, 200, {
       success: true,
       payment_id: payment.id,
-      payment_url: paymentUrl,
-      payment_params: paymentParams,
+      qr_options: {
+        paymentMethod: "SBP",
+        email: user.email || "",
+        merchantLogin: ROBOKASSA_MERCHANT_LOGIN,
+        outSum,
+        invId: Number(invId),
+        receipt,
+        signature,
+        isTest: ROBOKASSA_TEST_MODE ? 1 : 0,
+      },
     });
   } catch (error: unknown) {
     console.error("Robokassa create error:", error);

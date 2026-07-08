@@ -9,6 +9,80 @@ const corsHeaders = {
 const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
 const SUNO_UPLOAD_BASE = "https://sunoapiorg.redpandaai.co";
 
+function inferAudioFileName(audioUrl: string): string {
+  const directName = decodeURIComponent(audioUrl.split(/[?#]/)[0].split("/").filter(Boolean).pop() || "");
+  if (/\.(mp3|wav|wave)$/i.test(directName)) {
+    return directName;
+  }
+
+  try {
+    const url = new URL(audioUrl);
+    const lastSegment = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "");
+    if (/\.(mp3|wav|wave)$/i.test(lastSegment)) {
+      return lastSegment;
+    }
+  } catch {
+    // Fall back to a generated name below.
+  }
+
+  return `audio-reference-${Date.now()}.mp3`;
+}
+
+async function resolvePublicAudioUrl(audioUrl: string): Promise<{ fileUrl: string; fileName: string }> {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(audioUrl);
+  } catch {
+    throw new Error("Некорректная ссылка на аудио");
+  }
+
+  const host = parsedUrl.hostname.toLowerCase();
+  const isYandexDisk = host === "disk.yandex.ru" || host.endsWith(".disk.yandex.ru") || host === "yadi.sk";
+
+  if (!isYandexDisk) {
+    return {
+      fileUrl: audioUrl,
+      fileName: inferAudioFileName(audioUrl),
+    };
+  }
+
+  let publicKey = audioUrl;
+  let resourcePath = "";
+  const yandexParts = parsedUrl.pathname.split("/").filter(Boolean);
+  if ((yandexParts[0] === "d" || yandexParts[0] === "i") && yandexParts[1]) {
+    publicKey = `${parsedUrl.origin}/${yandexParts[0]}/${yandexParts[1]}`;
+    const restPath = yandexParts.slice(2).join("/");
+    if (restPath) {
+      resourcePath = `/${decodeURIComponent(restPath)}`;
+    }
+  }
+
+  const apiUrl = new URL("https://cloud-api.yandex.net/v1/disk/public/resources/download");
+  apiUrl.searchParams.set("public_key", publicKey);
+  if (resourcePath) {
+    apiUrl.searchParams.set("path", resourcePath);
+  }
+
+  console.log(`Resolving Yandex Disk URL: publicKey=${publicKey}, path=${resourcePath || "/"}`);
+  const response = await fetch(apiUrl);
+
+  if (!response.ok) {
+    console.error("Yandex Disk resolve failed:", response.status, await response.text());
+    throw new Error("Не удалось получить прямую ссылку на файл Яндекс.Диска. Проверьте, что доступ открыт по ссылке.");
+  }
+
+  const data = await response.json();
+  if (!data?.href) {
+    console.error("Yandex Disk resolve returned no href:", data);
+    throw new Error("Яндекс.Диск не вернул прямую ссылку на аудиофайл");
+  }
+
+  return {
+    fileUrl: data.href,
+    fileName: inferAudioFileName(String(data.name || parsedUrl.pathname)) || `yandex-audio-${Date.now()}.mp3`,
+  };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -202,11 +276,23 @@ serve(async (req) => {
 
     console.log(`Uploading audio from URL: ${audioUrl}`);
 
-    // Upload to Suno using URL endpoint (all param names for API compatibility)
+    let resolvedAudio: { fileUrl: string; fileName: string };
+    try {
+      resolvedAudio = await resolvePublicAudioUrl(audioUrl);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось обработать ссылку на аудио";
+      return new Response(
+        JSON.stringify({ error: message }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Upload to Suno using a direct audio URL. uploadPath must be a storage path,
+    // not the source URL, otherwise Redpanda creates an invalid tempfile path.
     const requestBody = {
-      fileUrl: audioUrl,
-      uploadPath: audioUrl,
-      url: audioUrl,
+      fileUrl: resolvedAudio.fileUrl,
+      uploadPath: `audio-references/${user.id}`,
+      fileName: resolvedAudio.fileName,
     };
     console.log("Suno URL upload request:", JSON.stringify(requestBody));
 
