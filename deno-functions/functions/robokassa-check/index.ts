@@ -182,7 +182,7 @@ serve(async (req) => {
       return json(cors, 404, { error: "Платёж не найден" });
     }
     if (payment.status === "completed") {
-      return json(cors, 200, { success: true, completed: true, amount: payment.amount });
+      return json(cors, 200, { success: true, completed: true, amount: Number(payment.amount) });
     }
     if (!payment.external_id) return json(cors, 400, { error: "У платежа нет InvId" });
 
@@ -196,7 +196,8 @@ serve(async (req) => {
     }
 
     const paidAmount = Math.round(Number(state.outSum ?? payment.amount));
-    if (paidAmount !== payment.amount) {
+    const expectedAmount = Math.round(Number(payment.amount));
+    if (!Number.isFinite(expectedAmount) || paidAmount !== expectedAmount) {
       console.error("Robokassa check amount mismatch", {
         paymentId: payment.id,
         invId: payment.external_id,

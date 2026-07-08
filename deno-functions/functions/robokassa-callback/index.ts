@@ -189,7 +189,8 @@ serve(async (req) => {
 
     // --- Кросс-валидация суммы ---
     const paidAmount = Math.round(Number(outSum));
-    if (paidAmount !== payment.amount) {
+    const expectedAmount = Math.round(Number(payment.amount));
+    if (!Number.isFinite(expectedAmount) || paidAmount !== expectedAmount) {
       console.error("Amount mismatch!", {
         paid: paidAmount,
         expected: payment.amount,
