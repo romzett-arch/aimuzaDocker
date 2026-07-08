@@ -143,8 +143,12 @@ serve(async (req) => {
     if (!authHeader) return json(cors, 401, { error: "Необходима авторизация" });
 
     const body = await req.json();
-    const paymentId = typeof body.payment_id === "string" ? body.payment_id : "";
-    if (!paymentId) return json(cors, 400, { error: "payment_id is required" });
+    const paymentRef = typeof body.payment_id === "string"
+      ? body.payment_id.trim()
+      : typeof body.inv_id === "string"
+        ? body.inv_id.trim()
+        : "";
+    if (!paymentRef) return json(cors, 400, { error: "payment_id is required" });
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -157,15 +161,26 @@ serve(async (req) => {
     } = await supabase.auth.getUser(token);
     if (authError || !user) return json(cors, 401, { error: "Неверный токен авторизации" });
 
+    const paymentQueryColumn = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(paymentRef)
+      ? "id"
+      : "external_id";
+
     const { data: payment, error: paymentError } = await supabase
       .from("payments")
       .select("*")
-      .eq("id", paymentId)
+      .eq(paymentQueryColumn, paymentRef)
       .eq("user_id", user.id)
       .eq("payment_system", "robokassa")
       .single();
 
-    if (paymentError || !payment) return json(cors, 404, { error: "Платёж не найден" });
+    if (paymentError || !payment) {
+      console.error("Robokassa check payment not found:", {
+        paymentRef,
+        paymentQueryColumn,
+        userId: user.id,
+      });
+      return json(cors, 404, { error: "Платёж не найден" });
+    }
     if (payment.status === "completed") {
       return json(cors, 200, { success: true, completed: true, amount: payment.amount });
     }
@@ -183,7 +198,7 @@ serve(async (req) => {
     const paidAmount = Math.round(Number(state.outSum ?? payment.amount));
     if (paidAmount !== payment.amount) {
       console.error("Robokassa check amount mismatch", {
-        paymentId,
+        paymentId: payment.id,
         invId: payment.external_id,
         paidAmount,
         expectedAmount: payment.amount,
