@@ -230,8 +230,7 @@ serve(async (req) => {
         },
       ],
     });
-    // OutSum в формате "число.00" — Robokassa требует для совпадения подписи
-    const outSum = amount.toFixed(2);
+    const outSum = String(amount);
 
     // --- Подпись для Robokassa.pay.startOp с Receipt ---
     const signatureString =
@@ -245,7 +244,7 @@ serve(async (req) => {
         paymentMethod: "SBP",
         email: user.email || "",
         merchantLogin: ROBOKASSA_MERCHANT_LOGIN,
-        outSum,
+        outSum: amount,
         invId: Number(invId),
         receipt,
         signature,
