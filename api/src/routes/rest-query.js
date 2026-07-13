@@ -1,5 +1,11 @@
 import { pool } from '../db.js';
 import { setJwtClaims, resetJwtClaims, sanitizeTable, parseFilters, parseSelect, parseOrder } from './rest-utils.js';
+import { getForumReadColumns, getForumReadScope } from '../security/forum-rest-policy.js';
+
+function addScope(where, scopeSql) {
+  if (!scopeSql) return where;
+  return where ? `${where} AND ${scopeSql}` : `WHERE ${scopeSql}`;
+}
 
 export async function handleHead(req, res) {
   const client = await pool.connect();
@@ -9,8 +15,10 @@ export async function handleHead(req, res) {
 
     const table = sanitizeTable(req.params.table);
     const { where, params } = parseFilters(req.query);
-    const countSql = `SELECT COUNT(*) FROM ${table} ${where}`;
-    const cr = await client.query(countSql, params);
+    const scope = getForumReadScope(req.params.table, req.user, params.length + 1);
+    const scopedWhere = addScope(where, scope.sql);
+    const countSql = `SELECT COUNT(*) FROM ${table} ${scopedWhere}`;
+    const cr = await client.query(countSql, [...params, ...scope.params]);
 
     await client.query('COMMIT');
     res.set('Content-Range', `0-0/${cr.rows[0].count}`);
@@ -34,25 +42,29 @@ export async function handleGet(req, res) {
 
     const tableName = req.params.table;
     const table = sanitizeTable(tableName);
-    const { columns } = parseSelect(req.query.select, table);
+    const parsedSelect = parseSelect(req.query.select, table);
+    const columns = getForumReadColumns(tableName, req.user, parsedSelect.columns);
     const { where, params } = parseFilters(req.query);
+    const scope = getForumReadScope(tableName, req.user, params.length + 1);
+    const scopedWhere = addScope(where, scope.sql);
+    const scopedParams = [...params, ...scope.params];
     const order = parseOrder(req.query.order);
     const limit = parseInt(req.query.limit) || null;
     const offset = parseInt(req.query.offset) || 0;
 
-    let sql = `SELECT ${columns} FROM ${table} ${where} ${order}`;
+    let sql = `SELECT ${columns} FROM ${table} ${scopedWhere} ${order}`;
     if (limit) sql += ` LIMIT ${limit}`;
     if (offset) sql += ` OFFSET ${offset}`;
 
     const prefer = req.headers.prefer || '';
     let countResult = null;
     if (prefer.includes('count=exact')) {
-      const countSql = `SELECT COUNT(*) FROM ${table} ${where}`;
-      const cr = await client.query(countSql, params);
+      const countSql = `SELECT COUNT(*) FROM ${table} ${scopedWhere}`;
+      const cr = await client.query(countSql, scopedParams);
       countResult = parseInt(cr.rows[0].count);
     }
 
-    const result = await client.query(sql, params);
+    const result = await client.query(sql, scopedParams);
 
     await client.query('COMMIT');
 

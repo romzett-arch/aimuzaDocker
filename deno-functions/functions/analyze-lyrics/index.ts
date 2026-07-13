@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
@@ -79,7 +80,7 @@ serve(async (req) => {
 
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${AGENT_ACCESS_ID}/v1/chat/completions`;
 
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "analyze-lyrics", action: "analyze_lyrics", reason: "Пользователь запросил анализ текста песни" }, apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${TIMEWEB_TOKEN}`,

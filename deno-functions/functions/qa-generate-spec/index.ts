@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
@@ -202,7 +203,7 @@ async function generateWithDeepSeek(rawReport: RawBugReport, timewebToken: strin
 
   const userPrompt = JSON.stringify(rawReport);
   const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
-  const response = await fetch(apiUrl, {
+  const response = await loggedTimewebFetch({ source: "qa-generate-spec", action: "generate_qa_spec", reason: "Генерация технического задания из QA-обращения" }, apiUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

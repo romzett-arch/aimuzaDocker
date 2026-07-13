@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 const TIMEWEB_AGENT_ACCESS_ID =
   Deno.env.get("TIMEWEB_AGENT_ID") || "df42cd86-5e91-459e-a95a-a7befb625292";
 
@@ -10,7 +11,7 @@ export async function callDeepSeek(systemPrompt: string, userMessage: string): P
 
   const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
 
-  const response = await fetch(apiUrl, {
+  const response = await loggedTimewebFetch({ source: "forum-automod", action: "moderate_forum_content", reason: "Автоматическая модерация нового материала форума" }, apiUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

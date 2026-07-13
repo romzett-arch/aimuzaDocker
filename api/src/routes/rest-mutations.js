@@ -1,5 +1,17 @@
 import { pool } from '../db.js';
 import { setJwtClaims, resetJwtClaims, sanitizeTable, parseFilters, parseSelect } from './rest-utils.js';
+import {
+  FORUM_IMMUTABLE_USER_COLUMNS,
+  FORUM_PROTECTED_INSERT_COLUMNS,
+  applyForumInsertOwnership,
+  assertForumMutationAccess,
+  assertForumInsertRelation,
+  getForumMutationScope,
+  filterForumStaffUpdateColumns,
+  isForumAdmin,
+  isForumStaff,
+  isForumTable,
+} from '../security/forum-rest-policy.js';
 
 const PROTECTED_COLUMNS = new Set([
   'role', 'is_super_admin', 'balance', 'likes_count', 'plays_count',
@@ -23,6 +35,25 @@ function filterProtectedCols(cols, user) {
   return cols.filter(c => !PROTECTED_COLUMNS.has(c));
 }
 
+function filterUpdateCols(cols, user, table) {
+  const filtered = filterProtectedCols(cols, user);
+  if (!isForumTable(table) || isForumAdmin(user)) return filtered;
+  if (isForumStaff(user)) return filterForumStaffUpdateColumns(table, cols, user);
+  return filtered.filter(c => !FORUM_IMMUTABLE_USER_COLUMNS.has(c));
+}
+
+function filterInsertCols(cols, user, table) {
+  const filtered = filterProtectedCols(cols, user);
+  if (!isForumTable(table) || isForumAdmin(user)) return filtered;
+  if (isForumStaff(user)) return filtered;
+  return filtered.filter(c => !FORUM_PROTECTED_INSERT_COLUMNS.has(c));
+}
+
+function addScope(where, scopeSql) {
+  if (!scopeSql) return where;
+  return where ? `${where} AND ${scopeSql}` : `WHERE ${scopeSql}`;
+}
+
 export async function handlePost(req, res) {
   const client = await pool.connect();
   try {
@@ -30,13 +61,16 @@ export async function handlePost(req, res) {
     await setJwtClaims(client, req.user);
 
     const table = sanitizeTable(req.params.table);
-    const rows = Array.isArray(req.body) ? req.body : [req.body];
+    assertForumMutationAccess(req.params.table, req.user);
+    const inputRows = Array.isArray(req.body) ? req.body : [req.body];
+    const rows = inputRows.map(row => applyForumInsertOwnership(req.params.table, row, req.user));
     if (rows.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No data' }); }
     if (rows.length > MAX_BATCH_SIZE) { await client.query('ROLLBACK'); return res.status(400).json({ error: `Batch size exceeds limit of ${MAX_BATCH_SIZE}` }); }
 
     const results = [];
     for (const row of rows) {
-      const cols = filterProtectedCols(Object.keys(row).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c)), req.user);
+      await assertForumInsertRelation(client, req.params.table, row, req.user);
+      const cols = filterInsertCols(Object.keys(row).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c)), req.user, req.params.table);
       if (cols.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No valid columns' }); }
 
       const vals = cols.map(c => row[c]);
@@ -118,7 +152,7 @@ export async function handlePost(req, res) {
     console.error('[REST POST]', err.message, '| table:', req.params.table, '| code:', err.code);
     const pgMsg = err.message || 'Operation failed';
     const pgCode = err.code || 'REST_ERROR';
-    res.status(400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
+    res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -132,8 +166,9 @@ export async function handlePatch(req, res) {
     await setJwtClaims(client, req.user);
 
     const table = sanitizeTable(req.params.table);
+    assertForumMutationAccess(req.params.table, req.user);
     const updates = req.body;
-    const cols = filterProtectedCols(Object.keys(updates).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c)), req.user);
+    const cols = filterUpdateCols(Object.keys(updates).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c)), req.user, req.params.table);
     if (cols.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No valid columns' }); }
 
     const setClauses = [];
@@ -153,9 +188,11 @@ export async function handlePatch(req, res) {
 
     const { where, params: filterParams } = parseFilters(req.query);
     const adjustedWhere = where.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + idx - 1}`);
+    const scope = getForumMutationScope(req.params.table, req.user, idx + filterParams.length);
+    const scopedWhere = addScope(adjustedWhere, scope.sql);
 
-    const sql = `UPDATE ${table} SET ${setClauses.join(', ')} ${adjustedWhere} RETURNING *`;
-    const result = await client.query(sql, [...setParams, ...filterParams]);
+    const sql = `UPDATE ${table} SET ${setClauses.join(', ')} ${scopedWhere} RETURNING *`;
+    const result = await client.query(sql, [...setParams, ...filterParams, ...scope.params]);
 
     await client.query('COMMIT');
 
@@ -181,7 +218,7 @@ export async function handlePatch(req, res) {
     console.error('[REST PATCH]', err.message, '| table:', req.params.table, '| code:', err.code);
     const pgMsg = err.message || 'Operation failed';
     const pgCode = err.code || 'REST_ERROR';
-    res.status(400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
+    res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -195,13 +232,16 @@ export async function handleDelete(req, res) {
     await setJwtClaims(client, req.user);
 
     const table = sanitizeTable(req.params.table);
+    assertForumMutationAccess(req.params.table, req.user);
     const { where, params } = parseFilters(req.query);
     if (!where) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Filters required for DELETE' });
     }
-    const sql = `DELETE FROM ${table} ${where} RETURNING *`;
-    const result = await client.query(sql, params);
+    const scope = getForumMutationScope(req.params.table, req.user, params.length + 1);
+    const scopedWhere = addScope(where, scope.sql);
+    const sql = `DELETE FROM ${table} ${scopedWhere} RETURNING *`;
+    const result = await client.query(sql, [...params, ...scope.params]);
 
     await client.query('COMMIT');
 
@@ -219,7 +259,7 @@ export async function handleDelete(req, res) {
     console.error('[REST DELETE]', err.message, '| table:', req.params.table, '| code:', err.code);
     const pgMsg = err.message || 'Operation failed';
     const pgCode = err.code || 'REST_ERROR';
-    res.status(400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
+    res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
   } finally {
     await resetJwtClaims(client);
     client.release();

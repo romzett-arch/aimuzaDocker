@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders, DEEPSEEK_AGENT_ID } from "./types.ts";
@@ -7,10 +8,81 @@ import { buildPrompts } from "./prompts.ts";
 
 const modelName = "qwen3.5-flash";
 
+function buildFallbackStylePrompt(lyrics?: string, style?: string): string {
+  const normalizedStyle = style?.trim();
+  if (normalizedStyle) {
+    return normalizedStyle;
+  }
+
+  const source = (lyrics || "").replace(/\s+/g, " ").trim();
+  if (!source) {
+    return "pop, emotional, clean mix, expressive vocal, modern arrangement";
+  }
+
+  const shortSource = source.slice(0, 180);
+  return `pop, melodic, emotional, expressive vocal, based on lyrics: ${shortSource}`;
+}
+
+function buildFallbackMarkup(lyrics?: string): string {
+  const text = (lyrics || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+
+  return lines.join("\n");
+}
+
+function buildFallbackB9Payload(mode: string, body: RequestBody) {
+  if (mode === "analyze_prompt") {
+    return {
+      score: 60,
+      summary: "AI-анализ временно недоступен, показан базовый разбор.",
+      strengths: body.style ? ["Стиль уже задан"] : [],
+      issues: body.style ? [] : ["Не заполнен style/prompt"],
+      suggestions: body.style ? [] : ["Добавьте жанр, настроение, вокал и инструменты"],
+      fix: body.style || "",
+    };
+  }
+
+  if (mode === "analyze_style") {
+    return {
+      score: 60,
+      summary: "AI-анализ стиля временно недоступен, показан базовый разбор.",
+      strengths: body.style ? ["Строка стиля заполнена"] : [],
+      issues: body.style ? [] : ["Стиль пока пустой"],
+      suggestions: body.style ? [] : ["Добавьте жанр, темп, настроение и тип вокала"],
+      fix: body.style || "",
+    };
+  }
+
+  if (mode === "suggest_tags" || mode === "auto_tag_all") {
+    return { suggestions: [] };
+  }
+
+  if (mode === "build_style") {
+    return {
+      style: buildFallbackStylePrompt(body.lyrics, body.style),
+      suggestions: [],
+    };
+  }
+
+  return {};
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
+
+  let supabase: ReturnType<typeof createClient> | null = null;
+  let currentUserId: string | null = null;
+  let currentBody: RequestBody | null = null;
+  let currentMode: string | null = null;
+  let previousBalanceForRefund: number | null = null;
 
   try {
     const authHeader = req.headers.get("Authorization");
@@ -21,25 +93,50 @@ serve(async (req) => {
       );
     }
 
-    const supabase = createClient(
+    supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
     const token = authHeader.replace("Bearer ", "");
-    const { data, error: authError } = await supabase.auth.getClaims(token);
+    let user_id: string | null = null;
 
-    if (authError || !data?.claims?.sub) {
-      console.error("Auth error:", authError);
-      return new Response(
-        JSON.stringify({ error: "Неверный токен авторизации" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    try {
+      const { data, error: authError } = await supabase.auth.getClaims(token);
+      if (!authError && data?.claims?.sub) {
+        user_id = data.claims.sub as string;
+      } else {
+        console.warn("Auth getClaims fallback:", authError);
+      }
+    } catch (claimsError) {
+      console.warn("Auth getClaims threw, using getUser fallback:", claimsError);
     }
 
-    const user_id = data.claims.sub as string;
+    if (!user_id) {
+      const userClient = createClient(
+        Deno.env.get("SUPABASE_URL")!,
+        supabaseAnonKey,
+        { global: { headers: { Authorization: authHeader } } }
+      );
+      const { data: userData, error: userError } = await userClient.auth.getUser();
+
+      if (userError || !userData?.user?.id) {
+        console.error("Auth error:", userError);
+        return new Response(
+          JSON.stringify({ error: "Неверный токен авторизации" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      user_id = userData.user.id;
+    }
+
+    currentUserId = user_id;
     const body = await req.json() as RequestBody;
+    currentBody = body;
     const { mode, lyrics, style, theme, autoEval } = body;
+    currentMode = mode;
 
     console.log("Timeweb lyrics request:", { mode, user_id, agent: 'DeepSeek', hasLyrics: !!lyrics, style, theme });
 
@@ -60,12 +157,13 @@ serve(async (req) => {
     }
 
     const { previousBalance } = billingResult;
+    previousBalanceForRefund = previousBalance;
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${DEEPSEEK_AGENT_ID}/v1/chat/completions`;
 
     if (mode === "improve") {
       const pass1 = buildPrompts(mode, body, { pass: 1 });
       console.log("IMPROVE PASS 1 (structure): calling API...");
-      const imp1Response = await fetch(apiUrl, {
+      const imp1Response = await loggedTimewebFetch({ source: "deepseek-lyrics", action: "generate_lyrics", reason: "Пользователь запросил генерацию текста песни" }, apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
         body: JSON.stringify({
@@ -91,7 +189,7 @@ serve(async (req) => {
 
       const pass2 = buildPrompts(mode, body, { pass: 2, intermediateText: imp1Text });
       console.log("IMPROVE PASS 2 (imagery): calling API...");
-      const imp2Response = await fetch(apiUrl, {
+      const imp2Response = await loggedTimewebFetch({ source: "deepseek-lyrics", action: "generate_lyrics", reason: "Пользователь запросил генерацию текста песни" }, apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
         body: JSON.stringify({
@@ -124,7 +222,7 @@ serve(async (req) => {
     if (mode === "fix_pronunciation") {
       const { systemPrompt, userPrompt } = buildPrompts(mode, body);
       console.log("FIX_PRONUNCIATION: calling API...");
-      const pronResponse = await fetch(apiUrl, {
+      const pronResponse = await loggedTimewebFetch({ source: "deepseek-lyrics", action: "generate_lyrics", reason: "Пользователь запросил генерацию текста песни" }, apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
         body: JSON.stringify({
@@ -157,7 +255,7 @@ serve(async (req) => {
     if (mode === "generate") {
       const pass1 = buildPrompts(mode, body, { pass: 1 });
       console.log("PASS 1 (structure): calling API...");
-      const pass1Response = await fetch(apiUrl, {
+      const pass1Response = await loggedTimewebFetch({ source: "deepseek-lyrics", action: "generate_lyrics", reason: "Пользователь запросил генерацию текста песни" }, apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
         body: JSON.stringify({
@@ -168,9 +266,19 @@ serve(async (req) => {
       });
 
       if (!pass1Response.ok) {
-        await supabase.from("profiles").update({ balance: previousBalance }).eq("user_id", user_id);
         const errorText = await pass1Response.text();
         console.error("Pass 1 API error:", pass1Response.status, errorText);
+        const fallbackText = (lyrics || theme || "").trim();
+        if (fallbackText) {
+          await supabase.from("generated_lyrics").insert({
+            user_id, prompt: `[GENERATE-FALLBACK] ${theme || style || ""}`, lyrics: fallbackText, title: null,
+          });
+          return new Response(
+            JSON.stringify({ success: true, lyrics: fallbackText, mode, message: "Текст подготовлен в упрощённом режиме" }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        await supabase.from("profiles").update({ balance: previousBalance }).eq("user_id", user_id);
         throw new Error("Ошибка API (проход 1)");
       }
 
@@ -184,7 +292,7 @@ serve(async (req) => {
 
       const pass2 = buildPrompts(mode, body, { pass: 2, intermediateText: pass1Text });
       console.log("PASS 2 (imagery): calling API...");
-      const pass2Response = await fetch(apiUrl, {
+      const pass2Response = await loggedTimewebFetch({ source: "deepseek-lyrics", action: "generate_lyrics", reason: "Пользователь запросил генерацию текста песни" }, apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
         body: JSON.stringify({
@@ -224,7 +332,7 @@ serve(async (req) => {
     const { systemPrompt, userPrompt } = buildPrompts(mode, body);
     console.log(`Calling DeepSeek agent: ${DEEPSEEK_AGENT_ID}`);
 
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "deepseek-lyrics", action: "generate_lyrics", reason: "Пользователь запросил генерацию текста песни" }, apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
       body: JSON.stringify({
@@ -237,9 +345,42 @@ serve(async (req) => {
     console.log("Timeweb response status:", response.status);
 
     if (!response.ok) {
-      await supabase.from("profiles").update({ balance: previousBalance }).eq("user_id", user_id);
       const errorText = await response.text();
       console.error("Timeweb API error:", response.status, errorText);
+      if (mode === "create_prompt") {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            stylePrompt: buildFallbackStylePrompt(lyrics, style),
+            mode,
+            message: "Промт создан в упрощённом режиме",
+            fallback: true,
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (mode === "markup") {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            lyrics: buildFallbackMarkup(lyrics),
+            mode,
+            message: "Разметка временно недоступна, возвращён исходный текст",
+            fallback: true,
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (["suggest_tags", "build_style", "analyze_style", "analyze_prompt", "auto_tag_all"].includes(mode)) {
+        return new Response(
+          JSON.stringify({ success: true, ...buildFallbackB9Payload(mode, body), mode, fallback: true }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      await supabase.from("profiles").update({ balance: previousBalance }).eq("user_id", user_id);
       throw new Error("Ошибка API Timeweb");
     }
 
@@ -288,8 +429,14 @@ serve(async (req) => {
       } catch (e) {
         console.error("B9 JSON parse error:", e);
         return new Response(
-          JSON.stringify({ error: "Не удалось разобрать ответ AI", raw: generatedContent.slice(0, 500) }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          JSON.stringify({
+            success: true,
+            ...buildFallbackB9Payload(mode, body),
+            mode,
+            fallback: true,
+            raw: generatedContent.slice(0, 500),
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
     }
@@ -329,6 +476,73 @@ serve(async (req) => {
   } catch (error: unknown) {
     console.error("Error in deepseek-lyrics:", error);
     const message = error instanceof Error ? error.message : "Unknown error";
+
+    if (supabase && currentUserId && previousBalanceForRefund !== null && currentMode && currentMode !== "analyze_prompt" && currentMode !== "analyze_style") {
+      try {
+        await supabase.from("profiles").update({ balance: previousBalanceForRefund }).eq("user_id", currentUserId);
+      } catch (refundError) {
+        console.error("deepseek-lyrics refund failed:", refundError);
+      }
+    }
+
+    if (currentBody && currentMode === "create_prompt") {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          stylePrompt: buildFallbackStylePrompt(currentBody.lyrics, currentBody.style),
+          mode: currentMode,
+          message: "Промт создан в упрощённом режиме",
+          fallback: true,
+          fallback_reason: message,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (currentBody && currentMode === "markup") {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          lyrics: buildFallbackMarkup(currentBody.lyrics),
+          mode: currentMode,
+          message: "Разметка временно недоступна, возвращён исходный текст",
+          fallback: true,
+          fallback_reason: message,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (currentBody && currentMode && ["suggest_tags", "build_style", "analyze_style", "analyze_prompt", "auto_tag_all"].includes(currentMode)) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          ...buildFallbackB9Payload(currentMode, currentBody),
+          mode: currentMode,
+          fallback: true,
+          fallback_reason: message,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (currentBody && currentMode === "generate") {
+      const fallbackText = (currentBody.lyrics || currentBody.theme || "").trim();
+      if (fallbackText) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            lyrics: fallbackText,
+            mode: currentMode,
+            message: "Текст подготовлен в упрощённом режиме",
+            fallback: true,
+            fallback_reason: message,
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
     return new Response(
       JSON.stringify({ error: message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

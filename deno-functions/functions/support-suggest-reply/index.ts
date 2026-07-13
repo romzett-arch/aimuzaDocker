@@ -1,6 +1,7 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 /**
  * B4: AI-шаблоны ответов для тикетов поддержки
- * Генерирует предложение ответа по контексту тикета через DeepSeek
+ * Генерирует предложение ответа по контексту тикета через Qwen 3.5 Flash
  */
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -87,7 +88,7 @@ serve(async (req: Request) => {
     const userPrompt = `Тема обращения: ${subject}\n\nПереписка:\n${threadText}\n\nПредложи ответ:`;
 
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "support-suggest-reply", action: "suggest_support_reply", reason: "Сотрудник запросил вариант ответа пользователю" }, apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 import type { AIAnalysisResult } from "./types.ts";
 import { TIMEWEB_AGENT_ACCESS_ID } from "./constants.ts";
 
@@ -40,7 +41,7 @@ ${reportDetails ? `Детали: "${reportDetails}"` : ""}
   try {
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
 
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "forum-analyze-report", action: "analyze_forum_report", reason: "Модерация жалобы на материал форума" }, apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

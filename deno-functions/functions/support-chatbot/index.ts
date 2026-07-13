@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../../shared/timeweb-audit.ts";
 /**
  * C4: AI-чатбот поддержки — первая линия ответов
  * Генерирует автоответ на новый тикет. При auto_reply — постит в ticket_messages.
@@ -140,7 +141,7 @@ ${FAQ_CONTEXT}`;
 
     const agentId = Deno.env.get("TIMEWEB_AGENT_ID") || "";
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "support-chatbot", action: "support_chat_reply", reason: "Пользователь отправил сообщение чат-боту поддержки" }, apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

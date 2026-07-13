@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../../shared/timeweb-audit.ts";
 /**
  * B5: AI-дайджест для админки
  * Суммаризация метрик платформы через Qwen 3.5 Flash
@@ -87,7 +88,7 @@ serve(async (req: Request) => {
 
     const agentId = Deno.env.get("TIMEWEB_AGENT_ID") || "";
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "admin-digest", action: "generate_admin_digest", reason: "Администратор запросил сводку показателей платформы" }, apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

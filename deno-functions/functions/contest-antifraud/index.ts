@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../../shared/timeweb-audit.ts";
 /**
  * D4: AI-антифрод конкурсов
  * SQL-правила + Qwen 3.5 Flash при аномалиях. Результат в contest_entries.fraud_flags
@@ -182,7 +183,7 @@ serve(async (req: Request) => {
 
         const agentId = Deno.env.get("TIMEWEB_AGENT_ID") || "";
         const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${agentId}/v1/chat/completions`;
-        const response = await fetch(apiUrl, {
+        const response = await loggedTimewebFetch({ source: "contest-antifraud", action: "analyze_contest_fraud", reason: "Проверка подозрительной активности конкурса" }, apiUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

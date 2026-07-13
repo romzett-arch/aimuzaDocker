@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 /**
  * B7: AI-проверка метаданных для дистрибуции
  * Валидация по требованиям Spotify, Apple Music и др. стриминговых площадок
@@ -117,7 +118,7 @@ serve(async (req: Request) => {
 Проверь и верни JSON:`;
 
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "distribution-check", action: "check_distribution", reason: "Проверка готовности релиза к дистрибуции" }, apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

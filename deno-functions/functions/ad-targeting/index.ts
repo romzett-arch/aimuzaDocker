@@ -1,6 +1,7 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 /**
  * D5: AI-таргетинг рекламы
- * DeepSeek для rule-based matching: профиль пользователя vs кампании
+ * Qwen 3.5 Flash для rule-based matching: профиль пользователя vs кампании
  */
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -269,7 +270,7 @@ serve(async (req: Request) => {
     const userPrompt = `${userContext}\n\nРекламы:\n${adsText}\n\nНомер лучшей:`;
 
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "ad-targeting", action: "select_ad_targeting", reason: "Подбор релевантной рекламы для текущего контекста" }, apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.production
+.env.server
 *.pem
 *.key
 
@@ -18,6 +19,10 @@ data/
 
 # Build artifacts (собираются при деплое)
 frontend/dist/
+
+# Database backups/checkpoints may contain production or local user data.
+backups/*.dump
+*.dump
 
 # Test files
 test_track/

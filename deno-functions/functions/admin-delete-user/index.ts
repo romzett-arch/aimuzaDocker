@@ -35,7 +35,15 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Check caller is admin/super_admin
+    const { userId } = await req.json();
+    if (!userId) {
+      return new Response(JSON.stringify({ error: "userId is required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // Admins can delete other users; a user can delete only their own account.
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
     const { data: roleData } = await adminClient
       .from("user_roles")
@@ -43,17 +51,11 @@ Deno.serve(async (req) => {
       .eq("user_id", caller.id)
       .maybeSingle();
 
-    if (!roleData || !["admin", "super_admin"].includes(roleData.role)) {
+    const isSelfDelete = userId === caller.id;
+    const isAdmin = !!roleData && ["admin", "super_admin"].includes(roleData.role);
+    if (!isSelfDelete && !isAdmin) {
       return new Response(JSON.stringify({ error: "Forbidden: admin role required" }), {
         status: 403,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const { userId } = await req.json();
-    if (!userId) {
-      return new Response(JSON.stringify({ error: "userId is required" }), {
-        status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }

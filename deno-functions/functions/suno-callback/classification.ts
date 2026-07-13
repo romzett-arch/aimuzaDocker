@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { TIMEWEB_AGENT_ACCESS_ID } from "./types.ts";
 
@@ -77,7 +78,7 @@ ${artistStylesList}
 
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
 
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "suno-callback", action: "classify_generated_track", reason: "Музыкальная генерация завершена; требуется классификация трека" }, apiUrl, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${TIMEWEB_TOKEN}`,

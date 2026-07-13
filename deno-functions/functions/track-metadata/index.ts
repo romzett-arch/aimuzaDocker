@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -91,7 +92,7 @@ serve(async (req) => {
 Правила: опиши настроение, тему, стиль; пиши на русском; без хештегов; максимум 200 символов.`;
       const userPrompt = `Название: ${title}\n${genreName ? `Жанр: ${genreName}\n` : ""}${lyrics ? `Текст (первые 500 символов):\n${lyrics.substring(0, 500)}` : ""}`;
 
-      const res = await fetch(apiUrl, {
+      const res = await loggedTimewebFetch({ source: "track-metadata", action: "generate_track_metadata", reason: "Пользователь запросил генерацию метаданных трека" }, apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
         body: JSON.stringify({
@@ -113,7 +114,7 @@ serve(async (req) => {
 Учитывай: жанр, настроение, тему, инструменты, стиль. Теги — отдельные слова или короткие фразы.`;
     const userPrompt = `Название: ${title}\n${genreName ? `Жанр: ${genreName}\n` : ""}${description ? `Описание: ${description.substring(0, 300)}\n` : ""}${lyrics ? `Текст:\n${lyrics.substring(0, 400)}` : ""}`;
 
-    const res = await fetch(apiUrl, {
+    const res = await loggedTimewebFetch({ source: "track-metadata", action: "generate_track_metadata", reason: "Пользователь запросил генерацию метаданных трека" }, apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${TIMEWEB_TOKEN}` },
       body: JSON.stringify({

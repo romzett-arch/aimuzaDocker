@@ -1,3 +1,4 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { Mode } from "./constants.ts";
@@ -117,7 +118,7 @@ serve(async (req) => {
 
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${AGENT_ACCESS_ID}/v1/chat/completions`;
 
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "forum-ai-helper", action: "forum_assistance", reason: "Пользователь вызвал AI-помощника форума" }, apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

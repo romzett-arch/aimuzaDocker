@@ -1,6 +1,7 @@
+import { loggedTimewebFetch } from "../_shared/timeweb-audit.ts";
 /**
  * B3: AI-категоризация тикетов поддержки
- * Определяет category и priority по subject + message через DeepSeek
+ * Определяет category и priority по subject + message через Qwen 3.5 Flash
  */
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -95,7 +96,7 @@ priority — одна из: low, medium, high, urgent
     const userPrompt = `Тема: ${subject}\n\nСообщение: ${message.substring(0, 800)}`;
 
     const apiUrl = `https://agent.timeweb.cloud/api/v1/cloud-ai/agents/${TIMEWEB_AGENT_ACCESS_ID}/v1/chat/completions`;
-    const response = await fetch(apiUrl, {
+    const response = await loggedTimewebFetch({ source: "support-categorize", action: "categorize_support_ticket", reason: "Автоматическая категоризация нового обращения поддержки" }, apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
