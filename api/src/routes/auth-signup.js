@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
 import { signToken } from '../middleware/auth.js';
+import { PASSWORD_POLICY_MESSAGE, validatePassword } from '../security/password.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const BCRYPT_ROUNDS = 12;
@@ -18,11 +19,8 @@ export function registerSignup(router) {
         return res.status(400).json({ error: 'Invalid email format' });
       }
 
-      if (typeof password !== 'string' || password.length < 8) {
-        return res.status(400).json({ error: 'Password must be at least 8 characters' });
-      }
-      if (!/[a-zA-Zа-яА-Я]/.test(password) || !/\d/.test(password)) {
-        return res.status(400).json({ error: 'Password must contain at least one letter and one digit' });
+      if (!validatePassword(password)) {
+        return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
       }
 
       const existing = await pool.query('SELECT id FROM auth.users WHERE email = $1', [normalizedEmail]);
@@ -44,6 +42,8 @@ export function registerSignup(router) {
       );
 
       const user = result.rows[0];
+      user.raw_user_meta_data = metadata;
+      user.session_version = 0;
 
       await pool.query(
         `INSERT INTO public.profiles (user_id, username, display_name, email, balance, created_at, updated_at)

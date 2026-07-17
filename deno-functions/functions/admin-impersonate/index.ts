@@ -95,13 +95,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    if (!action || !ALLOWED_ACTIONS[action]) {
-      return new Response(
-        JSON.stringify({ error: `Действие '${action}' не разрешено`, allowed: Object.keys(ALLOWED_ACTIONS) }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
     if (!target_user_id) {
       return new Response(
         JSON.stringify({ error: 'target_user_id обязателен' }),
@@ -111,7 +104,7 @@ Deno.serve(async (req) => {
 
     const { data: targetProfile } = await adminClient
       .from('profiles')
-      .select('user_id, username')
+      .select('user_id, username, balance')
       .eq('user_id', target_user_id)
       .single();
 
@@ -119,6 +112,130 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({ error: 'Целевой пользователь не найден' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Full impersonation uses a real, short-lived Supabase session for the
+    // target account. This makes auth.uid(), RLS, RPCs, realtime and every
+    // existing/new frontend hook consistently operate as that user.
+    if (action === 'start_session') {
+      const { data: targetAuth, error: targetAuthError } = await adminClient.auth.admin.getUserById(target_user_id);
+      const targetEmail = targetAuth.user?.email;
+
+      if (targetAuthError || !targetEmail) {
+        return new Response(
+          JSON.stringify({ error: 'У целевого пользователя не найден auth-аккаунт или email' }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // AIMUZA uses its own auth server. Ask its service-role-only endpoint for
+      // a normal target-user JWT after the admin and PIN checks above.
+      const sessionResponse = await fetch(`${supabaseUrl}/auth/v1/admin/impersonation-session`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${supabaseServiceKey}`,
+          apikey: supabaseServiceKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ user_id: target_user_id }),
+      });
+      const sessionPayload = await sessionResponse.json().catch(() => ({}));
+      const targetSession = sessionResponse.ok
+        && sessionPayload?.access_token
+        && sessionPayload?.refresh_token
+        ? {
+            access_token: sessionPayload.access_token,
+            refresh_token: sessionPayload.refresh_token,
+          }
+        : null;
+
+      // Compatibility fallback for environments backed by standard GoTrue.
+      let linkResponse: Response | null = null;
+      let linkPayload: Record<string, any> = {};
+      if (!targetSession) {
+        linkResponse = await fetch(`${supabaseUrl}/auth/v1/admin/generate_link`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${supabaseServiceKey}`,
+            apikey: supabaseServiceKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ type: 'magiclink', email: targetEmail }),
+        });
+        linkPayload = await linkResponse.json().catch(() => ({}));
+      }
+      const linkProperties = linkPayload?.properties || linkPayload?.data?.properties || {};
+      const actionLink = typeof linkProperties.action_link === 'string'
+        ? linkProperties.action_link
+        : '';
+      let actionLinkUrl: URL | null = null;
+      try {
+        if (actionLink) actionLinkUrl = new URL(actionLink);
+      } catch {
+        actionLinkUrl = null;
+      }
+      const hashedToken = linkProperties.hashed_token
+        || actionLinkUrl?.searchParams.get('token_hash')
+        || actionLinkUrl?.searchParams.get('token');
+      const verificationType = linkProperties.verification_type
+        || actionLinkUrl?.searchParams.get('type')
+        || 'magiclink';
+
+      if (!targetSession && (!linkResponse?.ok || !hashedToken)) {
+        console.error('Failed to generate impersonation session:', {
+          sessionStatus: sessionResponse.status,
+          status: linkResponse?.status || null,
+          hasActionLink: !!actionLink,
+          responseError: linkPayload?.error || linkPayload?.message || null,
+        });
+        return new Response(
+          JSON.stringify({
+            error: linkPayload?.error_description
+              || linkPayload?.message
+              || 'Не удалось создать временную сессию пользователя',
+          }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      await Promise.all([
+        adminClient.from('impersonation_action_logs').insert({
+          admin_user_id: adminUserId,
+          target_user_id,
+          action_type: 'start_session',
+          action_payload: {},
+          result_status: 'success',
+          error_message: null,
+        }),
+        adminClient.from('role_change_logs').insert({
+          user_id: target_user_id,
+          changed_by: adminUserId,
+          action: 'impersonation_started',
+          metadata: { username: targetProfile.username, session_mode: true },
+        }),
+      ]);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          target_session: targetSession,
+          hashed_token: targetSession ? null : hashedToken,
+          verification_type: targetSession ? null : verificationType,
+          target_user: {
+            id: targetProfile.user_id,
+            username: targetProfile.username,
+            balance: targetProfile.balance || 0,
+          },
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!action || !ALLOWED_ACTIONS[action]) {
+      return new Response(
+        JSON.stringify({ error: `Действие '${action}' не разрешено`, allowed: Object.keys(ALLOWED_ACTIONS) }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 

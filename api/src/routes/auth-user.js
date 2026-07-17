@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { PASSWORD_POLICY_MESSAGE, validatePassword } from '../security/password.js';
 
 export function registerUser(router) {
   router.get('/user', requireAuth, async (req, res) => {
@@ -44,9 +45,22 @@ export function registerUser(router) {
       let idx = 1;
 
       if (password) {
-        const hashed = await bcrypt.hash(password, 10);
+        if (!validatePassword(password)) {
+          return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
+        }
+        const hashed = await bcrypt.hash(password, 12);
         updates.push(`encrypted_password = $${idx++}`);
         params.push(hashed);
+        updates.push(`raw_user_meta_data = jsonb_set(
+          COALESCE(raw_user_meta_data, '{}'::jsonb),
+          '{session_version}',
+          to_jsonb(CASE
+            WHEN COALESCE(raw_user_meta_data->>'session_version', '') ~ '^\\d+$'
+              THEN (raw_user_meta_data->>'session_version')::integer + 1
+            ELSE 1
+          END),
+          true
+        )`);
       }
       if (email) {
         updates.push(`email = $${idx++}`);

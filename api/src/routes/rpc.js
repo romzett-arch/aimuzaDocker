@@ -8,6 +8,7 @@ import { pool } from '../db.js';
 import { rpcAnonLimiter, votingIpLimiter, votingUserLimiter } from '../middleware/votingRateLimit.js';
 import { assertForumRpcAccess } from '../security/forum-rpc-policy.js';
 import { assertEventsRpcAccess } from '../security/events-rpc-policy.js';
+import { assertEconomyRpcAccess, ECONOMY_SERVICE_ROLE_ONLY_RPC } from '../security/economy-rpc-policy.js';
 
 const router = Router();
 const RPC_ERROR_SQL_BLACKLIST = /\b(select|insert|update|delete|syntax|column|relation|constraint|violates|duplicate key|null value|permission denied|operator does not exist|invalid input syntax)\b/i;
@@ -44,6 +45,7 @@ const ALLOWED_RPC = new Set([
   'get_active_announcements', 'get_catalog_visible_author_ids', 'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
   'get_feed_tracks_with_profiles', 'get_hero_stats', 'get_last_messages',
   'get_marketplace_items', 'get_my_sanction_status', 'get_my_weighted_vote', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
+  'get_my_referral_stats', 'get_referral_overview', 'get_public_progression_config',
   'get_qa_leaderboard', 'get_qa_ticket_comment_counts', 'get_radio_listeners', 'get_radio_smart_queue',
   'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',
   'get_reputation_leaderboard', 'get_reputation_profile', 'get_smart_feed', 'get_admin_subscription_metrics',
@@ -65,7 +67,7 @@ const ALLOWED_RPC = new Set([
   'messaging_send_message', 'messaging_unblock_user',
   'pin_comment', 'process_payment_completion', 'process_payment_refund', 'process_payout_request',
   'process_store_item_purchase', 'purchase_ad_free', 'purchase_track_boost',
-  'record_lyrics_blockchain_deposit',
+  'record_lyrics_blockchain_deposit', 'register_referral',
   'process_contest_lifecycle',
   'qa_recalculate_priority', 'qa_update_tester_tier',
   'radio_award_listen_xp', 'radio_create_next_slot', 'radio_heartbeat',
@@ -79,6 +81,7 @@ const ALLOWED_RPC = new Set([
   'revoke_verification', 'revoke_vote', 'safe_award_xp',
   'send_track_to_voting', 'submit_contest_entry', 'take_voting_snapshot',
   'unblock_user', 'unhide_contest_comment', 'update_last_seen',
+  'update_referral_settings',
   'update_voter_ranks', 'vote_qa_ticket', 'withdraw_contest_entry',
 ]);
 
@@ -86,6 +89,7 @@ const ALLOWED_RPC = new Set([
 // the database owner, so PostgreSQL GRANT alone cannot protect them here.
 const SERVICE_ROLE_ONLY_RPC = new Set([
   'record_lyrics_blockchain_deposit',
+  ...ECONOMY_SERVICE_ROLE_ONLY_RPC,
 ]);
 
 /** Общий rate limit для анонимов — на все RPC */
@@ -142,6 +146,7 @@ async function handleRpc(req, res) {
     const params = { ...((req.method === 'GET') ? req.query : (req.body || {})) };
     assertForumRpcAccess(fnName, req.user, params);
     assertEventsRpcAccess(fnName, req.user, params);
+    assertEconomyRpcAccess(fnName, req.user, params);
     if (fnName === 'cast_weighted_vote') {
       // Клиент не может подменить адрес: антифрод получает только IP,
       // вычисленный Express с учётом доверенного reverse proxy.

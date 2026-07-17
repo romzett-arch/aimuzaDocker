@@ -16,7 +16,7 @@ export function registerToken(router) {
         }
 
         const result = await pool.query(
-          'SELECT id, email, encrypted_password, email_confirmed_at, created_at, is_super_admin FROM auth.users WHERE email = $1',
+          'SELECT id, email, encrypted_password, email_confirmed_at, created_at, is_super_admin, raw_user_meta_data FROM auth.users WHERE email = $1',
           [email.toLowerCase()]
         );
 
@@ -46,6 +46,7 @@ export function registerToken(router) {
         const profile = profileRes.rows[0];
         user.app_role = profile?.role || 'user';
         user.is_super_admin = user.is_super_admin || profile?.is_super_admin || false;
+        user.session_version = Number(user.raw_user_meta_data?.session_version ?? 0);
 
         await pool.query('UPDATE auth.users SET last_sign_in_at = now() WHERE id = $1', [user.id]);
 
@@ -72,11 +73,12 @@ export function registerToken(router) {
         if (!req.user) {
           return res.status(401).json({ error: 'Invalid refresh token' });
         }
-        const result = await pool.query('SELECT id, email, created_at FROM auth.users WHERE id = $1', [req.user.id]);
+        const result = await pool.query('SELECT id, email, created_at, raw_user_meta_data FROM auth.users WHERE id = $1', [req.user.id]);
         if (result.rows.length === 0) {
           return res.status(401).json({ error: 'User not found' });
         }
         const user = result.rows[0];
+        user.session_version = Number(user.raw_user_meta_data?.session_version ?? 0);
         const token = signToken(user);
         return res.json({
           access_token: token,

@@ -10,6 +10,7 @@ import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 import { requireAuth } from '../middleware/auth.js';
 import { pool } from '../db.js';
+import { recoveryCodeForToken } from '../security/password.js';
 
 const router = Router();
 
@@ -112,9 +113,14 @@ router.post('/send-auth-email', async (req, res) => {
 
       const token = crypto.randomBytes(32).toString('hex');
       await pool.query(
+        `DELETE FROM public.email_verifications
+         WHERE email = $1 AND code LIKE 'RESET:%'`,
+        [email.toLowerCase()]
+      );
+      await pool.query(
         `INSERT INTO public.email_verifications (email, code, verified, expires_at)
          VALUES ($1, $2, false, now() + interval '1 hour')`,
-        [email.toLowerCase(), `RESET:${token}`]
+        [email.toLowerCase(), recoveryCodeForToken(token)]
       );
       link = `${BASE_URL}/auth?mode=reset&token=${token}&type=recovery`;
     }

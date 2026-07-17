@@ -82,6 +82,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Auth-specific rate limiters (before auth middleware — these don't need user context)
 app.use('/auth/v1/token', rateLimit({ windowMs: 15 * 60 * 1000, max: 30, message: { error: 'Too many login attempts, try again later' } }));
 app.use('/auth/v1/signup', rateLimit({ windowMs: 60 * 60 * 1000, max: 10, message: { error: 'Too many signup attempts, try again later' } }));
+app.use('/auth/v1/recover', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Слишком много попыток. Попробуйте позже' } }));
 app.use('/functions/v1/send-auth-email', rateLimit({ windowMs: 60 * 1000, max: 3, message: { error: 'Too many email requests, try again later' } }));
 app.use('/functions/v1/verify-email-code', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Too many verification attempts' } }));
 

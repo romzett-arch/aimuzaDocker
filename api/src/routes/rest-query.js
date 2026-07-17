@@ -3,6 +3,7 @@ import { setJwtClaims, resetJwtClaims, sanitizeTable, parseFilters, parseSelect,
 import { getForumReadColumns, getForumReadScope } from '../security/forum-rest-policy.js';
 import { getMarketplaceReadScope } from '../security/marketplace-rest-policy.js';
 import { getEventsReadScope } from '../security/events-rest-policy.js';
+import { assertEconomyReadAccess, getEconomyReadScope } from '../security/economy-rest-policy.js';
 
 function addScope(where, scopeSql) {
   if (!scopeSql) return where;
@@ -16,13 +17,15 @@ export async function handleHead(req, res) {
     await setJwtClaims(client, req.user);
 
     const table = sanitizeTable(req.params.table);
+    assertEconomyReadAccess(req.params.table, req.user);
     const { where, params } = parseFilters(req.query);
     const scope = getForumReadScope(req.params.table, req.user, params.length + 1);
     const marketplaceScope = getMarketplaceReadScope(req.params.table, req.user, params.length + scope.params.length + 1);
     const eventsScope = getEventsReadScope(req.params.table, req.user, params.length + scope.params.length + marketplaceScope.params.length + 1);
-    const scopedWhere = addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql);
+    const economyScope = getEconomyReadScope(req.params.table, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + 1);
+    const scopedWhere = addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql);
     const countSql = `SELECT COUNT(*) FROM ${table} ${scopedWhere}`;
-    const cr = await client.query(countSql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params]);
+    const cr = await client.query(countSql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params]);
 
     await client.query('COMMIT');
     res.set('Content-Range', `0-0/${cr.rows[0].count}`);
@@ -46,14 +49,16 @@ export async function handleGet(req, res) {
 
     const tableName = req.params.table;
     const table = sanitizeTable(tableName);
+    assertEconomyReadAccess(tableName, req.user);
     const parsedSelect = parseSelect(req.query.select, table);
     const columns = getForumReadColumns(tableName, req.user, parsedSelect.columns);
     const { where, params } = parseFilters(req.query);
     const scope = getForumReadScope(tableName, req.user, params.length + 1);
     const marketplaceScope = getMarketplaceReadScope(tableName, req.user, params.length + scope.params.length + 1);
     const eventsScope = getEventsReadScope(tableName, req.user, params.length + scope.params.length + marketplaceScope.params.length + 1);
-    const scopedWhere = addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql);
-    const scopedParams = [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params];
+    const economyScope = getEconomyReadScope(tableName, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + 1);
+    const scopedWhere = addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql);
+    const scopedParams = [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params];
     const order = parseOrder(req.query.order);
     const limit = parseInt(req.query.limit) || null;
     const offset = parseInt(req.query.offset) || 0;
@@ -91,7 +96,13 @@ export async function handleGet(req, res) {
     if (err.message.includes('does not exist') || err.message.includes('column')) {
       return res.json([]);
     }
-    res.status(400).json({ message: err.message, error: err.message, code: 'REST_ERROR', details: null, hint: null });
+    res.status(err.status || 400).json({
+      message: err.message,
+      error: err.message,
+      code: err.code || 'REST_ERROR',
+      details: null,
+      hint: null,
+    });
   } finally {
     await resetJwtClaims(client);
     client.release();

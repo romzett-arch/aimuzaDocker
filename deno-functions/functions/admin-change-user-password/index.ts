@@ -5,6 +5,19 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+const MAX_PIN_FAILURES = 10;
+const PIN_WINDOW_MS = 15 * 60 * 1000;
+const PASSWORD_POLICY_MESSAGE =
+  "Пароль должен содержать минимум 8 символов, заглавную букву, цифру и спецсимвол";
+
+function isValidPassword(password: unknown): password is string {
+  return typeof password === "string" &&
+    password.length >= 8 &&
+    /[A-ZА-ЯЁ]/.test(password) &&
+    /[0-9]/.test(password) &&
+    /[^A-Za-zА-Яа-яЁё0-9]/.test(password);
+}
+
 async function sha256(message: string): Promise<string> {
   const msgBuffer = new TextEncoder().encode(message);
   const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
@@ -53,13 +66,14 @@ Deno.serve(async (req) => {
 
     const adminUserId = claims.claims.sub as string;
 
-    const { data: userRole } = await adminClient
+    const { data: userRole, error: roleError } = await adminClient
       .from("user_roles")
       .select("role")
       .eq("user_id", adminUserId)
-      .single();
+      .eq("role", "super_admin")
+      .maybeSingle();
 
-    if (!userRole || userRole.role !== "super_admin") {
+    if (roleError || !userRole) {
       return new Response(JSON.stringify({ error: "Доступ запрещен. Только для super_admin." }), {
         status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -83,8 +97,8 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (!new_password || typeof new_password !== "string" || new_password.length < 6) {
-      return new Response(JSON.stringify({ error: "Новый пароль должен быть не короче 6 символов" }), {
+    if (!isValidPassword(new_password)) {
+      return new Response(JSON.stringify({ error: PASSWORD_POLICY_MESSAGE }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -100,6 +114,33 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "PIN-код не настроен" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const pinWindowStart = new Date(Date.now() - PIN_WINDOW_MS).toISOString();
+    const { count: failedPinCount, error: failedPinCountError } = await adminClient
+      .from("impersonation_action_logs")
+      .select("id", { count: "exact", head: true })
+      .eq("admin_user_id", adminUserId)
+      .eq("action_type", "admin_password_change_pin_failed")
+      .eq("result_status", "error")
+      .gte("created_at", pinWindowStart);
+
+    if (failedPinCountError) {
+      console.error("Failed to check PIN attempt limit", failedPinCountError);
+      return new Response(JSON.stringify({ error: "Не удалось проверить лимит PIN" }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if ((failedPinCount ?? 0) >= MAX_PIN_FAILURES) {
+      return new Response(JSON.stringify({
+        error: "Лимит PIN исчерпан. Попробуйте через 15 минут",
+        code: "PIN_ATTEMPTS_EXCEEDED",
+      }), {
+        status: 429,
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Retry-After": "900" },
       });
     }
 
@@ -151,6 +192,28 @@ Deno.serve(async (req) => {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    if (targetUser.user.email) {
+      const { error: tokenDeleteError } = await adminClient
+        .from("email_verifications")
+        .delete()
+        .eq("email", targetUser.user.email.toLowerCase())
+        .like("code", "RESET:%");
+      if (tokenDeleteError) {
+        console.error("Failed to invalidate recovery tokens", tokenDeleteError);
+      }
+
+      const { error: notificationError } = await adminClient.functions.invoke("send-admin-email", {
+        body: {
+          to: targetUser.user.email,
+          subject: "Пароль AIMUZA изменён администратором",
+          html: "<p>Пароль вашего аккаунта AIMUZA был изменён администратором. Если вы не ожидали этого, немедленно обратитесь в поддержку.</p>",
+        },
+      });
+      if (notificationError) {
+        console.error("Failed to send password change notification", notificationError);
+      }
     }
 
     return new Response(JSON.stringify({ success: true, target_user_id }), {

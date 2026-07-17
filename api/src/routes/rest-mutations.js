@@ -25,6 +25,11 @@ import {
   assertEventsMutationAccess,
   getEventsMutationScope,
 } from '../security/events-rest-policy.js';
+import {
+  assertEconomyMutationAccess,
+  filterEconomyMutationColumns,
+  getEconomyMutationScope,
+} from '../security/economy-rest-policy.js';
 
 const PROTECTED_COLUMNS = new Set([
   'role', 'is_super_admin', 'balance', 'likes_count', 'plays_count',
@@ -77,6 +82,7 @@ export async function handlePost(req, res) {
     assertForumMutationAccess(req.params.table, req.user);
     assertMarketplaceMutationAccess(req.params.table, req.user);
     assertEventsMutationAccess(req.params.table, req.user);
+    assertEconomyMutationAccess(req.params.table, req.user, 'insert');
     const inputRows = Array.isArray(req.body) ? req.body : [req.body];
     const rows = inputRows.map(row => applyEventsInsertOwnership(
       req.params.table,
@@ -96,11 +102,16 @@ export async function handlePost(req, res) {
       await assertMarketplaceInsertRelation(client, req.params.table, row, req.user);
       await assertEventsInsertRelation(client, req.params.table, row, req.user);
       const validCols = Object.keys(row).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
-      const cols = filterMarketplaceMutationColumns(
+      const cols = filterEconomyMutationColumns(
         req.params.table,
-        filterInsertCols(validCols, req.user, req.params.table),
+        filterMarketplaceMutationColumns(
+          req.params.table,
+          filterInsertCols(validCols, req.user, req.params.table),
+          req.user,
+          true,
+        ),
         req.user,
-        true,
+        'insert',
       );
       if (cols.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No valid columns' }); }
 
@@ -200,12 +211,18 @@ export async function handlePatch(req, res) {
     assertForumMutationAccess(req.params.table, req.user);
     assertMarketplaceMutationAccess(req.params.table, req.user);
     assertEventsMutationAccess(req.params.table, req.user);
+    assertEconomyMutationAccess(req.params.table, req.user, 'update');
     const updates = req.body;
     const validCols = Object.keys(updates).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
-    const cols = filterMarketplaceMutationColumns(
+    const cols = filterEconomyMutationColumns(
       req.params.table,
-      filterUpdateCols(validCols, req.user, req.params.table),
+      filterMarketplaceMutationColumns(
+        req.params.table,
+        filterUpdateCols(validCols, req.user, req.params.table),
+        req.user,
+      ),
       req.user,
+      'update',
     );
     if (cols.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No valid columns' }); }
 
@@ -237,10 +254,15 @@ export async function handlePatch(req, res) {
       req.user,
       idx + filterParams.length + scope.params.length + marketplaceScope.params.length,
     );
-    const scopedWhere = addScope(addScope(addScope(adjustedWhere, scope.sql), marketplaceScope.sql), eventsScope.sql);
+    const economyScope = getEconomyMutationScope(
+      req.params.table,
+      req.user,
+      idx + filterParams.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length,
+    );
+    const scopedWhere = addScope(addScope(addScope(addScope(adjustedWhere, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql);
 
     const sql = `UPDATE ${table} SET ${setClauses.join(', ')} ${scopedWhere} RETURNING *`;
-    const result = await client.query(sql, [...setParams, ...filterParams, ...scope.params, ...marketplaceScope.params, ...eventsScope.params]);
+    const result = await client.query(sql, [...setParams, ...filterParams, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params]);
 
     await client.query('COMMIT');
 
@@ -283,6 +305,7 @@ export async function handleDelete(req, res) {
     assertForumMutationAccess(req.params.table, req.user);
     assertMarketplaceMutationAccess(req.params.table, req.user);
     assertEventsMutationAccess(req.params.table, req.user);
+    assertEconomyMutationAccess(req.params.table, req.user, 'delete');
     const { where, params } = parseFilters(req.query);
     if (!where) {
       await client.query('ROLLBACK');
@@ -299,9 +322,14 @@ export async function handleDelete(req, res) {
       req.user,
       params.length + scope.params.length + marketplaceScope.params.length + 1,
     );
-    const scopedWhere = addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql);
+    const economyScope = getEconomyMutationScope(
+      req.params.table,
+      req.user,
+      params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + 1,
+    );
+    const scopedWhere = addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql);
     const sql = `DELETE FROM ${table} ${scopedWhere} RETURNING *`;
-    const result = await client.query(sql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params]);
+    const result = await client.query(sql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params]);
 
     await client.query('COMMIT');
 

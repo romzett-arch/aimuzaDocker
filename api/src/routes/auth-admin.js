@@ -1,8 +1,54 @@
 import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
-import { requireServiceRole } from '../middleware/auth.js';
+import { requireServiceRole, signToken } from '../middleware/auth.js';
+import { PASSWORD_POLICY_MESSAGE, validatePassword } from '../security/password.js';
 
 export function registerAdmin(router) {
+  router.post('/admin/impersonation-session', requireServiceRole, async (req, res) => {
+    try {
+      const { user_id: userId } = req.body;
+      if (!userId) {
+        return res.status(400).json({ error: 'user_id is required' });
+      }
+
+      const result = await pool.query(
+        `SELECT u.id, u.email, u.email_confirmed_at, u.created_at, u.is_super_admin, u.raw_user_meta_data,
+                p.role AS app_role, p.display_name
+         FROM auth.users u
+         LEFT JOIN public.profiles p ON p.user_id = u.id
+         WHERE u.id = $1`,
+        [userId]
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const user = result.rows[0];
+      user.app_role = user.app_role || 'user';
+      user.session_version = Number(user.raw_user_meta_data?.session_version ?? 0);
+      const token = signToken(user);
+
+      return res.json({
+        access_token: token,
+        token_type: 'bearer',
+        expires_in: 604800,
+        refresh_token: token,
+        user: {
+          id: user.id,
+          email: user.email,
+          created_at: user.created_at,
+          email_confirmed_at: user.email_confirmed_at,
+          app_metadata: { provider: 'email', role: user.app_role },
+          user_metadata: { display_name: user.display_name },
+          is_super_admin: user.is_super_admin || false,
+        },
+      });
+    } catch (err) {
+      console.error('[Admin] Impersonation session error:', err.message);
+      res.status(500).json({ error: 'Failed to create impersonation session' });
+    }
+  });
+
   router.get('/admin/users', requireServiceRole, async (req, res) => {
     try {
       const page = parseInt(req.query.page) || 1;
@@ -84,13 +130,16 @@ export function registerAdmin(router) {
       if (!email || !password) {
         return res.status(400).json({ error: 'Email and password required' });
       }
+      if (!validatePassword(password)) {
+        return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
+      }
 
       const existing = await pool.query('SELECT id FROM auth.users WHERE email = $1', [email.toLowerCase()]);
       if (existing.rows.length > 0) {
         return res.status(400).json({ error: 'User already registered', code: 'USER_EXISTS' });
       }
 
-      const hashed = await bcrypt.hash(password, 10);
+      const hashed = await bcrypt.hash(password, 12);
       const meta = user_metadata || {};
       const username = meta.username || email.split('@')[0];
 
@@ -132,6 +181,7 @@ export function registerAdmin(router) {
     try {
       const userId = req.params.id;
       const { email, password, email_confirm, user_metadata, ban_duration } = req.body;
+      const passwordChanged = Boolean(password);
 
       const updates = [];
       const params = [];
@@ -142,9 +192,22 @@ export function registerAdmin(router) {
         params.push(email.toLowerCase());
       }
       if (password) {
-        const hashed = await bcrypt.hash(password, 10);
+        if (!validatePassword(password)) {
+          return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
+        }
+        const hashed = await bcrypt.hash(password, 12);
         updates.push(`encrypted_password = $${idx++}`);
         params.push(hashed);
+        updates.push(`raw_user_meta_data = jsonb_set(
+          COALESCE(raw_user_meta_data, '{}'::jsonb),
+          '{session_version}',
+          to_jsonb(CASE
+            WHEN COALESCE(raw_user_meta_data->>'session_version', '') ~ '^\\d+$'
+              THEN (raw_user_meta_data->>'session_version')::integer + 1
+            ELSE 1
+          END),
+          true
+        )`);
       }
       if (email_confirm === true) {
         updates.push(`email_confirmed_at = COALESCE(email_confirmed_at, now())`);
@@ -175,7 +238,15 @@ export function registerAdmin(router) {
         return res.json({ id: u.id, email: u.email, email_confirmed_at: u.email_confirmed_at });
       }
 
-      const sql = `UPDATE auth.users SET ${updates.join(', ')} WHERE id = $${idx} RETURNING id, email, email_confirmed_at, raw_user_meta_data, created_at`;
+      const updateSql = `UPDATE auth.users SET ${updates.join(', ')} WHERE id = $${idx} RETURNING id, email, email_confirmed_at, raw_user_meta_data, created_at`;
+      const sql = passwordChanged
+        ? `WITH updated AS (${updateSql}),
+             deleted_tokens AS (
+               DELETE FROM public.email_verifications
+               WHERE email IN (SELECT email FROM updated) AND code LIKE 'RESET:%'
+             )
+           SELECT * FROM updated`
+        : updateSql;
       const result = await pool.query(sql, params);
 
       if (result.rows.length === 0) {

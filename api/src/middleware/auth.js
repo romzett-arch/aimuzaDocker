@@ -5,6 +5,8 @@
  */
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { pool } from '../db.js';
+import { readSessionVersion } from '../security/session-version.js';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET || JWT_SECRET.length < 32) {
@@ -16,7 +18,7 @@ const SERVICE_ROLE_KEY_BUF = process.env.SERVICE_ROLE_KEY
   ? Buffer.from(process.env.SERVICE_ROLE_KEY)
   : null;
 
-export function authMiddleware(req, res, next) {
+export async function authMiddleware(req, res, next) {
   req.user = null;
 
   const authHeader = req.headers.authorization || req.headers.apikey;
@@ -37,12 +39,28 @@ export function authMiddleware(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
+    const versionResult = await pool.query(
+      `SELECT COALESCE(
+         CASE WHEN COALESCE(raw_user_meta_data->>'session_version', '') ~ '^\\d+$'
+              THEN (raw_user_meta_data->>'session_version')::integer
+              ELSE 0 END,
+         0
+       ) AS session_version
+       FROM auth.users
+       WHERE id = $1`,
+      [decoded.sub]
+    );
+    const currentVersion = Number(versionResult.rows[0]?.session_version ?? -1);
+    const tokenVersion = readSessionVersion(decoded);
+    if (currentVersion !== tokenVersion) return next();
+
     req.user = {
       id: decoded.sub,
       email: decoded.email,
       role: decoded.role || 'authenticated',
       app_role: decoded.app_role || 'user',
       is_super_admin: decoded.is_super_admin || false,
+      session_version: tokenVersion,
     };
   } catch (err) {
     // Invalid token — continue as anon
@@ -74,6 +92,7 @@ export function signToken(user) {
       aud: 'authenticated',
       is_super_admin: user.is_super_admin || false,
       app_role: user.app_role || 'user',
+      session_version: readSessionVersion(user),
     },
     JWT_SECRET,
     { expiresIn: '7d' }
