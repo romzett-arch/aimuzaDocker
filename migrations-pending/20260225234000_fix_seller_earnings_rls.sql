@@ -1,16 +1,36 @@
--- Fix: seller_earnings has column user_id (not seller_id)
--- RLS was enabled but no policies existed → SELECT blocked for everyone
--- Add proper RLS policies using user_id column
+-- Fix seller_earnings RLS across schema variants:
+-- some environments still have seller_id, others already migrated to user_id.
 
 DROP POLICY IF EXISTS "Sellers can view own earnings" ON public.seller_earnings;
 DROP POLICY IF EXISTS "Admins can manage all earnings" ON public.seller_earnings;
 DROP POLICY IF EXISTS "Users can view own earnings" ON public.seller_earnings;
 
-CREATE POLICY "Sellers can view own earnings"
-ON public.seller_earnings
-FOR SELECT
-TO authenticated
-USING (auth.uid() = user_id);
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'seller_earnings'
+      AND column_name = 'user_id'
+  ) THEN
+    EXECUTE '
+      CREATE POLICY "Sellers can view own earnings"
+      ON public.seller_earnings
+      FOR SELECT
+      TO authenticated
+      USING (auth.uid() = user_id)
+    ';
+  ELSE
+    EXECUTE '
+      CREATE POLICY "Sellers can view own earnings"
+      ON public.seller_earnings
+      FOR SELECT
+      TO authenticated
+      USING (auth.uid() = seller_id)
+    ';
+  END IF;
+END $$;
 
 CREATE POLICY "Admins can manage all earnings"
 ON public.seller_earnings

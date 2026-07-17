@@ -6,6 +6,8 @@
 
 -- ─── 1. Радио: учёт radio_weight_multiplier в smart queue ──
 
+DROP FUNCTION IF EXISTS public.get_radio_smart_queue(UUID, UUID, INTEGER);
+
 CREATE OR REPLACE FUNCTION public.get_radio_smart_queue(
   p_user_id UUID DEFAULT NULL,
   p_genre_id UUID DEFAULT NULL,
@@ -110,6 +112,8 @@ $$;
 
 -- ─── 2. Радио: скидка на аукцион по подписке ───────────────
 
+DROP FUNCTION IF EXISTS public.radio_place_bid(UUID, UUID, UUID, INTEGER);
+
 CREATE OR REPLACE FUNCTION public.radio_place_bid(
   p_user_id UUID,
   p_slot_id UUID,
@@ -170,6 +174,8 @@ $$;
 
 
 -- ─── 3. Радио: статистика для PRO/LABEL ────────────────────
+
+DROP FUNCTION IF EXISTS public.get_my_radio_stats(UUID);
 
 CREATE OR REPLACE FUNCTION public.get_my_radio_stats(p_user_id UUID)
 RETURNS JSONB
@@ -261,6 +267,8 @@ GRANT EXECUTE ON FUNCTION public.get_my_radio_stats(UUID) TO authenticated;
 
 
 -- ─── 4. Бусты: бесплатные бусты по подписке ────────────────
+
+DROP FUNCTION IF EXISTS public.purchase_track_boost(UUID, INTEGER);
 
 CREATE OR REPLACE FUNCTION public.purchase_track_boost(
   p_track_id UUID,
@@ -380,6 +388,8 @@ GRANT EXECUTE ON FUNCTION public.purchase_track_boost(UUID, INTEGER) TO authenti
 
 
 -- ─── 5. Депонирование: бесплатные по подписке ──────────────
+
+DROP FUNCTION IF EXISTS public.check_deposit_limit(UUID);
 
 CREATE OR REPLACE FUNCTION public.check_deposit_limit(p_user_id UUID)
 RETURNS JSONB

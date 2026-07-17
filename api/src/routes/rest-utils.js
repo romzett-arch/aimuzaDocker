@@ -205,8 +205,8 @@ export function parseSelect(selectStr, mainTable) {
 
   const columns = [];
   for (const part of parts) {
-    const joinMatch = part.match(/^(\w+):(\w+)(?:!inner)?\(([^)]*)\)$/);
-    const simpleJoinMatch = part.match(/^(\w+)\(([^)]*)\)$/);
+    const joinMatch = part.match(/^(\w+):(\w+)(?:![\w_]+)?\(([^)]*)\)$/);
+    const simpleJoinMatch = part.match(/^(\w+)(?:!inner)?\(([^)]*)\)$/);
 
     if (joinMatch) {
       const [, alias, fTable, fColsStr] = joinMatch;
@@ -221,7 +221,10 @@ export function parseSelect(selectStr, mainTable) {
       const fCols = fColsStr.split(',').map(c => c.trim()).filter(c => /^[a-zA-Z_]\w*$/.test(c));
       if (fCols.length > 0) {
         const jsonParts = fCols.map(c => `'${c}', ft."${c}"`).join(', ');
-        const singularTable = fTable.endsWith('s') ? fTable.slice(0, -1) : fTable;
+        const baseTable = fTable.replace(/^forum_/, '');
+        const singularTable = baseTable.endsWith('ies')
+          ? `${baseTable.slice(0, -3)}y`
+          : (baseTable.endsWith('s') ? baseTable.slice(0, -1) : baseTable);
         const fkCol = `${singularTable}_id`;
         columns.push(`(SELECT jsonb_build_object(${jsonParts}) FROM public."${fTable}" ft WHERE ft.id = ${mainTable}."${fkCol}" LIMIT 1) as "${fTable}"`);
       }

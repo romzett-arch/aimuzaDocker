@@ -1,6 +1,14 @@
 -- Восстановление функционала буста треков (откат remove_unused_features для boost)
 -- addon_services, purchase_track_boost, get_boosted_tracks
 
+-- Совместимость со старой схемой addon_services
+ALTER TABLE public.addon_services
+  ADD COLUMN IF NOT EXISTS price_rub NUMERIC(10,2) NOT NULL DEFAULT 0;
+
+UPDATE public.addon_services
+SET price_rub = COALESCE(NULLIF(price_rub, 0), price_aipci, 0)
+WHERE price_rub = 0;
+
 -- 1. Восстановить addon_services для буста
 INSERT INTO public.addon_services (name, name_ru, description, price_rub, icon, is_active, sort_order)
 VALUES

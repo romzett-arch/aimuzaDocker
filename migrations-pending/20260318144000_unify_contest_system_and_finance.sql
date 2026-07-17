@@ -589,6 +589,7 @@ DECLARE
   v_winners_count INTEGER := 0;
   v_existing_winners INTEGER := 0;
   v_entry RECORD;
+  v_distribution RECORD;
   v_balance_before INTEGER;
   v_balance_after INTEGER;
 BEGIN

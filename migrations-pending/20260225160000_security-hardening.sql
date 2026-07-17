@@ -8,14 +8,15 @@ CREATE OR REPLACE FUNCTION public.protect_track_critical_fields()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  v_sub text;
 BEGIN
-  IF current_setting('request.jwt.claim.sub', true) IS NULL THEN
+  v_sub := current_setting('request.jwt.claim.sub', true);
+  IF v_sub IS NULL OR v_sub = '' THEN
     RETURN NEW;
   END IF;
 
-  IF public.is_admin(
-    (current_setting('request.jwt.claim.sub', true))::uuid
-  ) THEN
+  IF public.is_admin(v_sub::uuid) THEN
     RETURN NEW;
   END IF;
 

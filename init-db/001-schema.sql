@@ -2089,40 +2089,6 @@ CREATE TABLE public.user_subscriptions (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
--- 3. Beat Store - Beats for Sale
-CREATE TABLE public.store_beats (
-  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-  seller_id UUID NOT NULL,
-  track_id UUID NOT NULL REFERENCES public.tracks(id) ON DELETE CASCADE,
-  title TEXT NOT NULL,
-  description TEXT,
-  price INTEGER NOT NULL DEFAULT 0,
-  license_type TEXT NOT NULL DEFAULT 'basic',
-  license_terms TEXT,
-  is_exclusive BOOLEAN DEFAULT false,
-  is_active BOOLEAN DEFAULT true,
-  sales_count INTEGER DEFAULT 0,
-  views_count INTEGER DEFAULT 0,
-  tags TEXT[],
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  CONSTRAINT unique_track_in_store UNIQUE(track_id)
-);
-
--- 4. Beat Purchases Table
-CREATE TABLE public.beat_purchases (
-  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-  buyer_id UUID NOT NULL,
-  beat_id UUID NOT NULL REFERENCES public.store_beats(id) ON DELETE SET NULL,
-  seller_id UUID NOT NULL,
-  price INTEGER NOT NULL,
-  license_type TEXT NOT NULL,
-  payment_id UUID REFERENCES public.payments(id),
-  status TEXT NOT NULL DEFAULT 'completed',
-  download_url TEXT,
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
-);
-
 -- 5. Prompt Purchases Table (for paid prompts)
 CREATE TABLE public.prompt_purchases (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -2166,10 +2132,6 @@ CREATE TABLE public.payout_requests (
 -- Create indexes
 CREATE INDEX idx_user_subscriptions_user ON public.user_subscriptions(user_id);
 CREATE INDEX idx_user_subscriptions_status ON public.user_subscriptions(status);
-CREATE INDEX idx_store_beats_seller ON public.store_beats(seller_id);
-CREATE INDEX idx_store_beats_active ON public.store_beats(is_active);
-CREATE INDEX idx_beat_purchases_buyer ON public.beat_purchases(buyer_id);
-CREATE INDEX idx_beat_purchases_seller ON public.beat_purchases(seller_id);
 CREATE INDEX idx_prompt_purchases_buyer ON public.prompt_purchases(buyer_id);
 CREATE INDEX idx_seller_earnings_seller ON public.seller_earnings(seller_id);
 CREATE INDEX idx_payout_requests_seller ON public.payout_requests(seller_id);
@@ -2177,8 +2139,6 @@ CREATE INDEX idx_payout_requests_seller ON public.payout_requests(seller_id);
 -- Enable RLS
 ALTER TABLE public.subscription_plans ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_subscriptions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.store_beats ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.beat_purchases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.prompt_purchases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.seller_earnings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payout_requests ENABLE ROW LEVEL SECURITY;
@@ -2199,26 +2159,6 @@ CREATE POLICY "Admins can manage all subscriptions" ON public.user_subscriptions
 
 CREATE POLICY "System can create subscriptions" ON public.user_subscriptions
   FOR INSERT WITH CHECK (auth.uid() = user_id);
-
--- Store Beats Policies
-CREATE POLICY "Anyone can view active beats" ON public.store_beats
-  FOR SELECT USING (is_active = true);
-
-CREATE POLICY "Users can manage own beats" ON public.store_beats
-  FOR ALL USING (auth.uid() = seller_id);
-
-CREATE POLICY "Admins can manage all beats" ON public.store_beats
-  FOR ALL USING (is_admin(auth.uid()));
-
--- Beat Purchases Policies
-CREATE POLICY "Users can view own beat purchases" ON public.beat_purchases
-  FOR SELECT USING (auth.uid() = buyer_id OR auth.uid() = seller_id);
-
-CREATE POLICY "System can create beat purchases" ON public.beat_purchases
-  FOR INSERT WITH CHECK (auth.uid() = buyer_id);
-
-CREATE POLICY "Admins can manage beat purchases" ON public.beat_purchases
-  FOR ALL USING (is_admin(auth.uid()));
 
 -- Prompt Purchases Policies
 CREATE POLICY "Users can view own prompt purchases" ON public.prompt_purchases
@@ -2246,65 +2186,6 @@ CREATE POLICY "Users can create payout requests" ON public.payout_requests
 
 CREATE POLICY "Admins can manage all payout requests" ON public.payout_requests
   FOR ALL USING (is_admin(auth.uid()));
-
--- Function to process beat purchase
-CREATE OR REPLACE FUNCTION public.process_beat_purchase(
-  p_beat_id UUID,
-  p_buyer_id UUID
-) RETURNS UUID AS $$
-DECLARE
-  v_beat RECORD;
-  v_purchase_id UUID;
-  v_platform_fee INTEGER;
-  v_net_amount INTEGER;
-BEGIN
-  -- Get beat info
-  SELECT * INTO v_beat FROM public.store_beats WHERE id = p_beat_id AND is_active = true;
-  
-  IF v_beat IS NULL THEN
-    RAISE EXCEPTION 'Beat not found or not available';
-  END IF;
-  
-  IF v_beat.seller_id = p_buyer_id THEN
-    RAISE EXCEPTION 'Cannot purchase your own beat';
-  END IF;
-  
-  -- Calculate platform fee (10%)
-  v_platform_fee := ROUND(v_beat.price * 0.1);
-  v_net_amount := v_beat.price - v_platform_fee;
-  
-  -- Deduct from buyer balance
-  UPDATE public.profiles SET balance = balance - v_beat.price
-  WHERE user_id = p_buyer_id AND balance >= v_beat.price;
-  
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Insufficient balance';
-  END IF;
-  
-  -- Create purchase record
-  INSERT INTO public.beat_purchases (buyer_id, beat_id, seller_id, price, license_type)
-  VALUES (p_buyer_id, p_beat_id, v_beat.seller_id, v_beat.price, v_beat.license_type)
-  RETURNING id INTO v_purchase_id;
-  
-  -- Create earnings record
-  INSERT INTO public.seller_earnings (seller_id, amount, source_type, source_id, platform_fee, net_amount)
-  VALUES (v_beat.seller_id, v_beat.price, 'beat', v_purchase_id, v_platform_fee, v_net_amount);
-  
-  -- Add to seller balance
-  UPDATE public.profiles SET balance = balance + v_net_amount
-  WHERE user_id = v_beat.seller_id;
-  
-  -- Increment sales count
-  UPDATE public.store_beats SET sales_count = sales_count + 1 WHERE id = p_beat_id;
-  
-  -- If exclusive, mark as inactive
-  IF v_beat.is_exclusive THEN
-    UPDATE public.store_beats SET is_active = false WHERE id = p_beat_id;
-  END IF;
-  
-  RETURN v_purchase_id;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Function to process prompt purchase
 CREATE OR REPLACE FUNCTION public.process_prompt_purchase(
@@ -3702,14 +3583,6 @@ DROP POLICY IF EXISTS "Allow insert for authenticated users" ON payments;
 CREATE POLICY "Allow insert for authenticated users" ON payments
 FOR INSERT WITH CHECK (
   auth.uid() = user_id OR is_admin(auth.uid())
-);
-
--- Update beat_purchases policies for admin impersonation
-DROP POLICY IF EXISTS "System can create beat purchases" ON beat_purchases;
-
-CREATE POLICY "System can create beat purchases" ON beat_purchases
-FOR INSERT WITH CHECK (
-  auth.uid() = buyer_id OR is_admin(auth.uid())
 );
 
 -- Update prompt_purchases policies for admin impersonation
@@ -5931,7 +5804,7 @@ CREATE TABLE IF NOT EXISTS public.lyrics_deposits (
 CREATE TABLE IF NOT EXISTS public.store_items (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   seller_id UUID NOT NULL,
-  item_type TEXT NOT NULL CHECK (item_type IN ('beat', 'prompt', 'lyrics')),
+  item_type TEXT NOT NULL CHECK (item_type IN ('prompt', 'lyrics')),
   source_id UUID NOT NULL,
   title TEXT NOT NULL,
   description TEXT,
@@ -6184,8 +6057,6 @@ BEGIN
       UPDATE public.user_prompts SET is_public = false WHERE id = v_item.source_id;
     ELSIF v_item.item_type = 'lyrics' THEN
       UPDATE public.lyrics_items SET is_active = false, is_for_sale = false WHERE id = v_item.source_id;
-    ELSIF v_item.item_type = 'beat' THEN
-      UPDATE public.store_beats SET is_active = false WHERE id = v_item.source_id;
     END IF;
   END IF;
   
@@ -14740,32 +14611,6 @@ SELECT
 FROM public.lyrics_deposits ld
 WHERE ld.price_rub > 0 AND ld.status = 'completed';
 
--- Backfill: beat_purchases (buyer side)
-INSERT INTO public.balance_transactions (user_id, amount, type, description, reference_id, reference_type, created_at)
-SELECT 
-  bp.buyer_id,
-  -bp.price,
-  'beat_purchase',
-  'Покупка бита',
-  bp.beat_id,
-  'beat',
-  bp.created_at
-FROM public.beat_purchases bp
-WHERE bp.status = 'completed';
-
--- Backfill: beat_purchases (seller income)
-INSERT INTO public.balance_transactions (user_id, amount, type, description, reference_id, reference_type, created_at)
-SELECT 
-  bp.seller_id,
-  bp.price,
-  'sale_income',
-  'Продажа бита',
-  bp.beat_id,
-  'beat',
-  bp.created_at
-FROM public.beat_purchases bp
-WHERE bp.status = 'completed';
-
 -- Backfill: prompt_purchases (buyer)
 INSERT INTO public.balance_transactions (user_id, amount, type, description, reference_id, reference_type, created_at)
 SELECT 
@@ -15802,52 +15647,6 @@ ON CONFLICT (user_id) DO NOTHING;
 -- =====================================================
 
 -- 1. Harden purchase functions: use auth.uid() directly instead of accepting buyer_id
-
-CREATE OR REPLACE FUNCTION public.process_beat_purchase(p_beat_id UUID, p_buyer_id UUID)
-RETURNS UUID
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-  v_beat RECORD;
-  v_purchase_id UUID;
-  v_platform_fee INTEGER;
-  v_net_amount INTEGER;
-BEGIN
-  -- Explicit auth check
-  IF p_buyer_id != auth.uid() THEN
-    RAISE EXCEPTION 'Unauthorized: buyer_id must match authenticated user';
-  END IF;
-
-  SELECT * INTO v_beat FROM public.store_beats WHERE id = p_beat_id AND is_active = true;
-  IF v_beat IS NULL THEN RAISE EXCEPTION 'Beat not found or not available'; END IF;
-  IF v_beat.seller_id = p_buyer_id THEN RAISE EXCEPTION 'Cannot purchase your own beat'; END IF;
-
-  v_platform_fee := ROUND(v_beat.price * 0.1);
-  v_net_amount := v_beat.price - v_platform_fee;
-
-  UPDATE public.profiles SET balance = balance - v_beat.price
-  WHERE user_id = p_buyer_id AND balance >= v_beat.price;
-  IF NOT FOUND THEN RAISE EXCEPTION 'Insufficient balance'; END IF;
-
-  INSERT INTO public.beat_purchases (buyer_id, beat_id, seller_id, price, license_type)
-  VALUES (p_buyer_id, p_beat_id, v_beat.seller_id, v_beat.price, v_beat.license_type)
-  RETURNING id INTO v_purchase_id;
-
-  INSERT INTO public.seller_earnings (seller_id, amount, source_type, source_id, platform_fee, net_amount)
-  VALUES (v_beat.seller_id, v_beat.price, 'beat', v_purchase_id, v_platform_fee, v_net_amount);
-
-  UPDATE public.profiles SET balance = balance + v_net_amount WHERE user_id = v_beat.seller_id;
-  UPDATE public.store_beats SET sales_count = sales_count + 1 WHERE id = p_beat_id;
-
-  IF v_beat.is_exclusive THEN
-    UPDATE public.store_beats SET is_active = false WHERE id = p_beat_id;
-  END IF;
-
-  RETURN v_purchase_id;
-END;
-$$;
 
 CREATE OR REPLACE FUNCTION public.process_prompt_purchase(p_prompt_id UUID, p_buyer_id UUID)
 RETURNS UUID
@@ -16978,5 +16777,3 @@ CREATE TRIGGER update_bug_reports_updated_at
 BEFORE UPDATE ON public.bug_reports
 FOR EACH ROW
 EXECUTE FUNCTION public.update_updated_at_column();
-
-

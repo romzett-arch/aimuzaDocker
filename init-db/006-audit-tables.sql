@@ -1427,34 +1427,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- process_beat_purchase
-CREATE OR REPLACE FUNCTION public.process_beat_purchase(
-  p_beat_id uuid, p_buyer_id uuid, p_license_type text DEFAULT 'basic'
-)
-RETURNS uuid AS $$
-DECLARE
-  beat record;
-  purchase_id uuid;
-BEGIN
-  SELECT * INTO beat FROM public.store_beats WHERE id = p_beat_id AND is_active = true;
-  IF NOT FOUND THEN RAISE EXCEPTION 'Beat not found or inactive'; END IF;
-
-  UPDATE public.profiles SET balance = balance - beat.price WHERE user_id = p_buyer_id AND balance >= beat.price;
-  IF NOT FOUND THEN RAISE EXCEPTION 'Insufficient balance'; END IF;
-
-  INSERT INTO public.beat_purchases (buyer_id, beat_id, seller_id, price, license_type, status)
-  VALUES (p_buyer_id, p_beat_id, beat.seller_id, beat.price, p_license_type, 'completed')
-  RETURNING id INTO purchase_id;
-
-  UPDATE public.store_beats SET sales_count = sales_count + 1 WHERE id = p_beat_id;
-
-  INSERT INTO public.seller_earnings (seller_id, amount, source_type, source_id, platform_fee, net_amount, status)
-  VALUES (beat.seller_id, beat.price, 'beat_sale', purchase_id, beat.price * 0.1, beat.price * 0.9, 'pending');
-
-  RETURN purchase_id;
-END;
-$$ LANGUAGE plpgsql;
-
 -- process_prompt_purchase
 CREATE OR REPLACE FUNCTION public.process_prompt_purchase(p_prompt_id uuid, p_buyer_id uuid)
 RETURNS uuid AS $$

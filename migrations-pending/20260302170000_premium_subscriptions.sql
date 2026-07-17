@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS public.user_track_uploads (
 CREATE INDEX IF NOT EXISTS idx_user_track_uploads_user_date
   ON public.user_track_uploads(user_id, upload_date);
 CREATE INDEX IF NOT EXISTS idx_user_track_uploads_user_month
-  ON public.user_track_uploads(user_id, (date_trunc('month', upload_date::timestamptz)));
+  ON public.user_track_uploads(user_id, (date_trunc('month', upload_date::timestamp)));
 
 ALTER TABLE public.user_track_uploads ENABLE ROW LEVEL SECURITY;
 
@@ -189,7 +189,7 @@ INSERT INTO public.subscription_plans (
   699, 6990,
   30, 0, 0,
   20, NULL,
-  3, 1,
+  2, 1,
   3,
   1.5, 2, 20,
   true, false, false,
@@ -197,7 +197,7 @@ INSERT INTO public.subscription_plans (
   true, true, 1,
   0, true,
   '🔥', true, true,
-  '["30 треков/месяц бесплатно","Сверх лимита — 20₽/трек","Буст 3×/день (1ч) или 1×сутки","Бейдж PRO 🔥","Приоритет в конкурсах","Детальная аналитика","3 Blockchain-сертификата/мес","Ускоренная модерация (~24ч)","Радио: приоритет ×1.5 + 2 слота/нед","Скидка на радио-аукцион 20%","Статистика радио в ЛК","БЕЗ РЕКЛАМЫ везде"]'::jsonb,
+  '["30 треков/месяц бесплатно","Сверх лимита — 20₽/трек","Буст 2×/день по 1 часу","Бейдж PRO 🔥","Приоритет в конкурсах","Детальная аналитика","3 Blockchain-сертификата/мес","Ускоренная модерация (~24ч)","Радио: приоритет ×1.5 + 2 слота/нед","Скидка на радио-аукцион 20%","Статистика радио в ЛК","БЕЗ РЕКЛАМЫ везде"]'::jsonb,
   '{}'::jsonb,
   true, 2
 );
@@ -223,7 +223,7 @@ INSERT INTO public.subscription_plans (
   1699, 16990,
   50, 0, 0,
   20, NULL,
-  5, 24,
+  3, 24,
   10,
   2.5, 5, 50,
   true, true, true,
@@ -231,7 +231,7 @@ INSERT INTO public.subscription_plans (
   true, true, 2,
   0, true,
   '👑', true, true,
-  '["50 треков/месяц бесплатно","Сверх лимита — 20₽/трек","Буст 5×/день на сутки","Золотой бейдж LABEL 👑","Максимальный приоритет в конкурсах","Расширенная аналитика + экспорт","10 Blockchain-сертификатов/мес","Экспресс-модерация (~12ч)","Радио: приоритет ×2.5 + 5 слотов/нед","Скидка на радио-аукцион 50%","Расширенная статистика радио + API","БЕЗ РЕКЛАМЫ везде","Приоритетная поддержка"]'::jsonb,
+  '["50 треков/месяц бесплатно","Сверх лимита — 20₽/трек","Буст 3×/день на 24 часа","Золотой бейдж LABEL 👑","Максимальный приоритет в конкурсах","Расширенная аналитика + экспорт","10 Blockchain-сертификатов/мес","Экспресс-модерация (~12ч)","Радио: приоритет ×2.5 + 5 слотов/нед","Скидка на радио-аукцион 50%","Расширенная статистика радио + API","БЕЗ РЕКЛАМЫ везде","Приоритетная поддержка"]'::jsonb,
   '{}'::jsonb,
   true, 3
 );

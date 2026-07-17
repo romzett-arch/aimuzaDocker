@@ -1,6 +1,8 @@
 import { pool } from '../db.js';
 import { setJwtClaims, resetJwtClaims, sanitizeTable, parseFilters, parseSelect, parseOrder } from './rest-utils.js';
 import { getForumReadColumns, getForumReadScope } from '../security/forum-rest-policy.js';
+import { getMarketplaceReadScope } from '../security/marketplace-rest-policy.js';
+import { getEventsReadScope } from '../security/events-rest-policy.js';
 
 function addScope(where, scopeSql) {
   if (!scopeSql) return where;
@@ -16,9 +18,11 @@ export async function handleHead(req, res) {
     const table = sanitizeTable(req.params.table);
     const { where, params } = parseFilters(req.query);
     const scope = getForumReadScope(req.params.table, req.user, params.length + 1);
-    const scopedWhere = addScope(where, scope.sql);
+    const marketplaceScope = getMarketplaceReadScope(req.params.table, req.user, params.length + scope.params.length + 1);
+    const eventsScope = getEventsReadScope(req.params.table, req.user, params.length + scope.params.length + marketplaceScope.params.length + 1);
+    const scopedWhere = addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql);
     const countSql = `SELECT COUNT(*) FROM ${table} ${scopedWhere}`;
-    const cr = await client.query(countSql, [...params, ...scope.params]);
+    const cr = await client.query(countSql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params]);
 
     await client.query('COMMIT');
     res.set('Content-Range', `0-0/${cr.rows[0].count}`);
@@ -46,8 +50,10 @@ export async function handleGet(req, res) {
     const columns = getForumReadColumns(tableName, req.user, parsedSelect.columns);
     const { where, params } = parseFilters(req.query);
     const scope = getForumReadScope(tableName, req.user, params.length + 1);
-    const scopedWhere = addScope(where, scope.sql);
-    const scopedParams = [...params, ...scope.params];
+    const marketplaceScope = getMarketplaceReadScope(tableName, req.user, params.length + scope.params.length + 1);
+    const eventsScope = getEventsReadScope(tableName, req.user, params.length + scope.params.length + marketplaceScope.params.length + 1);
+    const scopedWhere = addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql);
+    const scopedParams = [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params];
     const order = parseOrder(req.query.order);
     const limit = parseInt(req.query.limit) || null;
     const offset = parseInt(req.query.offset) || 0;

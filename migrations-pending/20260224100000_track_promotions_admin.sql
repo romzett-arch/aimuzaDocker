@@ -40,6 +40,7 @@ END;
 $$;
 
 -- Вызов деактивации в начале get_boosted_tracks (ленивая очистка при каждом запросе)
+DROP FUNCTION IF EXISTS public.get_boosted_tracks(INTEGER);
 CREATE OR REPLACE FUNCTION public.get_boosted_tracks(p_limit INTEGER DEFAULT 5)
 RETURNS TABLE (
   track_id UUID,
@@ -92,6 +93,7 @@ AS $$
 DECLARE
   v_user_id UUID;
   v_user_balance NUMERIC;
+  v_new_balance NUMERIC;
   v_price NUMERIC;
   v_service_name TEXT;
   v_promotion_id UUID;
@@ -134,13 +136,14 @@ BEGIN
     RETURN json_build_object('success', false, 'error', 'Услуга не найдена');
   END IF;
   
-  SELECT balance INTO v_user_balance FROM public.profiles WHERE user_id = v_user_id;
+  SELECT balance INTO v_user_balance FROM public.profiles WHERE user_id = v_user_id FOR UPDATE;
   
   IF v_user_balance < v_price THEN
     RETURN json_build_object('success', false, 'error', 'Недостаточно средств', 'required', v_price, 'balance', v_user_balance);
   END IF;
   
-  UPDATE public.profiles SET balance = balance - v_price WHERE user_id = v_user_id;
+  UPDATE public.profiles SET balance = balance - v_price WHERE user_id = v_user_id
+    RETURNING balance INTO v_new_balance;
   
   v_expires_at := now() + (p_boost_duration_hours || ' hours')::INTERVAL;
   
@@ -152,8 +155,8 @@ BEGIN
   VALUES (p_track_id, v_user_id, v_boost_type, v_price, v_expires_at)
   RETURNING id INTO v_promotion_id;
   
-  INSERT INTO public.payments (user_id, amount, status, description, payment_system)
-  VALUES (v_user_id, -v_price, 'completed', 'Продвижение трека на ' || p_boost_duration_hours || ' ч.', 'balance');
+  INSERT INTO public.balance_transactions (user_id, amount, type, description, reference_id, reference_type, balance_before, balance_after)
+  VALUES (v_user_id, -v_price, 'purchase', 'Продвижение трека на ' || p_boost_duration_hours || ' ч.', v_promotion_id, 'promotion', v_user_balance, v_new_balance);
   
   RETURN json_build_object(
     'success', true,

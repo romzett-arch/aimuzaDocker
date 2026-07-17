@@ -34,11 +34,16 @@ import functionsRouter from './routes/functions.js';
 import { authMiddleware } from './middleware/auth.js';
 import { maintenanceGuard } from './middleware/maintenance.js';
 import { blockedUserGuard } from './middleware/blocked-user.js';
+import { startVotingLifecycle } from './services/votingLifecycle.js';
 
 dotenv.config();
 
 const app = express();
 const PORT = parseInt(process.env.API_PORT || '3000');
+
+// Единственный nginx перед API задаёт X-Forwarded-For. Это нужно для
+// корректного IP rate-limit и серверного антифрода голосования.
+app.set('trust proxy', 1);
 
 // Middleware
 app.use(helmet({
@@ -122,6 +127,7 @@ async function start() {
   await testConnection();
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[API] aimuza-api listening on :${PORT}`);
+    startVotingLifecycle();
   });
 }
 

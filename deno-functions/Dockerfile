@@ -18,6 +18,9 @@ RUN deno eval "import nodemailer from 'npm:nodemailer@6.9.10'; console.log('node
 RUN deno eval "import QRCode from 'npm:qrcode@1.5.4'; console.log(typeof QRCode.toString === 'function' ? 'qrcode cached' : 'qrcode missing');" 2>/dev/null || \
     deno eval "import QRCode from 'npm:qrcode@1.5.4'; console.log(typeof QRCode.toString === 'function' ? 'qrcode cached' : 'qrcode missing');" 2>/dev/null || \
     echo "qrcode cache attempt done"
+RUN deno eval "import OpenTimestamps from 'npm:opentimestamps@0.4.9'; console.log(typeof OpenTimestamps.upgrade === 'function' ? 'opentimestamps cached' : 'opentimestamps missing');" 2>/dev/null || \
+    deno eval "import OpenTimestamps from 'npm:opentimestamps@0.4.9'; console.log(typeof OpenTimestamps.upgrade === 'function' ? 'opentimestamps cached' : 'opentimestamps missing');" 2>/dev/null || \
+    echo "opentimestamps cache attempt done"
 
 # Копируем код функций
 COPY . .

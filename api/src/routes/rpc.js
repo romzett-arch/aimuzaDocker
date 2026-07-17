@@ -6,6 +6,8 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { rpcAnonLimiter, votingIpLimiter, votingUserLimiter } from '../middleware/votingRateLimit.js';
+import { assertForumRpcAccess } from '../security/forum-rpc-policy.js';
+import { assertEventsRpcAccess } from '../security/events-rpc-policy.js';
 
 const router = Router();
 const RPC_ERROR_SQL_BLACKLIST = /\b(select|insert|update|delete|syntax|column|relation|constraint|violates|duplicate key|null value|permission denied|operator does not exist|invalid input syntax)\b/i;
@@ -17,9 +19,8 @@ const ALLOWED_RPC = new Set([
   'admin_get_all_promotions', 'admin_get_deal_blockchain_info', 'admin_get_deal_content',
   'admin_get_flagged_votes', 'admin_get_voting_dashboard', 'admin_grant_user_income',
   'admin_reject_purchase', 'admin_review_flagged_votes', 'admin_stop_promotion',
-  'aggregate_votes_to_tracks',
-  'approve_verification', 'assess_vote_fraud', 'award_contest_prize', 'award_xp',
-  'block_user', 'calculate_chart_scores', 'calculate_track_quality',
+  'approve_verification', 'award_contest_prize', 'award_xp',
+  'block_user', 'calculate_chart_scores', 'calculate_track_quality', 'cancel_contest',
   'can_write_during_maintenance', 'cast_radio_vote_for_arena', 'cast_weighted_vote',
   'check_achievements_after_finalize', 'check_contest_achievements',
   'check_maintenance_access', 'check_user_achievements', 'check_voting_eligibility',
@@ -30,18 +31,19 @@ const ALLOWED_RPC = new Set([
   'fn_add_xp', 'forum_authority_leaderboard', 'forum_boost_topic',
   'forum_calculate_content_quality', 'forum_expire_sanctions', 'forum_expire_warnings',
   'forum_find_similar_topics', 'forum_get_hub_stats',
+  'forum_admin_delete_category', 'forum_admin_list_users', 'forum_admin_merge_tags', 'forum_admin_reorder_categories',
   'forum_increment_knowledge_views',
   'forum_get_leaderboard', 'forum_get_user_profile', 'forum_get_users_profiles', 'forum_increment_topic_views',
   'forum_issue_sanction', 'forum_lift_sanction',
-  'forum_mark_read', 'forum_mark_solution', 'forum_moderate_promo',
+  'forum_mark_read', 'forum_mark_solution', 'forum_moderate_promo', 'forum_purchase_promo',
   'forum_purchase_premium_content',
-  'forum_recalculate_authority', 'forum_search', 'forum_update_category_on_topic',
+  'forum_recalculate_authority', 'forum_resolve_report', 'forum_search', 'forum_update_category_on_topic',
   'forum_update_topic_on_post', 'forum_update_user_stats_on_post',
   'forum_update_user_stats_on_topic', 'forum_user_is_banned',
   'generate_share_token', 'get_ad_for_slot', 'get_boosted_tracks',
-  'get_catalog_visible_author_ids', 'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
+  'get_active_announcements', 'get_catalog_visible_author_ids', 'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
   'get_feed_tracks_with_profiles', 'get_hero_stats', 'get_last_messages',
-  'get_marketplace_items', 'get_my_sanction_status', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
+  'get_marketplace_items', 'get_my_sanction_status', 'get_my_weighted_vote', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
   'get_qa_leaderboard', 'get_qa_ticket_comment_counts', 'get_radio_listeners', 'get_radio_smart_queue',
   'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',
   'get_reputation_leaderboard', 'get_reputation_profile', 'get_smart_feed', 'get_admin_subscription_metrics',
@@ -63,12 +65,13 @@ const ALLOWED_RPC = new Set([
   'messaging_send_message', 'messaging_unblock_user',
   'pin_comment', 'process_payment_completion', 'process_payment_refund', 'process_payout_request',
   'process_store_item_purchase', 'purchase_ad_free', 'purchase_track_boost',
+  'record_lyrics_blockchain_deposit',
   'process_contest_lifecycle',
   'qa_recalculate_priority', 'qa_update_tester_tier',
   'radio_award_listen_xp', 'radio_create_next_slot', 'radio_heartbeat',
   'radio_place_bid', 'radio_place_prediction', 'radio_skip_ad',
-  'cancel_subscription_with_refund', 'check_deposit_limit', 'check_track_upload_limit',
-  'get_my_radio_stats', 'purchase_track_upload_pack', 'record_track_upload',
+  'cancel_subscription', 'check_deposit_limit', 'check_track_upload_limit',
+  'get_my_radio_stats', 'purchase_track_upload_pack', 'purchase_track_upload_units', 'record_track_upload',
   'record_track_play', 'record_track_like_update',
   'refund_generation_failed', 'subscribe_to_plan', 'reorder_user_tracks',
   'recalculate_feed_scores', 'record_ad_click', 'record_ad_impression',
@@ -77,6 +80,12 @@ const ALLOWED_RPC = new Set([
   'send_track_to_voting', 'submit_contest_entry', 'take_voting_snapshot',
   'unblock_user', 'unhide_contest_comment', 'update_last_seen',
   'update_voter_ranks', 'vote_qa_ticket', 'withdraw_contest_entry',
+]);
+
+// These functions are internal transaction boundaries. The API connects as
+// the database owner, so PostgreSQL GRANT alone cannot protect them here.
+const SERVICE_ROLE_ONLY_RPC = new Set([
+  'record_lyrics_blockchain_deposit',
 ]);
 
 /** Общий rate limit для анонимов — на все RPC */
@@ -122,19 +131,22 @@ async function handleRpc(req, res) {
       return res.status(403).json({ error: 'Function not allowed', code: 'RPC_FORBIDDEN' });
     }
 
-    // ── Транзакция: set_config + вызов функции должны быть в одной TX ──
-    // Без BEGIN/COMMIT set_config(is_local=true) теряется между autocommit-запросами
-    await client.query('BEGIN');
-
-    if (req.user && req.user.id && req.user.id !== 'service-role') {
-      await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [req.user.id]);
-      await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [req.user.role || 'authenticated']);
-      if (req.user.email) {
-        await client.query(`SELECT set_config('request.jwt.claim.email', $1, true)`, [req.user.email]);
-      }
+    if (SERVICE_ROLE_ONLY_RPC.has(fnName) && req.user?.role !== 'service_role') {
+      return res.status(403).json({ error: 'Service role required', code: 'SERVICE_ROLE_REQUIRED' });
     }
 
-    const params = (req.method === 'GET') ? req.query : (req.body || {});
+    if (['cast_weighted_vote', 'revoke_vote', 'get_my_weighted_vote'].includes(fnName) && !req.user?.id) {
+      return res.status(401).json({ error: 'Необходимо войти в систему', code: 'AUTH_REQUIRED' });
+    }
+
+    const params = { ...((req.method === 'GET') ? req.query : (req.body || {})) };
+    assertForumRpcAccess(fnName, req.user, params);
+    assertEventsRpcAccess(fnName, req.user, params);
+    if (fnName === 'cast_weighted_vote') {
+      // Клиент не может подменить адрес: антифрод получает только IP,
+      // вычисленный Express с учётом доверенного reverse proxy.
+      params.p_ip = req.ip;
+    }
     const KEY_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
     const keys = Object.keys(params).filter(k =>
       !['select', 'order', 'limit', 'offset'].includes(k) && KEY_REGEX.test(k)
@@ -144,6 +156,18 @@ async function handleRpc(req, res) {
     );
     if (rejectedKeys.length > 0) {
       return res.status(400).json({ error: 'Invalid parameter names', rejected: rejectedKeys });
+    }
+
+    // set_config(is_local=true) and the RPC call must share one transaction.
+    // Parameter validation happens first so no early response can leak an open TX.
+    await client.query('BEGIN');
+
+    if (req.user && req.user.id && req.user.id !== 'service-role') {
+      await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [req.user.id]);
+      await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [req.user.role || 'authenticated']);
+      if (req.user.email) {
+        await client.query(`SELECT set_config('request.jwt.claim.email', $1, true)`, [req.user.email]);
+      }
     }
 
     let sql;
@@ -179,7 +203,7 @@ async function handleRpc(req, res) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[RPC]', req.params.fn, err.message);
     const safeMsg = getSafeRpcMessage(err.message);
-    res.status(400).json({ message: safeMsg, error: safeMsg, code: 'RPC_ERROR', details: null, hint: null });
+    res.status(err.status || 400).json({ message: safeMsg, error: safeMsg, code: 'RPC_ERROR', details: null, hint: null });
   } finally {
     client.release();
   }

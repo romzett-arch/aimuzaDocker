@@ -1,6 +1,60 @@
 -- Приводит qa_tester_stats в соответствие с фактическими QA-тикетами
 -- и добавляет стабильный RPC для инкремента общего числа репортов.
 
+CREATE TABLE IF NOT EXISTS public.qa_tickets (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  reporter_id UUID,
+  title TEXT,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  severity TEXT,
+  bounty_id UUID,
+  ticket_number TEXT,
+  resolution_notes TEXT,
+  reward_xp INTEGER NOT NULL DEFAULT 0,
+  reward_credits INTEGER NOT NULL DEFAULT 0,
+  resolved_at TIMESTAMPTZ,
+  resolved_by UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.qa_tester_stats (
+  user_id UUID PRIMARY KEY,
+  reports_total INTEGER NOT NULL DEFAULT 0,
+  reports_confirmed INTEGER NOT NULL DEFAULT 0,
+  reports_rejected INTEGER NOT NULL DEFAULT 0,
+  reports_critical INTEGER NOT NULL DEFAULT 0,
+  accuracy_rate NUMERIC NOT NULL DEFAULT 0,
+  xp_earned INTEGER NOT NULL DEFAULT 0,
+  credits_earned INTEGER NOT NULL DEFAULT 0,
+  last_report_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS public.qa_comments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id UUID NOT NULL REFERENCES public.qa_tickets(id) ON DELETE CASCADE,
+  user_id UUID,
+  message TEXT NOT NULL,
+  is_staff BOOLEAN NOT NULL DEFAULT false,
+  is_system BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.qa_votes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id UUID NOT NULL REFERENCES public.qa_tickets(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL,
+  vote_type TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE IF EXISTS public.qa_tickets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.qa_tester_stats ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.qa_comments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.qa_votes ENABLE ROW LEVEL SECURITY;
+
 CREATE OR REPLACE FUNCTION public.qa_increment_reports_total(p_user_id UUID)
 RETURNS VOID
 LANGUAGE plpgsql

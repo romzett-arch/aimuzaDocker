@@ -100,153 +100,181 @@ GRANT EXECUTE ON FUNCTION public.check_maintenance_access() TO service_role;
 -- Helper: adds maintenance block for INSERT, UPDATE, DELETE on a table
 -- We create 3 policies per table (INSERT, UPDATE, DELETE) to not affect SELECT
 
--- ── tracks ──
-CREATE POLICY "maintenance_block_insert" ON public.tracks AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.tracks AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.tracks AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+DO $$
+BEGIN
+  IF to_regclass('public.tracks') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.tracks AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.tracks AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.tracks AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── profiles (UPDATE only — INSERT is via trigger) ──
-CREATE POLICY "maintenance_block_update" ON public.profiles AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.profiles') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_update" ON public.profiles AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── track_comments ──
-CREATE POLICY "maintenance_block_insert" ON public.track_comments AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.track_comments AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.track_comments AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.track_comments') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.track_comments AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.track_comments AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.track_comments AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── track_likes ──
-CREATE POLICY "maintenance_block_insert" ON public.track_likes AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.track_likes AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.track_likes') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.track_likes AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.track_likes AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── comment_likes ──
-CREATE POLICY "maintenance_block_insert" ON public.comment_likes AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.comment_likes AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.comment_likes') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.comment_likes AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.comment_likes AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── gallery_items ──
-CREATE POLICY "maintenance_block_insert" ON public.gallery_items AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.gallery_items AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.gallery_items AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.gallery_items') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.gallery_items AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.gallery_items AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.gallery_items AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── playlists ──
-CREATE POLICY "maintenance_block_insert" ON public.playlists AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.playlists AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.playlists AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.playlists') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.playlists AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.playlists AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.playlists AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── playlist_tracks ──
-CREATE POLICY "maintenance_block_insert" ON public.playlist_tracks AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.playlist_tracks AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.playlist_tracks AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.playlist_tracks') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.playlist_tracks AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.playlist_tracks AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.playlist_tracks AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── user_follows ──
-CREATE POLICY "maintenance_block_insert" ON public.user_follows AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.user_follows AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.user_follows') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.user_follows AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.user_follows AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── generated_lyrics ──
-CREATE POLICY "maintenance_block_insert" ON public.generated_lyrics AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.generated_lyrics AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.generated_lyrics') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.generated_lyrics AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.generated_lyrics AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── user_prompts ──
-CREATE POLICY "maintenance_block_insert" ON public.user_prompts AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.user_prompts AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.user_prompts AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.user_prompts') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.user_prompts AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.user_prompts AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.user_prompts AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── audio_separations ──
-CREATE POLICY "maintenance_block_insert" ON public.audio_separations AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.audio_separations AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.audio_separations') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.audio_separations AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.audio_separations AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── track_addons ──
-CREATE POLICY "maintenance_block_insert" ON public.track_addons AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.track_addons AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.track_addons') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.track_addons AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.track_addons AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── track_deposits ──
-CREATE POLICY "maintenance_block_insert" ON public.track_deposits AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.track_deposits AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.track_deposits') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.track_deposits AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.track_deposits AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── track_promotions ──
-CREATE POLICY "maintenance_block_insert" ON public.track_promotions AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  IF to_regclass('public.track_promotions') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.track_promotions AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  END IF;
 
--- ── promo_videos ──
-CREATE POLICY "maintenance_block_insert" ON public.promo_videos AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.promo_videos AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.promo_videos') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.promo_videos AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.promo_videos AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── track_reactions ──
-CREATE POLICY "maintenance_block_insert" ON public.track_reactions AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.track_reactions AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.track_reactions') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.track_reactions AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.track_reactions AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── reposts ──
-CREATE POLICY "maintenance_block_insert" ON public.reposts AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.reposts AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.reposts') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.reposts AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.reposts AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── messages ──
-CREATE POLICY "maintenance_block_insert" ON public.messages AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_update" ON public.messages AS RESTRICTIVE
-  FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.messages') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.messages AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_update" ON public.messages AS RESTRICTIVE
+      FOR UPDATE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── notifications (user-created, e.g. marking as read is OK — only INSERT blocked) ──
-CREATE POLICY "maintenance_block_insert" ON public.notifications AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  IF to_regclass('public.notifications') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.notifications AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  END IF;
 
--- ── user_blocks ──
-CREATE POLICY "maintenance_block_insert" ON public.user_blocks AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
-CREATE POLICY "maintenance_block_delete" ON public.user_blocks AS RESTRICTIVE
-  FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  IF to_regclass('public.user_blocks') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.user_blocks AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+    CREATE POLICY "maintenance_block_delete" ON public.user_blocks AS RESTRICTIVE
+      FOR DELETE TO authenticated USING (can_write_during_maintenance());
+  END IF;
 
--- ── bug_reports ──
-CREATE POLICY "maintenance_block_insert" ON public.bug_reports AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  IF to_regclass('public.bug_reports') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.bug_reports AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  END IF;
 
--- ── support_tickets ──
-CREATE POLICY "maintenance_block_insert" ON public.support_tickets AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  IF to_regclass('public.support_tickets') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.support_tickets AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  END IF;
 
--- ── contest_entries ──
-CREATE POLICY "maintenance_block_insert" ON public.contest_entries AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  IF to_regclass('public.contest_entries') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.contest_entries AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  END IF;
 
--- ── contest_votes ──
-CREATE POLICY "maintenance_block_insert" ON public.contest_votes AS RESTRICTIVE
-  FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  IF to_regclass('public.contest_votes') IS NOT NULL THEN
+    CREATE POLICY "maintenance_block_insert" ON public.contest_votes AS RESTRICTIVE
+      FOR INSERT TO authenticated WITH CHECK (can_write_during_maintenance());
+  END IF;
+END $$;
 
 -- ============================================
 -- Comments

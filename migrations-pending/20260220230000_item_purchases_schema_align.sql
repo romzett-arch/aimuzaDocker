@@ -1,7 +1,7 @@
 -- Align item_purchases with process_store_item_purchase requirements
 -- Handles legacy schema: item_id -> store_item_id, add missing columns
 
--- 0. Drop policy that may depend on item_id (will be recreated below)
+-- 0. Drop policy that may depend on item_id (will be recreated by lyrics migration)
 DROP POLICY IF EXISTS "lyrics_items_select_purchased" ON public.lyrics_items;
 
 -- 1. If item_id exists, add store_item_id and migrate (for legacy DBs)

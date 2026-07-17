@@ -1,7 +1,7 @@
 /**
  * Rate limiters для RPC
  * - rpcAnonLimiter: общий лимит для анонимов на все RPC (60/мин/IP)
- * - votingIpLimiter: 30 голосов / час / IP (cast_weighted_vote)
+ * - votingIpLimiter: 20 голосов / час / IP (cast_weighted_vote)
  * - votingUserLimiter: 100 голосов / день / user (cast_weighted_vote)
  */
 import rateLimit from 'express-rate-limit';
@@ -18,7 +18,7 @@ export const rpcAnonLimiter = rateLimit({
 
 export const votingIpLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 час
-  max: 30,
+  max: 20,
   message: { error: 'Слишком много голосов. Попробуйте через час.', code: 'VOTING_RATE_LIMIT' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -34,9 +34,3 @@ export const votingUserLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-/** Middleware: проверяет наличие fingerprint в body для cast_weighted_vote (рекомендуется, не блокирует) */
-export function fingerprintValidator(req, res, next) {
-  if (req.params?.fn !== 'cast_weighted_vote') return next();
-  // Fingerprint опционален — антифрод работает и без него, но с пониженной эффективностью
-  next();
-}

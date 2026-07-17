@@ -6,7 +6,7 @@ BEGIN;
 -- 1. Backfill from store_beats
 INSERT INTO store_items (seller_id, item_type, source_id, title, description, price, license_type, is_exclusive, is_active, sales_count, tags, created_at, updated_at)
 SELECT
-  sb.user_id,
+  sb.seller_id,
   'beat',
   sb.id,
   COALESCE(NULLIF(TRIM(sb.title), ''), 'Без названия'),
@@ -20,7 +20,7 @@ SELECT
   sb.created_at,
   sb.updated_at
 FROM store_beats sb
-WHERE sb.user_id IS NOT NULL
+WHERE sb.seller_id IS NOT NULL
 ON CONFLICT (seller_id, item_type, source_id) DO UPDATE SET
   title = EXCLUDED.title,
   description = EXCLUDED.description,
@@ -65,13 +65,13 @@ AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
     DELETE FROM store_items
-    WHERE source_id = OLD.id AND item_type = 'beat' AND seller_id = OLD.user_id;
+    WHERE source_id = OLD.id AND item_type = 'beat' AND seller_id = OLD.seller_id;
     RETURN OLD;
   END IF;
 
   INSERT INTO store_items (seller_id, item_type, source_id, title, description, price, license_type, is_exclusive, is_active, sales_count, tags, created_at, updated_at)
   VALUES (
-    NEW.user_id,
+    NEW.seller_id,
     'beat',
     NEW.id,
     COALESCE(NULLIF(TRIM(NEW.title), ''), 'Без названия'),

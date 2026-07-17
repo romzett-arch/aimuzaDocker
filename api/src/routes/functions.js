@@ -10,7 +10,7 @@ const DENO_URL = process.env.DENO_FUNCTIONS_URL || 'http://deno-functions:8081';
 
 const ALLOWED_FUNCTIONS = new Set([
   'admin-change-user-password', 'admin-create-user', 'admin-delete-user', 'admin-impersonate', 'admin-recheck-track',
-  'ad-targeting', 'aggregate-votes', 'analyze-audio',
+  'ad-targeting', 'analyze-audio',
   'approve-distribution', 'check-plagiarism',
   'classify-audio', 'cleanup-wav', 'convert-to-wav', 'create-persona', 'db-admin',
   'deepseek-lyrics', 'distribution-check', 'download-track', 'export-database',
@@ -21,12 +21,12 @@ const ALLOWED_FUNCTIONS = new Set([
   'indexnow-notify', 'lyrics-callback', 'lyrics-deposit',
   'maintenance-status', 'normalize-audio', 'og-renderer', 'process-master-audio',
   'qa-generate-spec',
-  'promo-video-callback', 'request-distribution', 'resolve-voting',
+  'promo-video-callback', 'request-distribution',
   'robokassa-callback', 'robokassa-create', 'robots-txt', 'send-admin-email',
   'send-auth-email', 'seo-ai-generate', 'sitemap-generator', 'submit-to-distributor',
   'suno-callback', 'suno-check-status', 'suno-credits', 'suno-generate',
   'suno-video-callback', 'support-categorize', 'support-suggest-reply',
-  'track-deposit', 'track-metadata', 'update-chart', 'update-voter-ranks',
+  'track-deposit', 'track-metadata',
   'upload-audio-reference', 'upload-cover', 'verify-email-code',
   'wav-callback', 'yookassa-callback', 'yookassa-create',
 ]);

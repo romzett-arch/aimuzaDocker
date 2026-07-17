@@ -2,11 +2,26 @@
 -- Server has status/type/amount/ends_at schema; radio_v3 expects is_active
 
 ALTER TABLE public.track_promotions ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+ALTER TABLE public.track_promotions ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
 
--- Sync from status (status='active' -> is_active=true)
-UPDATE public.track_promotions
-SET is_active = (status = 'active')
-WHERE status IS NOT NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'track_promotions'
+      AND column_name = 'status'
+  ) THEN
+    UPDATE public.track_promotions
+    SET
+      status = COALESCE(status, CASE WHEN is_active THEN 'active' ELSE 'inactive' END),
+      is_active = CASE
+        WHEN status IS NULL THEN COALESCE(is_active, true)
+        ELSE status = 'active'
+      END;
+  END IF;
+END $$;
 
 -- Fix get_radio_smart_queue: server profiles has subscription_type (not subscription_tier), xp (not xp_music/forum/social)
 DROP FUNCTION IF EXISTS public.get_radio_smart_queue(UUID, UUID, INTEGER);
@@ -129,14 +144,12 @@ BEGIN
     s.author_tier,
     s.author_xp,
     s.genre_name,
-    ROUND((
-      (
-        v_w_quality * s.quality_comp +
-        v_w_xp * s.xp_comp +
-        v_w_freshness * s.freshness_comp +
-        v_w_discovery * LEAST(1.0, s.rng)
-      ) * s.discovery_mult * s.boost_mult * (0.8 + 0.4 * s.rng)
-    )::numeric, 4) AS chance_score,
+    ROUND(((
+      v_w_quality * s.quality_comp +
+      v_w_xp * s.xp_comp +
+      v_w_freshness * s.freshness_comp +
+      v_w_discovery * LEAST(1.0, s.rng)
+    ) * s.discovery_mult * s.boost_mult * (0.8 + 0.4 * s.rng))::numeric, 4) AS chance_score,
     s.quality_comp AS quality_component,
     s.xp_comp AS xp_component,
     s.freshness_comp AS freshness_component,

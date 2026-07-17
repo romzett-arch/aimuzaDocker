@@ -303,34 +303,6 @@ INSERT INTO public.subscription_plans (name, name_ru, price_monthly, daily_gener
 ON CONFLICT DO NOTHING;
 
 
--- ── store_beats ────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.store_beats (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
-  track_id uuid REFERENCES public.tracks(id) ON DELETE CASCADE,
-  title text,
-  description text,
-  price integer DEFAULT 0,
-  license_type text DEFAULT 'basic',
-  is_active boolean DEFAULT true,
-  sales_count integer DEFAULT 0,
-  tags text[],
-  created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
-);
-
--- ── beat_purchases ─────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.beat_purchases (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  beat_id uuid REFERENCES public.store_beats(id) ON DELETE SET NULL,
-  buyer_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  seller_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  price integer DEFAULT 0,
-  status text DEFAULT 'pending',
-  license_type text DEFAULT 'basic',
-  created_at timestamptz DEFAULT now()
-);
-
 -- ── seller_earnings ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.seller_earnings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
