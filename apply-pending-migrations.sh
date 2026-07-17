@@ -65,9 +65,10 @@ for file in "${files[@]}"; do
   fi
 
   echo "Apply: $name"
-  docker exec -i aimuza-db psql -U aimuza -d aimuza -v ON_ERROR_STOP=1 < "$file"
-  docker exec -i aimuza-db psql -U aimuza -d aimuza -v ON_ERROR_STOP=1 \
-    -c "INSERT INTO public.schema_migration_history (file_name, checksum) VALUES ('$name', '$checksum') ON CONFLICT (file_name) DO NOTHING;"
+  {
+    cat "$file"
+    printf "\nINSERT INTO public.schema_migration_history (file_name, checksum) VALUES ('%s', '%s') ON CONFLICT (file_name) DO NOTHING;\n" "$name" "$checksum"
+  } | docker exec -i aimuza-db psql -U aimuza -d aimuza --single-transaction -v ON_ERROR_STOP=1
 done
 
 echo "Pending migrations applied."
