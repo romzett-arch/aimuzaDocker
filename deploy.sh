@@ -228,6 +228,19 @@ if [ -f "apply-pending-migrations.sh" ]; then
         done < "$PENDING_MANIFEST"
     fi
 
+    # Foundation reconciliations must run before feature migrations even when
+    # their timestamp is newer than the feature chain they repair.
+    foundation_files=()
+    regular_files=()
+    for migration in "${pending_files[@]}"; do
+        if [[ "$migration" == *"foundation_reconcile.sql" ]]; then
+            foundation_files+=("$migration")
+        else
+            regular_files+=("$migration")
+        fi
+    done
+    pending_files=("${foundation_files[@]}" "${regular_files[@]}")
+
     if [ ${#pending_files[@]} -gt 0 ]; then
         bash ./apply-pending-migrations.sh "${pending_files[@]}"
         rm -f "$PENDING_MANIFEST"
