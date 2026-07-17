@@ -89,6 +89,12 @@ assert_html_contains() {
 }
 
 get_latest_certificate_artifacts() {
+    local deposits_table
+    deposits_table="$(docker exec aimuza-db psql -U aimuza -d aimuza -t -A -c "SELECT to_regclass('public.track_deposits');" | tr -d '\r[:space:]')"
+    if [ -z "$deposits_table" ]; then
+        return 0
+    fi
+
     docker exec aimuza-db psql -U aimuza -d aimuza -t -A -F '|' -c \
         "SELECT COALESCE(registry_url, ''),
                 COALESCE(certificate_url, ''),
