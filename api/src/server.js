@@ -33,6 +33,7 @@ import emailRouter from './routes/email.js';
 import functionsRouter from './routes/functions.js';
 import { authMiddleware } from './middleware/auth.js';
 import { maintenanceGuard } from './middleware/maintenance.js';
+import { isStorageObjectUpload } from './security/storage-rate-limit.js';
 import { blockedUserGuard } from './middleware/blocked-user.js';
 import { startVotingLifecycle } from './services/votingLifecycle.js';
 
@@ -97,7 +98,9 @@ app.use('/rest/v1', (req, res, next) => {
   if (req.path.startsWith('/rpc/')) return next();
   ['POST','PATCH','DELETE'].includes(req.method) ? restMutationLimiter(req, res, next) : restReadLimiter(req, res, next);
 });
-app.use('/storage/v1/object', (req, res, next) => { ['POST','PUT'].includes(req.method) ? storageLimiter(req, res, next) : next(); });
+app.use('/storage/v1/object', (req, res, next) => {
+  isStorageObjectUpload(req.method, req.originalUrl) ? storageLimiter(req, res, next) : next();
+});
 
 // Maintenance mode guard — blocks writes for non-admin users during maintenance
 app.use(maintenanceGuard);

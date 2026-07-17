@@ -8,6 +8,7 @@ const ADMIN_ONLY_RPC = new Set([
 ]);
 
 const STAFF_ONLY_RPC = new Set([
+  'delete_forum_topic_cascade',
   'forum_issue_sanction',
   'forum_lift_sanction',
   'forum_resolve_report',
@@ -71,6 +72,10 @@ export function assertForumRpcAccess(fnName, user, params = {}) {
   }
 
   if (fnName === 'forum_moderate_promo') {
+    params.p_moderator_id = user.id;
+  }
+
+  if (fnName === 'delete_forum_topic_cascade' && user?.role !== 'service_role') {
     params.p_moderator_id = user.id;
   }
 

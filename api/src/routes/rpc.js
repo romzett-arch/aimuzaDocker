@@ -9,6 +9,7 @@ import { rpcAnonLimiter, votingIpLimiter, votingUserLimiter } from '../middlewar
 import { assertForumRpcAccess } from '../security/forum-rpc-policy.js';
 import { assertEventsRpcAccess } from '../security/events-rpc-policy.js';
 import { assertEconomyRpcAccess, ECONOMY_SERVICE_ROLE_ONLY_RPC } from '../security/economy-rpc-policy.js';
+import { assertQaRpcAccess } from '../security/qa-rpc-policy.js';
 
 const router = Router();
 const RPC_ERROR_SQL_BLACKLIST = /\b(select|insert|update|delete|syntax|column|relation|constraint|violates|duplicate key|null value|permission denied|operator does not exist|invalid input syntax)\b/i;
@@ -69,17 +70,19 @@ const ALLOWED_RPC = new Set([
   'process_store_item_purchase', 'purchase_ad_free', 'purchase_track_boost',
   'record_lyrics_blockchain_deposit', 'register_referral',
   'process_contest_lifecycle',
-  'qa_recalculate_priority', 'qa_update_tester_tier',
+  'create_support_ticket', 'promote_support_ticket_to_qa', 'qa_increment_reports_total', 'qa_recalculate_priority', 'qa_update_tester_tier',
   'radio_award_listen_xp', 'radio_create_next_slot', 'radio_heartbeat',
   'radio_place_bid', 'radio_place_prediction', 'radio_skip_ad',
   'cancel_subscription', 'check_deposit_limit', 'check_track_upload_limit',
   'get_my_radio_stats', 'purchase_track_upload_pack', 'purchase_track_upload_units', 'record_track_upload',
   'record_track_play', 'record_track_like_update',
+  'submit_silk_release', 'submit_track_for_moderation', 'request_silk_release_action',
+  'admin_transition_silk_release', 'admin_resolve_silk_release_request',
   'refund_generation_failed', 'subscribe_to_plan', 'reorder_user_tracks',
   'recalculate_feed_scores', 'record_ad_click', 'record_ad_impression',
   'request_seller_payout', 'resolve_qa_ticket', 'resolve_track_voting', 'revoke_share_token',
   'revoke_verification', 'revoke_vote', 'safe_award_xp',
-  'send_track_to_voting', 'submit_contest_entry', 'take_voting_snapshot',
+  'send_silk_release_to_voting', 'send_track_to_voting', 'submit_contest_entry', 'take_voting_snapshot',
   'unblock_user', 'unhide_contest_comment', 'update_last_seen',
   'update_referral_settings',
   'update_voter_ranks', 'vote_qa_ticket', 'withdraw_contest_entry',
@@ -147,6 +150,7 @@ async function handleRpc(req, res) {
     assertForumRpcAccess(fnName, req.user, params);
     assertEventsRpcAccess(fnName, req.user, params);
     assertEconomyRpcAccess(fnName, req.user, params);
+    assertQaRpcAccess(fnName, req.user, params);
     if (fnName === 'cast_weighted_vote') {
       // Клиент не может подменить адрес: антифрод получает только IP,
       // вычисленный Express с учётом доверенного reverse proxy.

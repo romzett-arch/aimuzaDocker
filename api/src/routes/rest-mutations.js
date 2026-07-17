@@ -30,6 +30,28 @@ import {
   filterEconomyMutationColumns,
   getEconomyMutationScope,
 } from '../security/economy-rest-policy.js';
+import {
+  applySupportQaInsertOwnership,
+  assertSupportQaInsertRelation,
+  assertSupportQaMutationAccess,
+  filterSupportQaMutationColumns,
+  getSupportQaMutationScope,
+} from '../security/support-qa-rest-policy.js';
+import {
+  applyMusicInsertOwnership,
+  assertMusicInsertRelation,
+  assertMusicMutationAccess,
+  filterMusicMutationColumns,
+  getMusicMutationScope,
+} from '../security/music-rest-policy.js';
+import {
+  applyGalleryInsertOwnership,
+  applyGalleryUpdateValues,
+  assertGalleryInsertRelation,
+  assertGalleryMutationAccess,
+  filterGalleryMutationColumns,
+  getGalleryMutationScope,
+} from '../security/gallery-rest-policy.js';
 
 const PROTECTED_COLUMNS = new Set([
   'role', 'is_super_admin', 'balance', 'likes_count', 'plays_count',
@@ -83,8 +105,11 @@ export async function handlePost(req, res) {
     assertMarketplaceMutationAccess(req.params.table, req.user);
     assertEventsMutationAccess(req.params.table, req.user);
     assertEconomyMutationAccess(req.params.table, req.user, 'insert');
+    assertSupportQaMutationAccess(req.params.table, req.user, 'insert');
+    assertMusicMutationAccess(req.params.table, req.user, 'insert', req.body || {});
+    assertGalleryMutationAccess(req.params.table, req.user, 'insert');
     const inputRows = Array.isArray(req.body) ? req.body : [req.body];
-    const rows = inputRows.map(row => applyEventsInsertOwnership(
+    const rows = inputRows.map(row => applyGalleryInsertOwnership(req.params.table, applyMusicInsertOwnership(req.params.table, applySupportQaInsertOwnership(req.params.table, applyEventsInsertOwnership(
       req.params.table,
       applyMarketplaceInsertOwnership(
         req.params.table,
@@ -92,7 +117,7 @@ export async function handlePost(req, res) {
         req.user,
       ),
       req.user,
-    ));
+    ), req.user), req.user), req.user));
     if (rows.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No data' }); }
     if (rows.length > MAX_BATCH_SIZE) { await client.query('ROLLBACK'); return res.status(400).json({ error: `Batch size exceeds limit of ${MAX_BATCH_SIZE}` }); }
 
@@ -101,8 +126,11 @@ export async function handlePost(req, res) {
       await assertForumInsertRelation(client, req.params.table, row, req.user);
       await assertMarketplaceInsertRelation(client, req.params.table, row, req.user);
       await assertEventsInsertRelation(client, req.params.table, row, req.user);
+      await assertSupportQaInsertRelation(client, req.params.table, row, req.user);
+      await assertMusicInsertRelation(client, req.params.table, row, req.user);
+      await assertGalleryInsertRelation(client, req.params.table, row, req.user);
       const validCols = Object.keys(row).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
-      const cols = filterEconomyMutationColumns(
+      const cols = filterGalleryMutationColumns(req.params.table, filterMusicMutationColumns(req.params.table, filterSupportQaMutationColumns(req.params.table, filterEconomyMutationColumns(
         req.params.table,
         filterMarketplaceMutationColumns(
           req.params.table,
@@ -112,7 +140,7 @@ export async function handlePost(req, res) {
         ),
         req.user,
         'insert',
-      );
+      ), req.user, 'insert'), req.user, true), req.user, true);
       if (cols.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No valid columns' }); }
 
       const vals = cols.map(c => row[c]);
@@ -212,9 +240,12 @@ export async function handlePatch(req, res) {
     assertMarketplaceMutationAccess(req.params.table, req.user);
     assertEventsMutationAccess(req.params.table, req.user);
     assertEconomyMutationAccess(req.params.table, req.user, 'update');
-    const updates = req.body;
+    assertSupportQaMutationAccess(req.params.table, req.user, 'update');
+    assertMusicMutationAccess(req.params.table, req.user, 'update', req.body || {});
+    assertGalleryMutationAccess(req.params.table, req.user, 'update');
+    const updates = applyGalleryUpdateValues(req.params.table, req.body, req.user);
     const validCols = Object.keys(updates).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
-    const cols = filterEconomyMutationColumns(
+    const cols = filterGalleryMutationColumns(req.params.table, filterMusicMutationColumns(req.params.table, filterSupportQaMutationColumns(req.params.table, filterEconomyMutationColumns(
       req.params.table,
       filterMarketplaceMutationColumns(
         req.params.table,
@@ -223,7 +254,7 @@ export async function handlePatch(req, res) {
       ),
       req.user,
       'update',
-    );
+    ), req.user, 'update'), req.user, false), req.user, false);
     if (cols.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No valid columns' }); }
 
     const setClauses = [];
@@ -259,10 +290,26 @@ export async function handlePatch(req, res) {
       req.user,
       idx + filterParams.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length,
     );
-    const scopedWhere = addScope(addScope(addScope(addScope(adjustedWhere, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql);
+    const supportQaScope = getSupportQaMutationScope(
+      req.params.table,
+      req.user,
+      idx + filterParams.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length,
+    );
+    const musicScope = getMusicMutationScope(
+      req.params.table,
+      req.user,
+      idx + filterParams.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length,
+      'update',
+    );
+    const galleryScope = getGalleryMutationScope(
+      req.params.table,
+      req.user,
+      idx + filterParams.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length,
+    );
+    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(adjustedWhere, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql);
 
     const sql = `UPDATE ${table} SET ${setClauses.join(', ')} ${scopedWhere} RETURNING *`;
-    const result = await client.query(sql, [...setParams, ...filterParams, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params]);
+    const result = await client.query(sql, [...setParams, ...filterParams, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params]);
 
     await client.query('COMMIT');
 
@@ -306,6 +353,9 @@ export async function handleDelete(req, res) {
     assertMarketplaceMutationAccess(req.params.table, req.user);
     assertEventsMutationAccess(req.params.table, req.user);
     assertEconomyMutationAccess(req.params.table, req.user, 'delete');
+    assertSupportQaMutationAccess(req.params.table, req.user, 'delete');
+    assertMusicMutationAccess(req.params.table, req.user, 'delete');
+    assertGalleryMutationAccess(req.params.table, req.user, 'delete');
     const { where, params } = parseFilters(req.query);
     if (!where) {
       await client.query('ROLLBACK');
@@ -327,9 +377,25 @@ export async function handleDelete(req, res) {
       req.user,
       params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + 1,
     );
-    const scopedWhere = addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql);
+    const supportQaScope = getSupportQaMutationScope(
+      req.params.table,
+      req.user,
+      params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + 1,
+    );
+    const musicScope = getMusicMutationScope(
+      req.params.table,
+      req.user,
+      params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + 1,
+      'delete',
+    );
+    const galleryScope = getGalleryMutationScope(
+      req.params.table,
+      req.user,
+      params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + 1,
+    );
+    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql);
     const sql = `DELETE FROM ${table} ${scopedWhere} RETURNING *`;
-    const result = await client.query(sql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params]);
+    const result = await client.query(sql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params]);
 
     await client.query('COMMIT');
 

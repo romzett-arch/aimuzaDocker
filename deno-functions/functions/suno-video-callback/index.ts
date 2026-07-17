@@ -159,6 +159,24 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
+    const callbackSecret = Deno.env.get("SUNO_CALLBACK_SECRET");
+    if (!callbackSecret) {
+      return new Response(JSON.stringify({ error: "Callback secret is not configured" }), {
+        status: 503,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    const requestUrl = new URL(req.url);
+    const headerToken = req.headers.get("x-callback-secret")
+      || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+    const queryToken = requestUrl.searchParams.get("secret");
+    if (headerToken !== callbackSecret && queryToken !== callbackSecret) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const body = await req.json();
     console.log("Suno video callback received:", JSON.stringify(body));
 

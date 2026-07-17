@@ -205,6 +205,13 @@ serve(async (req) => {
       user = authUser;
     }
 
+    if (!isInternalCall) {
+      return new Response(
+        JSON.stringify({ error: "music_video_is_release_package_only" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     const body = await req.json().catch(() => ({}));
     const trackId = typeof body?.track_id === "string" ? body.track_id : "";
     const author = typeof body?.author === "string" ? body.author.trim().slice(0, 50) : "";
@@ -245,7 +252,7 @@ serve(async (req) => {
       .eq("name", "short_video")
       .single();
 
-    if (addonError || !addonService?.id || !addonService.is_active) {
+    if (addonError || !addonService?.id) {
       throw new Error("Music video service is unavailable");
     }
 
@@ -446,7 +453,11 @@ serve(async (req) => {
       }
     }
 
-    const callbackUrl = `${Deno.env.get("BASE_URL") || "https://aimuza.ru"}/functions/v1/suno-video-callback`;
+    const callbackSecret = Deno.env.get("SUNO_CALLBACK_SECRET");
+    const callbackBaseUrl = `${Deno.env.get("BASE_URL") || "https://aimuza.ru"}/functions/v1/suno-video-callback`;
+    const callbackUrl = callbackSecret
+      ? `${callbackBaseUrl}?secret=${encodeURIComponent(callbackSecret)}`
+      : callbackBaseUrl;
     const response = await fetch("https://api.sunoapi.org/api/v1/mp4/generate", {
       method: "POST",
       headers: {

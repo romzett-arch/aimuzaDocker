@@ -215,15 +215,6 @@ export async function processTrackAddons(
       if (addonName === "large_cover") {
         functionName = "generate-hd-cover";
         requestBody.original_cover_url = coverUrl;
-      } else if (addonName === "short_video") {
-        functionName = "generate-short-video";
-        requestBody.cover_url = coverUrl;
-        if (sunoTaskId) {
-          requestBody.suno_task_id = sunoTaskId;
-        }
-        if (sunoAudioId) {
-          requestBody.suno_audio_id = sunoAudioId;
-        }
       } else if (addonName === "ringtone") {
         functionName = "generate-ringtone";
         requestBody.audio_url = audioUrl;
