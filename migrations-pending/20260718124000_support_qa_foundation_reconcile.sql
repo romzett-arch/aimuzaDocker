@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS public.support_tickets (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  user_id UUID,
   subject TEXT NOT NULL,
   message TEXT,
   status TEXT DEFAULT 'open',
@@ -23,7 +23,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS support_tickets_ticket_number_key
 CREATE TABLE IF NOT EXISTS public.ticket_messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   ticket_id UUID REFERENCES public.support_tickets(id) ON DELETE CASCADE,
-  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  user_id UUID,
   message TEXT NOT NULL,
   is_staff BOOLEAN DEFAULT false,
   attachment_url TEXT,
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS public.ticket_messages (
 CREATE TABLE IF NOT EXISTS public.support_messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   ticket_id UUID REFERENCES public.support_tickets(id) ON DELETE CASCADE,
-  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  user_id UUID,
   message TEXT NOT NULL,
   is_staff BOOLEAN DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT now()
@@ -1036,5 +1036,4 @@ BEGIN
   );
 END;
 $function$;
-
 
