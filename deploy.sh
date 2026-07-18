@@ -196,30 +196,7 @@ echo "📥 Шаг 1: Pull свежих образов с Docker Hub..."
 pull_images_with_retry
 
 echo ""
-echo "🚀 Шаг 2: Перезапуск контейнеров..."
-docker compose -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
-
-echo ""
-echo "⏳ Шаг 3: Ожидание healthcheck (15 сек)..."
-sleep 15
-
-echo ""
-echo "📊 Шаг 4: Статус контейнеров:"
-docker compose -f "$COMPOSE_FILE" ps
-
-if [ "$(docker inspect aimuza-deno --format '{{.State.Status}}')" != "running" ]; then
-    echo "❌ aimuza-deno не запущен после деплоя"
-    exit 1
-fi
-
-for key in ROBOKASSA_MERCHANT_LOGIN ROBOKASSA_PASSWORD1 ROBOKASSA_PASSWORD2; do
-    require_container_env "aimuza-deno" "$key"
-done
-
-echo "✅ aimuza-deno пересоздан с актуальным env"
-
-echo ""
-echo "🗄️ Шаг 5: Применение pending-миграций..."
+echo "🗄️ Шаг 2: Применение pending-миграций до переключения приложения..."
 if [ -f "apply-pending-migrations.sh" ]; then
     pending_files=()
 
@@ -233,19 +210,6 @@ if [ -f "apply-pending-migrations.sh" ]; then
             fi
         done < "$PENDING_MANIFEST"
     fi
-
-    # Foundation reconciliations must run before feature migrations even when
-    # their timestamp is newer than the feature chain they repair.
-    foundation_files=()
-    regular_files=()
-    for migration in "${pending_files[@]}"; do
-        if [[ "$migration" == *"foundation_reconcile.sql" ]]; then
-            foundation_files+=("$migration")
-        else
-            regular_files+=("$migration")
-        fi
-    done
-    pending_files=("${foundation_files[@]}" "${regular_files[@]}")
 
     if [ ${#pending_files[@]} -gt 0 ]; then
         bash ./apply-pending-migrations.sh "${pending_files[@]}"
@@ -264,6 +228,29 @@ if [ -f "apply-pending-migrations.sh" ]; then
 else
     echo "   ⚠ apply-pending-migrations.sh не найден, пропуск"
 fi
+
+echo ""
+echo "🚀 Шаг 3: Перезапуск контейнеров после успешных миграций..."
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
+
+echo ""
+echo "⏳ Шаг 4: Ожидание healthcheck (15 сек)..."
+sleep 15
+
+echo ""
+echo "📊 Шаг 5: Статус контейнеров:"
+docker compose -f "$COMPOSE_FILE" ps
+
+if [ "$(docker inspect aimuza-deno --format '{{.State.Status}}')" != "running" ]; then
+    echo "❌ aimuza-deno не запущен после деплоя"
+    exit 1
+fi
+
+for key in ROBOKASSA_MERCHANT_LOGIN ROBOKASSA_PASSWORD1 ROBOKASSA_PASSWORD2; do
+    require_container_env "aimuza-deno" "$key"
+done
+
+echo "✅ aimuza-deno пересоздан с актуальным env"
 
 echo ""
 echo "📄 Шаг 6: Синхронизация nginx config..."

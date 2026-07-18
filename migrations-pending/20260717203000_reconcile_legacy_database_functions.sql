@@ -1,9 +1,28 @@
--- Remove server-only legacy overloads and restore the canonical QA counter RPC.
+-- Disable server-only legacy overloads without dropping production objects,
+-- and restore the canonical QA counter RPC.
 
 BEGIN;
 
-DROP FUNCTION IF EXISTS public.delete_forum_topic_cascade(UUID);
-DROP FUNCTION IF EXISTS public.allocate_guaranteed_radio_slots();
+CREATE OR REPLACE FUNCTION public.delete_forum_topic_cascade(p_topic_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  RAISE EXCEPTION 'Legacy one-argument forum deletion is disabled';
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.allocate_guaranteed_radio_slots()
+RETURNS JSONB
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+  RAISE EXCEPTION 'Legacy guaranteed radio slot allocation is disabled';
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.delete_forum_topic_cascade(UUID) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION public.allocate_guaranteed_radio_slots() FROM PUBLIC, anon, authenticated, service_role;
 
 CREATE OR REPLACE FUNCTION public.qa_increment_reports_total(p_user_id UUID)
 RETURNS VOID
