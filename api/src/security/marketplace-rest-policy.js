@@ -162,7 +162,10 @@ export function getMarketplaceMutationScope(table, user, startIndex = 1) {
 export async function assertMarketplaceInsertRelation(client, table, row, user) {
   if (table !== 'store_items' || isMarketplaceAdmin(user)) return;
 
-  if (!['prompt', 'lyrics'].includes(row.item_type)) {
+  if (row.item_type === 'prompt') {
+    throw httpError(400, 'Prompt sales are disabled', 'PROMPT_SALES_DISABLED');
+  }
+  if (row.item_type !== 'lyrics') {
     throw httpError(400, 'Unsupported Marketplace item type', 'INVALID_ITEM_TYPE');
   }
   if (!row.source_id) {
