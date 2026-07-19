@@ -194,7 +194,7 @@ serve(async (req) => {
     if (audioReferenceUrl) {
       if (audioReferenceUrl.includes("localhost") || audioReferenceUrl.includes("127.0.0.1")) {
         return new Response(
-          JSON.stringify({ error: "Генерация с аудио-референсом недоступна на localhost: Suno не может скачать файл с http://localhost. Тестируйте эту функцию на продакшене (https://aimuza.ru)." }),
+          JSON.stringify({ error: "Генерация с аудиореференсом недоступна на localhost: AIMUZA не может скачать файл с http://localhost. Тестируйте эту функцию на production-сайте." }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }

@@ -145,7 +145,7 @@ serve(async (req) => {
       }
 
       return new Response(
-        JSON.stringify({ error: `Ошибка Suno: ${errorMessage}` }),
+        JSON.stringify({ error: `Ошибка AIMUZA: ${errorMessage.replace(/suno/gi, "AIMUZA")}` }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -155,7 +155,7 @@ serve(async (req) => {
     if (!sunoPersonaId) {
       console.error("[Persona] No persona ID in Suno response:", sunoData);
       return new Response(
-        JSON.stringify({ error: "Suno не вернул ID персоны" }),
+        JSON.stringify({ error: "AIMUZA не вернула ID персоны" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }

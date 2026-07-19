@@ -277,7 +277,7 @@ serve(async (req) => {
     let audioId = audio_id || track.suno_audio_id;
 
     if (!taskId) {
-      throw new Error("Track has no Suno task ID for WAV conversion");
+      throw new Error("У трека отсутствует идентификатор AIMUZA для конвертации в WAV");
     }
 
     if (!audioId && taskId) {
@@ -305,7 +305,7 @@ serve(async (req) => {
     }
 
     if (!audioId) {
-      throw new Error("Track has no Suno audio ID and could not resolve it. Please regenerate the track.");
+      throw new Error("Не удалось получить идентификатор аудио AIMUZA. Перегенерируйте трек.");
     }
 
     const price = addonService.price_rub ?? 5;

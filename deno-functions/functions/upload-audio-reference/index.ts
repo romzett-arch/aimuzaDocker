@@ -9,23 +9,28 @@ const corsHeaders = {
 const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
 const SUNO_UPLOAD_BASE = "https://sunoapiorg.redpandaai.co";
 
-function inferAudioFileName(audioUrl: string): string {
-  const directName = decodeURIComponent(audioUrl.split(/[?#]/)[0].split("/").filter(Boolean).pop() || "");
-  if (/\.(mp3|wav|wave)$/i.test(directName)) {
-    return directName;
+function inferAudioExtension(source: string, mimeType?: string): "mp3" | "wav" {
+  const normalizedMimeType = mimeType?.toLowerCase();
+  if (normalizedMimeType === "audio/wav" || normalizedMimeType === "audio/wave" || normalizedMimeType === "audio/x-wav") {
+    return "wav";
+  }
+  if (normalizedMimeType === "audio/mpeg" || normalizedMimeType === "audio/mp3") {
+    return "mp3";
   }
 
   try {
-    const url = new URL(audioUrl);
-    const lastSegment = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "");
-    if (/\.(mp3|wav|wave)$/i.test(lastSegment)) {
-      return lastSegment;
-    }
+    const path = new URL(source).pathname;
+    const extension = decodeURIComponent(path).match(/\.(mp3|wav|wave)$/i)?.[1]?.toLowerCase();
+    return extension === "wav" || extension === "wave" ? "wav" : "mp3";
   } catch {
-    // Fall back to a generated name below.
+    const extension = source.split(/[?#]/)[0].match(/\.(mp3|wav|wave)$/i)?.[1]?.toLowerCase();
+    return extension === "wav" || extension === "wave" ? "wav" : "mp3";
   }
+}
 
-  return `audio-reference-${Date.now()}.mp3`;
+function createSafeProviderFileName(source: string, mimeType?: string): string {
+  const extension = inferAudioExtension(source, mimeType);
+  return `audio-reference-${Date.now()}-${crypto.randomUUID()}.${extension}`;
 }
 
 async function resolvePublicAudioUrl(audioUrl: string): Promise<{ fileUrl: string; fileName: string }> {
@@ -42,7 +47,7 @@ async function resolvePublicAudioUrl(audioUrl: string): Promise<{ fileUrl: strin
   if (!isYandexDisk) {
     return {
       fileUrl: audioUrl,
-      fileName: inferAudioFileName(audioUrl),
+      fileName: createSafeProviderFileName(audioUrl),
     };
   }
 
@@ -79,7 +84,7 @@ async function resolvePublicAudioUrl(audioUrl: string): Promise<{ fileUrl: strin
 
   return {
     fileUrl: data.href,
-    fileName: inferAudioFileName(String(data.name || parsedUrl.pathname)) || `yandex-audio-${Date.now()}.mp3`,
+    fileName: createSafeProviderFileName(String(data.name || parsedUrl.pathname)),
   };
 }
 
@@ -151,8 +156,9 @@ serve(async (req) => {
       console.log(`Uploading audio file: ${file.name}, size: ${file.size}, type: ${file.type}`);
 
       // First upload file to Supabase Storage to get a public URL
-      const fileExt = file.name.split('.').pop() || 'mp3';
+      const fileExt = inferAudioExtension(file.name, file.type);
       const fileName = `${user.id}/${Date.now()}_${crypto.randomUUID()}.${fileExt}`;
+      const providerFileName = createSafeProviderFileName(file.name, file.type);
       
       const arrayBuffer = await file.arrayBuffer();
       
@@ -208,7 +214,7 @@ serve(async (req) => {
         const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-url-upload`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUNO_API_KEY}` },
-          body: JSON.stringify({ fileUrl: publicUrl, uploadPath: `audio-references/${user.id}`, fileName: file.name }),
+          body: JSON.stringify({ fileUrl: publicUrl, uploadPath: `audio-references/${user.id}`, fileName: providerFileName }),
         });
 
         try {
@@ -217,7 +223,7 @@ serve(async (req) => {
           const text = await uploadResponse.text();
           console.error("Suno non-JSON response:", uploadResponse.status, text);
           return new Response(
-            JSON.stringify({ error: "Suno вернул некорректный ответ" }),
+            JSON.stringify({ error: "AIMUZA вернула некорректный ответ" }),
             { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
@@ -225,7 +231,7 @@ serve(async (req) => {
         if (!uploadResponse.ok || (uploadData.code && uploadData.code !== 200)) {
           console.error("Suno upload failed:", uploadData);
           return new Response(
-            JSON.stringify({ error: uploadData.msg || "Ошибка загрузки файла в Suno" }),
+            JSON.stringify({ error: (uploadData.msg || "Ошибка загрузки файла в AIMUZA").replace(/suno/gi, "AIMUZA") }),
             { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
@@ -236,7 +242,7 @@ serve(async (req) => {
       if (uploadData.code && uploadData.code !== 200) {
         console.error("Suno upload failed:", uploadData);
         return new Response(
-          JSON.stringify({ error: uploadData.msg || "Ошибка загрузки файла в Suno" }),
+          JSON.stringify({ error: (uploadData.msg || "Ошибка загрузки файла в AIMUZA").replace(/suno/gi, "AIMUZA") }),
           { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
@@ -246,7 +252,7 @@ serve(async (req) => {
       if (!uploadUrl) {
         console.error("No upload URL in response:", uploadData);
         return new Response(
-          JSON.stringify({ error: "Не удалось получить URL от Suno" }),
+          JSON.stringify({ error: "Не удалось получить URL от AIMUZA" }),
           { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }

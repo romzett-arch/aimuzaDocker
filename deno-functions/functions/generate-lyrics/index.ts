@@ -124,7 +124,7 @@ serve(async (req) => {
       amount: -price,
       balance_after: newBalance,
       type: "lyrics_gen",
-      description: "Генерация текста (Suno)",
+      description: "Генерация текста (AIMUZA)",
     });
 
     // Call Suno API to generate lyrics

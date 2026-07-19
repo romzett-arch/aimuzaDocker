@@ -440,7 +440,7 @@ serve(async (req) => {
           user_id: track.user_id,
           amount: -price,
           type: "addon_service",
-          description: "Музыкальное видео Suno",
+          description: "Музыкальное видео AIMUZA",
           balance_before: currentBalance,
           balance_after: newBalance,
           metadata: {

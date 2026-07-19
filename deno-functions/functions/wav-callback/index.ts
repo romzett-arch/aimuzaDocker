@@ -337,7 +337,7 @@ serve(async (req) => {
                   p_user_id: track.user_id,
                   p_amount: svc.price_rub,
                   p_track_id: addon.track_id,
-                  p_description: `Возврат за ошибку конвертации в WAV: ${msg || "Ошибка Suno API"}`,
+                  p_description: `Возврат за ошибку конвертации в WAV: ${(msg || "Ошибка AIMUZA").replace(/suno/gi, "AIMUZA")}`,
                 });
                 console.log(`Refunded ${svc.price_rub} ₽ for failed WAV callback`);
               }
