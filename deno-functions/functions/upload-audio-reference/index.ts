@@ -30,7 +30,34 @@ function inferAudioExtension(source: string, mimeType?: string): "mp3" | "wav" {
 
 function createSafeProviderFileName(source: string, mimeType?: string): string {
   const extension = inferAudioExtension(source, mimeType);
-  return `audio-reference-${Date.now()}-${crypto.randomUUID()}.${extension}`;
+  const transliteration: Record<string, string> = {
+    а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "yo", ж: "zh", з: "z", и: "i", й: "y",
+    к: "k", л: "l", м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f",
+    х: "h", ц: "ts", ч: "ch", ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+  };
+
+  let sourceName = source;
+  try {
+    const pathParts = decodeURIComponent(new URL(source).pathname).split("/");
+    sourceName = pathParts.at(-1) || source;
+  } catch {
+    sourceName = source.split(/[?#]/)[0].split(/[\\/]/).at(-1) || source;
+  }
+
+  const baseName = sourceName.replace(/\.(mp3|wav|wave)$/i, "");
+  const transliterated = Array.from(baseName.toLowerCase())
+    .map((character) => transliteration[character] ?? character)
+    .join("")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 28)
+    .replace(/-+$/g, "");
+  const safeBaseName = transliterated || "audio-reference";
+  const uniqueSuffix = crypto.randomUUID().slice(0, 6);
+
+  return `${safeBaseName}-${uniqueSuffix}.${extension}`;
 }
 
 async function resolvePublicAudioUrl(audioUrl: string): Promise<{ fileUrl: string; fileName: string }> {
@@ -155,44 +182,33 @@ serve(async (req) => {
 
       console.log(`Uploading audio file: ${file.name}, size: ${file.size}, type: ${file.type}`);
 
-      // First upload file to Supabase Storage to get a public URL
       const fileExt = inferAudioExtension(file.name, file.type);
       const fileName = `${user.id}/${Date.now()}_${crypto.randomUUID()}.${fileExt}`;
       const providerFileName = createSafeProviderFileName(file.name, file.type);
-      
-      const arrayBuffer = await file.arrayBuffer();
-      
-      const { error: uploadError } = await supabaseClient.storage
-        .from("audio-references")
-        .upload(fileName, arrayBuffer, {
-          contentType: file.type,
-          upsert: false,
-        });
-
-      if (uploadError) {
-        console.error("Storage upload error:", uploadError);
-        return new Response(
-          JSON.stringify({ error: "Ошибка сохранения файла" }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
       const BASE_URL = Deno.env.get("BASE_URL") || "https://aimuza.ru";
-      const publicUrl = `${BASE_URL}/storage/v1/object/public/audio-references/${fileName}`;
-      
-      if (!publicUrl) {
-        return new Response(
-          JSON.stringify({ error: "Не удалось получить URL файла" }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      console.log(`File saved to storage: ${publicUrl}`);
-
       const isLocalhost = BASE_URL.includes("localhost") || BASE_URL.includes("127.0.0.1");
       let uploadData: any;
 
       if (isLocalhost) {
+        const arrayBuffer = await file.arrayBuffer();
+        const { error: uploadError } = await supabaseClient.storage
+          .from("audio-references")
+          .upload(fileName, arrayBuffer, {
+            contentType: file.type,
+            upsert: false,
+          });
+
+        if (uploadError) {
+          console.error("Storage upload error:", uploadError);
+          return new Response(
+            JSON.stringify({ error: "Ошибка сохранения файла" }),
+            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        const publicUrl = `${BASE_URL}/storage/v1/object/public/audio-references/${fileName}`;
+        console.log(`File saved to storage: ${publicUrl}`);
+
         // Localhost: Docker cannot upload files to external servers via HTTP/2.
         // file-url-upload needs a public URL, but http://localhost is not accessible externally.
         // Return the Storage URL directly — frontend will show a dev-mode warning.
@@ -208,13 +224,18 @@ serve(async (req) => {
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       } else {
-        // Production: Suno downloads from our public URL
-        console.log(`Uploading to Suno via URL: ${publicUrl}`);
+        // Production: forward the stream directly instead of saving it and making
+        // the provider download the same file again from AIMUZA storage.
+        console.log(`Uploading audio stream to Suno as: ${providerFileName}`);
+        const providerFormData = new FormData();
+        providerFormData.append("file", file, providerFileName);
+        providerFormData.append("uploadPath", `audio-references/${user.id}`);
+        providerFormData.append("fileName", providerFileName);
 
-        const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-url-upload`, {
+        const uploadResponse = await fetch(`${SUNO_UPLOAD_BASE}/api/file-stream-upload`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUNO_API_KEY}` },
-          body: JSON.stringify({ fileUrl: publicUrl, uploadPath: `audio-references/${user.id}`, fileName: providerFileName }),
+          headers: { "Authorization": `Bearer ${SUNO_API_KEY}` },
+          body: providerFormData,
         });
 
         try {
