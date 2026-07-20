@@ -30,3 +30,4 @@ DROP POLICY IF EXISTS radio_listens_own ON public.radio_listens;
 DROP POLICY IF EXISTS radio_predictions_own ON public.radio_predictions;
 
 COMMIT;
+
