@@ -59,6 +59,7 @@ async function pushTrack(audioUrl, metadata = {}) {
   if (metadata.track_id != null) parts.push(`track_id="${metadata.track_id}"`);
   if (metadata.cover_url != null) parts.push(`cover_url="${escape(metadata.cover_url)}"`);
   if (metadata.duration != null) parts.push(`duration="${metadata.duration}"`);
+  if (metadata.source != null) parts.push(`source="${escape(metadata.source)}"`);
 
   const annotate = parts.length > 0
     ? `annotate:${parts.join(',')}:${audioUrl}`

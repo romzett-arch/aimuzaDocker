@@ -73,9 +73,10 @@ def on_track_change(m)
   track_id = m["track_id"]
   cover_url = m["cover_url"]
   dur = m["duration"]
+  source = m["source"]
 
   # Безопасный JSON: экранируем кавычки в полях
-  data = "{ \"title\": \"" ^ json_safe(title) ^ "\", \"artist\": \"" ^ json_safe(artist) ^ "\", \"track_id\": \"" ^ json_safe(track_id) ^ "\", \"cover_url\": \"" ^ json_safe(cover_url) ^ "\", \"duration\": \"" ^ json_safe(dur) ^ "\" }"
+  data = "{ \"title\": \"" ^ json_safe(title) ^ "\", \"artist\": \"" ^ json_safe(artist) ^ "\", \"track_id\": \"" ^ json_safe(track_id) ^ "\", \"cover_url\": \"" ^ json_safe(cover_url) ^ "\", \"duration\": \"" ^ json_safe(dur) ^ "\", \"source\": \"" ^ json_safe(source) ^ "\" }"
 
   log("Track changed: #{title} — #{artist}")
 

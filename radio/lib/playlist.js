@@ -15,10 +15,26 @@ const STORAGE_URL_PREFIX = '/storage/v1/object/public/';
 // Matches full public HTTPS/HTTP storage URLs, e.g. https://aimuza.ru/storage/v1/object/public/tracks/...
 const STORAGE_HTTP_RE = /^https?:\/\/[^/]+\/storage\/v1\/object\/public\//;
 
+function resolveAudioUrl(rawUrl = '') {
+  if (STORAGE_HTTP_RE.test(rawUrl)) {
+    const relPath = rawUrl.replace(STORAGE_HTTP_RE, '');
+    const localPath = path.join(LOCAL_STORAGE_PATH, relPath);
+    return fs.existsSync(localPath) ? localPath : rawUrl;
+  }
+  if (rawUrl.startsWith('/') && rawUrl.includes(STORAGE_URL_PREFIX)) {
+    const relPath = rawUrl.substring(rawUrl.indexOf(STORAGE_URL_PREFIX) + STORAGE_URL_PREFIX.length);
+    const localPath = path.join(LOCAL_STORAGE_PATH, relPath);
+    return fs.existsSync(localPath) ? localPath : `${STORAGE_BASE}/${relPath}`;
+  }
+  if (rawUrl.startsWith('http')) return rawUrl;
+  const localPath = path.join(LOCAL_STORAGE_PATH, 'tracks', rawUrl);
+  return fs.existsSync(localPath) ? localPath : `${STORAGE_BASE}/tracks/${rawUrl}`;
+}
+
 async function generatePlaylist(pool) {
   try {
     const { rows } = await pool.query(
-      "SELECT * FROM public.get_radio_smart_queue(NULL, NULL, 50)"
+      "SELECT * FROM public.get_radio_smart_queue(NULL::uuid, NULL::uuid, 50)"
     );
 
     const content = (!rows || rows.length === 0)
@@ -26,24 +42,7 @@ async function generatePlaylist(pool) {
       : (() => {
           const lines = ['#EXTM3U'];
           for (const track of rows) {
-            const rawUrl = track.audio_url || '';
-            let audioUrl;
-            if (STORAGE_HTTP_RE.test(rawUrl)) {
-              // Full URL like https://aimuza.ru/storage/v1/object/public/tracks/audio/xxx.mp3
-              const relPath = rawUrl.replace(STORAGE_HTTP_RE, '');
-              const localPath = path.join(LOCAL_STORAGE_PATH, relPath);
-              audioUrl = fs.existsSync(localPath) ? localPath : rawUrl;
-            } else if (rawUrl.startsWith('/') && rawUrl.includes(STORAGE_URL_PREFIX)) {
-              // Relative URL like /storage/v1/object/public/tracks/audio/xxx.mp3
-              const relPath = rawUrl.substring(rawUrl.indexOf(STORAGE_URL_PREFIX) + STORAGE_URL_PREFIX.length);
-              const localPath = path.join(LOCAL_STORAGE_PATH, relPath);
-              audioUrl = fs.existsSync(localPath) ? localPath : `${STORAGE_BASE}/${relPath}`;
-            } else if (rawUrl.startsWith('http')) {
-              audioUrl = rawUrl;
-            } else {
-              const localPath = path.join(LOCAL_STORAGE_PATH, 'tracks', rawUrl);
-              audioUrl = fs.existsSync(localPath) ? localPath : `${STORAGE_BASE}/tracks/${rawUrl}`;
-            }
+            const audioUrl = resolveAudioUrl(track.audio_url || '');
 
             const duration = Math.round(track.duration || 180);
             const title = (track.title || 'Unknown').replace(/"/g, "'");
@@ -53,7 +52,8 @@ async function generatePlaylist(pool) {
             lines.push(
               `annotate:title="${title}",artist="${artist}",track_id="${track.track_id}",` +
               `cover_url="${track.cover_url || ''}",duration="${duration}",` +
-              `chance_score="${track.chance_score}",is_boosted="${track.is_boosted || false}"` +
+              `chance_score="${track.chance_score}",is_boosted="${track.is_boosted || false}",` +
+              `source="${track.source || 'algorithm'}"` +
               `:${audioUrl}`
             );
           }
@@ -79,4 +79,4 @@ async function generatePlaylist(pool) {
   }
 }
 
-module.exports = { generatePlaylist, PLAYLIST_PATH };
+module.exports = { generatePlaylist, resolveAudioUrl, PLAYLIST_PATH };

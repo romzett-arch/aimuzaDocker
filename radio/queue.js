@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { generatePlaylist } = require('./lib/playlist');
+const { generatePlaylist, resolveAudioUrl } = require('./lib/playlist');
 const liquidsoap = require('./lib/liquidsoap');
 
 async function refreshPlaylist(pool, metadataWs) {
@@ -8,7 +8,7 @@ async function refreshPlaylist(pool, metadataWs) {
     const count = await generatePlaylist(pool);
     if (count > 0) {
       const { rows } = await pool.query(
-        "SELECT * FROM public.get_radio_smart_queue(NULL, NULL, 20)"
+        "SELECT * FROM public.get_radio_smart_queue(NULL::uuid, NULL::uuid, 20)"
       );
       metadataWs.setQueue(rows || []);
     }
@@ -27,6 +27,37 @@ async function resolvePredictions(pool, metadataWs) {
     }
   } catch (error) {
     console.error('[Predictions] Error:', error.message);
+  }
+}
+
+async function processQueueOverrides(pool, metadataWs) {
+  try {
+    const { rows } = await pool.query(`
+      SELECT o.track_id, t.title, t.audio_url, t.cover_url, t.duration,
+             COALESCE(p.username, 'AI Generated') AS artist
+      FROM public.radio_queue_overrides o
+      JOIN public.tracks t ON t.id = o.track_id
+      LEFT JOIN public.profiles p ON p.user_id = t.user_id
+      WHERE o.action = 'next' AND o.expires_at > now()
+      ORDER BY o.created_at
+      LIMIT 1
+    `);
+    const track = rows[0];
+    if (!track) return;
+
+    await liquidsoap.pushTrack(resolveAudioUrl(track.audio_url || ''), {
+      title: track.title,
+      artist: track.artist,
+      track_id: track.track_id,
+      cover_url: track.cover_url || '',
+      duration: String(track.duration || 180),
+      source: 'manual',
+    });
+    await pool.query('DELETE FROM public.radio_queue_overrides WHERE track_id = $1', [track.track_id]);
+    metadataWs.broadcast({ type: 'queue_update', data: { forced_track_id: track.track_id } });
+    console.log('[Queue] Admin track pushed next: ' + track.title);
+  } catch (error) {
+    console.error('[Queue] Override error:', error.message);
   }
 }
 
@@ -98,6 +129,7 @@ async function manageAuctionSlots(pool, metadataWs) {
           track_id: winner.track_id,
           cover_url: track.cover_url || '',
           duration: String(track.duration || 180),
+          source: 'auction',
         });
         console.log('[Auction] Winner track pushed: ' + track.title);
       }
@@ -136,4 +168,4 @@ async function manageAuctionSlots(pool, metadataWs) {
   }
 }
 
-module.exports = { refreshPlaylist, resolvePredictions, manageAuctionSlots };
+module.exports = { refreshPlaylist, resolvePredictions, manageAuctionSlots, processQueueOverrides };

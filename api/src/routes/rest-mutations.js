@@ -52,6 +52,8 @@ import {
   filterGalleryMutationColumns,
   getGalleryMutationScope,
 } from '../security/gallery-rest-policy.js';
+import { assertAdsMutationAccess } from '../security/ads-rest-policy.js';
+import { assertRadioMutationAccess } from '../security/radio-rest-policy.js';
 
 const PROTECTED_COLUMNS = new Set([
   'role', 'is_super_admin', 'balance', 'likes_count', 'plays_count',
@@ -108,6 +110,8 @@ export async function handlePost(req, res) {
     assertSupportQaMutationAccess(req.params.table, req.user, 'insert');
     assertMusicMutationAccess(req.params.table, req.user, 'insert', req.body || {});
     assertGalleryMutationAccess(req.params.table, req.user, 'insert');
+    assertAdsMutationAccess(req.params.table, req.user, 'insert', req.body || {});
+    assertRadioMutationAccess(req.params.table, req.user);
     const inputRows = Array.isArray(req.body) ? req.body : [req.body];
     const rows = inputRows.map(row => applyGalleryInsertOwnership(req.params.table, applyMusicInsertOwnership(req.params.table, applySupportQaInsertOwnership(req.params.table, applyEventsInsertOwnership(
       req.params.table,
@@ -243,6 +247,8 @@ export async function handlePatch(req, res) {
     assertSupportQaMutationAccess(req.params.table, req.user, 'update');
     assertMusicMutationAccess(req.params.table, req.user, 'update', req.body || {});
     assertGalleryMutationAccess(req.params.table, req.user, 'update');
+    assertAdsMutationAccess(req.params.table, req.user, 'update', req.body || {});
+    assertRadioMutationAccess(req.params.table, req.user);
     const updates = applyGalleryUpdateValues(req.params.table, req.body, req.user);
     const validCols = Object.keys(updates).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
     const cols = filterGalleryMutationColumns(req.params.table, filterMusicMutationColumns(req.params.table, filterSupportQaMutationColumns(req.params.table, filterEconomyMutationColumns(
@@ -356,6 +362,8 @@ export async function handleDelete(req, res) {
     assertSupportQaMutationAccess(req.params.table, req.user, 'delete');
     assertMusicMutationAccess(req.params.table, req.user, 'delete');
     assertGalleryMutationAccess(req.params.table, req.user, 'delete');
+    assertAdsMutationAccess(req.params.table, req.user, 'delete');
+    assertRadioMutationAccess(req.params.table, req.user);
     const { where, params } = parseFilters(req.query);
     if (!where) {
       await client.query('ROLLBACK');

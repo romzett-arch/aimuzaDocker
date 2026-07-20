@@ -12,7 +12,7 @@ const http = require('http');
 const { MetadataServer } = require('./lib/metadata-ws');
 const liquidsoap = require('./lib/liquidsoap');
 const { injectBoostedTracks } = require('./lib/boost-injector');
-const { refreshPlaylist, resolvePredictions, manageAuctionSlots } = require('./queue');
+const { refreshPlaylist, resolvePredictions, manageAuctionSlots, processQueueOverrides } = require('./queue');
 const { handleTrackChanged, updateListenerCount, loadRadioConfig, getStats } = require('./stream');
 
 const pool = new Pool({
@@ -136,8 +136,11 @@ const metadataWs = new MetadataServer(server, {
 
 metadataWs.onReaction = async (ws, data) => {
   if (!ws.userId || !metadataWs.currentTrack) return;
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
+    await client.query('BEGIN');
+    await client.query("SELECT set_config('request.jwt.claim.sub', $1, true)", [ws.userId]);
+    const result = await client.query(
       'SELECT public.radio_award_listen_xp($1, $2, $3, $4, $5, $6, $7)',
       [ws.userId, metadataWs.currentTrack.track_id,
         Math.round(data.listen_duration || 30),
@@ -148,8 +151,12 @@ metadataWs.onReaction = async (ws, data) => {
       const xpResult = result.rows[0].radio_award_listen_xp;
       if (xpResult) metadataWs.sendXpAwarded(ws.userId, xpResult);
     }
+    await client.query('COMMIT');
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('[Reaction] Error:', err.message);
+  } finally {
+    client.release();
   }
 };
 
@@ -190,9 +197,11 @@ async function main() {
   setInterval(() => refreshPlaylist(pool, metadataWs), QUEUE_INTERVAL_MS);
   setInterval(() => resolvePredictions(pool, metadataWs), PREDICTION_INTERVAL_MS);
   setInterval(() => manageAuctionSlots(pool, metadataWs), 30000);
+  setInterval(() => processQueueOverrides(pool, metadataWs), 5000);
   setInterval(() => injectBoostedTracks(pool), BOOST_INTERVAL_MS);
   setInterval(() => updateListenerCount(metadataWs), 10000);
-  setInterval(() => loadRadioConfig(pool, (config) => { radioConfig = config; }), 300000);
+  // Admin changes should reach the live engine quickly without a container restart.
+  setInterval(() => loadRadioConfig(pool, (config) => { radioConfig = config; }), 30000);
 
   // Cron: автопродление подписок (каждый час)
   const renewSubscriptions = async () => {

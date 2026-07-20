@@ -32,8 +32,21 @@ async function handleTrackChanged(pool, metadataWs, getRadioConfig, trackData) {
 
   if (trackData.track_id) {
     await pool.query(
-      'INSERT INTO public.radio_schedule (track_id, source, played_at) VALUES ($1, $2, NOW())',
-      [trackData.track_id, trackData.source || 'algorithm']
+      `DELETE FROM public.radio_queue_overrides
+       WHERE track_id = $1 AND action = 'next'`,
+      [trackData.track_id]
+    ).catch(() => {});
+
+    await pool.query(
+      `INSERT INTO public.radio_schedule (track_id, source, played_at, metadata)
+       VALUES ($1, $2, NOW(), $3::jsonb)`,
+      [trackData.track_id, trackData.source || 'algorithm', JSON.stringify({
+        title: enriched.title || trackData.title || null,
+        artist: enriched.artist || trackData.artist || null,
+        cover_url: enriched.cover_url || null,
+        duration_sec: Number(enriched.duration || trackData.duration || 0) || null,
+        listeners_count: metadataWs.listenersCount || 0,
+      })]
     ).catch(() => {});
   }
 }

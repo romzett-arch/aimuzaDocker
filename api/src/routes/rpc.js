@@ -10,6 +10,8 @@ import { assertForumRpcAccess } from '../security/forum-rpc-policy.js';
 import { assertEventsRpcAccess } from '../security/events-rpc-policy.js';
 import { assertEconomyRpcAccess, ECONOMY_SERVICE_ROLE_ONLY_RPC } from '../security/economy-rpc-policy.js';
 import { assertQaRpcAccess } from '../security/qa-rpc-policy.js';
+import { assertAdsRpcAccess } from '../security/ads-rpc-policy.js';
+import { assertRadioRpcAccess } from '../security/radio-rpc-policy.js';
 
 const router = Router();
 const RPC_ERROR_SQL_BLACKLIST = /\b(select|insert|update|delete|syntax|column|relation|constraint|violates|duplicate key|null value|permission denied|operator does not exist|invalid input syntax)\b/i;
@@ -42,13 +44,13 @@ const ALLOWED_RPC = new Set([
   'forum_recalculate_authority', 'forum_resolve_report', 'forum_search', 'forum_update_category_on_topic',
   'forum_update_topic_on_post', 'forum_update_user_stats_on_post',
   'forum_update_user_stats_on_topic', 'forum_user_is_banned',
-  'generate_share_token', 'get_ad_for_slot', 'get_boosted_tracks',
+  'generate_share_token', 'get_ad_for_slot', 'get_public_ad_settings', 'request_ad_for_slot', 'get_boosted_tracks',
   'get_active_announcements', 'get_catalog_visible_author_ids', 'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
   'get_feed_tracks_with_profiles', 'get_hero_stats', 'get_last_messages',
   'get_marketplace_items', 'get_my_sanction_status', 'get_my_weighted_vote', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
   'get_my_referral_stats', 'get_referral_overview', 'get_public_progression_config',
   'get_qa_leaderboard', 'get_qa_ticket_comment_counts', 'get_radio_listeners', 'get_radio_smart_queue',
-  'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',
+  'get_l2e_admin_stats', 'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',
   'get_reputation_leaderboard', 'get_reputation_profile', 'get_smart_feed', 'get_admin_subscription_metrics',
   'get_sidebar_pending_counts', 'get_track_by_share_token', 'get_track_comments_counts',
   'get_track_prompt_if_accessible', 'get_track_prompt_info', 'get_unread_counts', 'get_user_block_info',
@@ -71,8 +73,9 @@ const ALLOWED_RPC = new Set([
   'record_lyrics_blockchain_deposit', 'register_referral',
   'process_contest_lifecycle',
   'create_support_ticket', 'promote_support_ticket_to_qa', 'qa_increment_reports_total', 'qa_recalculate_priority', 'qa_update_tester_tier',
-  'radio_award_listen_xp', 'radio_create_next_slot', 'radio_heartbeat',
-  'radio_place_bid', 'radio_place_prediction', 'radio_skip_ad',
+  'admin_set_radio_queue_override', 'admin_update_radio_config',
+  'radio_award_listen_xp', 'radio_create_next_slot', 'radio_heartbeat', 'radio_resolve_predictions',
+  'radio_place_bid', 'radio_place_prediction', 'radio_record_ad_event', 'radio_skip_ad', 'radio_skip_ad_v2',
   'cancel_subscription', 'check_deposit_limit', 'check_track_upload_limit',
   'get_my_radio_stats', 'purchase_track_upload_pack', 'purchase_track_upload_units', 'record_track_upload',
   'record_track_play', 'record_track_like_update',
@@ -80,6 +83,8 @@ const ALLOWED_RPC = new Set([
   'admin_transition_silk_release', 'admin_resolve_silk_release_request',
   'refund_generation_failed', 'subscribe_to_plan', 'reorder_user_tracks',
   'recalculate_feed_scores', 'record_ad_click', 'record_ad_impression',
+  'record_ad_click_v2', 'record_ad_impression_v2', 'record_ad_view_duration_v2',
+  'admin_set_ad_campaign_slots', 'admin_set_ad_campaign_status', 'get_ad_campaign_readiness',
   'request_seller_payout', 'resolve_qa_ticket', 'resolve_track_voting', 'revoke_share_token',
   'revoke_verification', 'revoke_vote', 'safe_award_xp',
   'send_silk_release_to_voting', 'send_track_to_voting', 'submit_contest_entry', 'take_voting_snapshot',
@@ -151,6 +156,8 @@ async function handleRpc(req, res) {
     assertEventsRpcAccess(fnName, req.user, params);
     assertEconomyRpcAccess(fnName, req.user, params);
     assertQaRpcAccess(fnName, req.user, params);
+    assertAdsRpcAccess(fnName, req.user, params);
+    assertRadioRpcAccess(fnName, req.user, params);
     if (fnName === 'cast_weighted_vote') {
       // Клиент не может подменить адрес: антифрод получает только IP,
       // вычисленный Express с учётом доверенного reverse proxy.

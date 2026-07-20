@@ -5,6 +5,7 @@
  */
 
 let tracksSinceLastAd = 0;
+const { randomUUID } = require('node:crypto');
 
 async function checkAdBreak(pool, metadataServer, radioConfig) {
   const adConfig = radioConfig?.advertising;
@@ -24,8 +25,11 @@ async function checkAdBreak(pool, metadataServer, radioConfig) {
       SELECT id, advertiser_name, promo_text, audio_url, price_paid
       FROM public.radio_ad_placements
       WHERE is_active = true
+        AND (starts_at IS NULL OR starts_at <= NOW())
         AND (ends_at IS NULL OR ends_at > NOW())
-      ORDER BY price_paid DESC
+      -- Weighted random rotation: higher bids get proportionally more traffic,
+      -- without permanently starving lower-priced active placements.
+      ORDER BY -LN(GREATEST(random(), 0.000000001)) / GREATEST(price_paid::double precision, 1)
       LIMIT 1
     `);
 
@@ -33,22 +37,26 @@ async function checkAdBreak(pool, metadataServer, radioConfig) {
 
     const ad = rows[0];
     const skipPrice = adConfig.skip_ad_price_rub ?? adConfig.skip_price_rub ?? 5;
+    const breakId = randomUUID();
+    const duration = adConfig.audio_ad_max_duration_sec || 15;
+
+    await pool.query(
+      `INSERT INTO public.radio_ad_breaks(id, ad_id, expires_at)
+       VALUES ($1, $2, NOW() + make_interval(secs => $3))`,
+      [breakId, ad.id, duration + 60]
+    );
 
     metadataServer.sendAdBreak({
+      break_id: breakId,
       ad_id: ad.id,
       advertiser: ad.advertiser_name,
       text: ad.promo_text,
       audio_url: ad.audio_url,
-      duration: adConfig.audio_ad_max_duration_sec || 15,
+      duration,
       skip_price: skipPrice,
     });
 
-    await pool.query(
-      'UPDATE public.radio_ad_placements SET impressions = impressions + 1 WHERE id = $1',
-      [ad.id]
-    );
-
-    console.log(`[Ads] Ad break: ${ad.advertiser_name}`);
+    console.log(`[Ads] Ad break broadcast: ${ad.advertiser_name}`);
   } catch (error) {
     console.error('[Ads] Error:', error.message);
   }

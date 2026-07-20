@@ -44,6 +44,42 @@ function isStorageAdmin(user) {
   return role === 'admin' || role === 'super_admin' || role === 'superadmin';
 }
 
+function assertAdvertisingStorageAccess(req, bucket) {
+  if (bucket !== 'ad-creatives') return;
+  if (!isStorageAdmin(req.user)) {
+    const error = new Error('Administrator access required for advertising assets');
+    error.status = 403;
+    error.code = 'ADMIN_REQUIRED';
+    throw error;
+  }
+}
+
+function assertAdvertisingFile(req, file, bucket) {
+  if (bucket !== 'ad-creatives') return;
+  const mime = String(file?.mimetype || req.headers['content-type'] || '').split(';')[0].toLowerCase();
+  const size = Number(file?.size ?? (Buffer.isBuffer(req.body) ? req.body.length : 0));
+  const maxBytes = mime.startsWith('video/')
+    ? 100 * 1024 * 1024
+    : mime.startsWith('audio/')
+      ? 30 * 1024 * 1024
+      : 10 * 1024 * 1024;
+  if (!/^(image|audio|video)\//.test(mime)) {
+    const error = new Error('Only image, audio or video advertising assets are allowed');
+    error.status = 400;
+    throw error;
+  }
+  if (size <= 0) {
+    const error = new Error('Advertising asset is empty or unreadable');
+    error.status = 400;
+    throw error;
+  }
+  if (size > maxBytes) {
+    const error = new Error('Advertising asset exceeds its size limit');
+    error.status = 413;
+    throw error;
+  }
+}
+
 function parseSilkPath(bucket, filePath) {
   if (bucket !== 'tracks') return null;
   const parts = String(filePath || '').split('/').filter(Boolean);
@@ -182,7 +218,7 @@ const upload = multer({
 const ALLOWED_UPLOAD_EXTENSIONS = new Set([
   '.mp3', '.wav', '.ogg', '.flac', '.aac',
   '.mp4', '.webm', '.mov',
-  '.jpg', '.jpeg', '.png', '.gif', '.webp',
+  '.jpg', '.jpeg', '.jfif', '.png', '.gif', '.webp',
   '.pdf', '.zip', '.json', '.txt', '.csv', '.xml', '.xlsx',
   '.html', // сертификаты депонирования (lyrics-deposit, track-deposit)
 ]);
@@ -269,6 +305,7 @@ router.post('/object/:bucket/*', requireStorageAuth, upload.any(), async (req, r
 
     await assertSilkPathAccess(req, bucket, filePath);
     await assertGalleryPathAccess(req, bucket, filePath);
+    assertAdvertisingStorageAccess(req, bucket);
 
     if (!/^[a-zA-Z0-9_-]+$/.test(bucket)) {
       return res.status(400).json({ error: 'Invalid bucket name' });
@@ -281,6 +318,8 @@ router.post('/object/:bucket/*', requireStorageAuth, upload.any(), async (req, r
       return res.status(400).json({ error: 'File type not allowed' });
     }
 
+    const file = req.files?.[0];
+    assertAdvertisingFile(req, file, bucket);
     const fullPath = safePath(bucket, filePath);
     if (!fullPath) {
       return res.status(400).json({ error: 'Invalid path' });
@@ -334,6 +373,7 @@ router.put('/object/:bucket/*', requireStorageAuth, upload.any(), async (req, re
 
     await assertSilkPathAccess(req, bucket, filePath);
     await assertGalleryPathAccess(req, bucket, filePath);
+    assertAdvertisingStorageAccess(req, bucket);
 
     const ext = path.extname(filePath).toLowerCase();
     const isCertificatesBucket = bucket === 'certificates';
@@ -342,6 +382,8 @@ router.put('/object/:bucket/*', requireStorageAuth, upload.any(), async (req, re
       return res.status(400).json({ error: 'File type not allowed' });
     }
 
+    const file = req.files?.[0];
+    assertAdvertisingFile(req, file, bucket);
     const fullPath = safePath(bucket, filePath);
     if (!fullPath) {
       return res.status(400).json({ error: 'Invalid path' });
@@ -403,6 +445,7 @@ router.get('/object/public/:bucket/*', async (req, res) => {
       '.mov': 'video/quicktime',
       '.jpg': 'image/jpeg',
       '.jpeg': 'image/jpeg',
+      '.jfif': 'image/jpeg',
       '.png': 'image/png',
       '.gif': 'image/gif',
       '.webp': 'image/webp',
@@ -458,6 +501,7 @@ router.post('/object/public-url/:bucket/*', (req, res) => {
 router.delete('/object/:bucket', requireStorageAuth, async (req, res) => {
   try {
     const bucket = req.params.bucket;
+    assertAdvertisingStorageAccess(req, bucket);
     let body = req.body;
     if (Buffer.isBuffer(body)) {
       try { body = JSON.parse(body.toString()); } catch { body = []; }
