@@ -10,6 +10,7 @@ const corsHeaders = {
 
 const TRACKS_BUCKET = "tracks";
 const DEFAULT_BASE_URL = "https://aimuza.ru";
+const RELEASE_PACKAGE_FILE_NAME = "release-package-audio-v2.zip";
 const STORAGE_UPLOAD_MAX_ATTEMPTS = 12;
 const STORAGE_UPLOAD_BASE_DELAY_MS = 5_000;
 const STORAGE_UPLOAD_MAX_DELAY_MS = 45_000;
@@ -53,11 +54,6 @@ interface ExistingReleasePackageState {
 interface WavPreparationResult {
   status: "ready" | "processing";
   wavUrl: string | null;
-}
-
-interface MusicVideoPreparationResult {
-  status: "ready" | "processing";
-  videoUrl: string | null;
 }
 
 interface ReleaseMetadata {
@@ -174,19 +170,6 @@ async function loadProfileIdentity(
     display_name: null,
     short_id: null,
   };
-}
-
-function inferFileExtension(rawUrl: string | null | undefined, fallback: string): string {
-  if (!rawUrl) return fallback;
-
-  try {
-    const pathname = new URL(rawUrl, DEFAULT_BASE_URL).pathname;
-    const cleanPath = pathname.split("?")[0] ?? pathname;
-    const ext = cleanPath.includes(".") ? cleanPath.slice(cleanPath.lastIndexOf(".")) : "";
-    return ext || fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function resolvePublicUrl(rawUrl: string, requestUrl: string): string {
@@ -489,71 +472,6 @@ async function ensurePreparedWav(
   return { status: "processing", wavUrl: null };
 }
 
-async function ensurePreparedMusicVideo(
-  supabase: ReturnType<typeof createClient>,
-  supabaseUrl: string,
-  supabaseServiceKey: string,
-  track: {
-    id: string;
-  },
-  authorName: string,
-): Promise<MusicVideoPreparationResult> {
-  const { data: addonService, error: addonServiceError } = await supabase
-    .from("addon_services")
-    .select("id")
-    .eq("name", "short_video")
-    .single();
-
-  if (addonServiceError || !addonService?.id) {
-    throw new Error("release_package_music_video_service_missing");
-  }
-
-  const { data: existingAddon, error: existingAddonError } = await supabase
-    .from("track_addons")
-    .select("status, result_url")
-    .eq("track_id", track.id)
-    .eq("addon_service_id", addonService.id)
-    .maybeSingle();
-
-  if (existingAddonError) {
-    throw new Error(`release_package_music_video_lookup_failed:${existingAddonError.message}`);
-  }
-
-  if (existingAddon?.status === "completed" && typeof existingAddon.result_url === "string" && existingAddon.result_url.startsWith("http")) {
-    return { status: "ready", videoUrl: existingAddon.result_url };
-  }
-
-  if (existingAddon?.status === "processing") {
-    const refreshResult = await invokeInternalFunction(
-      supabaseUrl,
-      supabaseServiceKey,
-      "generate-music-video",
-      { track_id: track.id, author: authorName || undefined },
-    );
-
-    const refreshedVideoUrl = typeof refreshResult?.video_url === "string" ? refreshResult.video_url : null;
-    if (refreshedVideoUrl) {
-      return { status: "ready", videoUrl: refreshedVideoUrl };
-    }
-
-    return { status: "processing", videoUrl: null };
-  }
-
-  const generateResult = await invokeInternalFunction(
-    supabaseUrl,
-    supabaseServiceKey,
-    "generate-music-video",
-    { track_id: track.id, author: authorName || undefined },
-  );
-
-  const videoUrl = typeof generateResult?.video_url === "string" ? generateResult.video_url : null;
-  if (videoUrl) {
-    return { status: "ready", videoUrl };
-  }
-
-  return { status: "processing", videoUrl: null };
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -692,7 +610,11 @@ serve(async (req) => {
       .eq("track_id", trackId)
       .maybeSingle();
 
-    if (!forceRegenerate && existingPackage?.status === "completed" && existingPackage.zip_url) {
+    if (
+      !forceRegenerate
+      && existingPackage?.status === "completed"
+      && existingPackage.zip_url?.includes(`/${RELEASE_PACKAGE_FILE_NAME}`)
+    ) {
       return new Response(
         JSON.stringify({ success: true, status: "completed", zip_url: existingPackage.zip_url }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } },
@@ -740,20 +662,6 @@ serve(async (req) => {
     });
     const { metadata } = releaseMeta;
 
-    const musicVideoPreparation = await ensurePreparedMusicVideo(
-      supabase,
-      supabaseUrl,
-      supabaseServiceKey,
-      track,
-      releaseMeta.artistName,
-    );
-    if (musicVideoPreparation.status === "processing" || !musicVideoPreparation.videoUrl) {
-      return new Response(
-        JSON.stringify({ success: true, status: "processing", message: "release_package_waiting_for_music_video" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
     const mp3InputUrl = toInternalFetchUrl(track.audio_url, req.url, ffmpegBaseUrl, storageOrigin);
     const mp3Result = await callFfmpegJson(ffmpegBaseUrl, ffmpegApiSecret, "normalize", {
       audio_url: mp3InputUrl,
@@ -769,10 +677,8 @@ serve(async (req) => {
 
     const wavUrl = wavPreparation.wavUrl;
 
-    const coverBytes = await fetchBytes(track.cover_url, req.url, ffmpegBaseUrl, storageOrigin);
     const mp3Bytes = await fetchBytes(mp3Url, req.url, ffmpegBaseUrl, storageOrigin);
     const wavBytes = await fetchBytes(wavUrl, req.url, ffmpegBaseUrl, storageOrigin);
-    const musicVideoBytes = await fetchBytes(musicVideoPreparation.videoUrl, req.url, ffmpegBaseUrl, storageOrigin);
 
     const promptText = track.description || null;
     const lyricsText = track.lyrics || null;
@@ -809,8 +715,6 @@ serve(async (req) => {
     const zip = new JSZip();
     zip.file(`${safeBaseName}.mp3`, mp3Bytes);
     zip.file(`${safeBaseName}.wav`, wavBytes);
-    zip.file(`${safeBaseName}.mp4`, musicVideoBytes);
-    zip.file(`cover${inferFileExtension(track.cover_url, ".jpg")}`, coverBytes);
     zip.file("genre.txt", genreBytes);
     zip.file("release-info.txt", releaseInfoBytes);
 
@@ -822,18 +726,13 @@ serve(async (req) => {
       zip.file("certificate.html", htmlBytes);
     }
 
-    if (deposit?.blockchain_proof_url) {
-      const proofBytes = await fetchBytes(deposit.blockchain_proof_url, req.url, ffmpegBaseUrl, storageOrigin);
-      zip.file("proof.ots", proofBytes);
-    }
-
     const zipBytes = await zip.generateAsync({
       type: "uint8array",
       compression: "DEFLATE",
       compressionOptions: { level: 6 },
     });
 
-    const zipFileName = `release-packages/${trackId}/release-package.zip`;
+    const zipFileName = `release-packages/${trackId}/${RELEASE_PACKAGE_FILE_NAME}`;
     await uploadBytes(supabase, zipFileName, zipBytes, "application/zip");
     const zipUrl = buildStoragePublicUrl(zipFileName, req.url);
 

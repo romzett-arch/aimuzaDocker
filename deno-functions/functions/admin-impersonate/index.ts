@@ -3,6 +3,9 @@ import { corsHeaders, ALLOWED_ACTIONS } from "./constants.ts";
 import { sha256 } from "./utils.ts";
 import { executeAction } from "./executeAction.ts";
 
+const MAX_PIN_FAILURES = 3;
+const PIN_WINDOW_MS = 15 * 60 * 1000;
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -73,6 +76,40 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({ error: 'PIN-код не настроен' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const pinWindowStart = new Date(Date.now() - PIN_WINDOW_MS).toISOString();
+    const { count: failedPinCount, error: failedPinCountError } = await adminClient
+      .from('impersonation_action_logs')
+      .select('id', { count: 'exact', head: true })
+      .eq('admin_user_id', adminUserId)
+      .eq('action_type', 'pin_failed')
+      .eq('result_status', 'error')
+      .gte('created_at', pinWindowStart);
+
+    if (failedPinCountError) {
+      console.error('Failed to check impersonation PIN attempt limit:', failedPinCountError);
+      return new Response(
+        JSON.stringify({ error: 'Не удалось проверить лимит попыток PIN' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if ((failedPinCount ?? 0) >= MAX_PIN_FAILURES) {
+      return new Response(
+        JSON.stringify({
+          error: 'Слишком много неверных попыток PIN. Попробуйте через 15 минут',
+          code: 'PIN_ATTEMPTS_EXCEEDED',
+        }),
+        {
+          status: 429,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+            'Retry-After': '900',
+          },
+        }
       );
     }
 

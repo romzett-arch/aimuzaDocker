@@ -36,6 +36,14 @@ import { maintenanceGuard } from './middleware/maintenance.js';
 import { isStorageObjectUpload } from './security/storage-rate-limit.js';
 import { blockedUserGuard } from './middleware/blocked-user.js';
 import { startVotingLifecycle } from './services/votingLifecycle.js';
+import {
+  LOGIN_FAILURE_LIMIT,
+  LOGIN_FAILURE_WINDOW_MS,
+  getLoginAccountKey,
+  isPasswordGrantRequest,
+  shouldCountLoginFailure,
+  skipLoginAccountLimiter,
+} from './security/login-rate-limit.js';
 
 dotenv.config();
 
@@ -80,8 +88,26 @@ app.use('/functions/v1', express.raw({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Auth-specific rate limiters (before auth middleware — these don't need user context)
-app.use('/auth/v1/token', rateLimit({ windowMs: 15 * 60 * 1000, max: 30, message: { error: 'Too many login attempts, try again later' } }));
+// Password brute-force protection. Successful logins do not consume the limit.
+// Separate IP and account counters prevent simple IP/email rotation bypasses.
+const loginLimiterBase = {
+  windowMs: LOGIN_FAILURE_WINDOW_MS,
+  limit: LOGIN_FAILURE_LIMIT,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  requestWasSuccessful: shouldCountLoginFailure,
+  message: { error: 'Слишком много неудачных попыток входа. Попробуйте через 15 минут', code: 'LOGIN_ATTEMPTS_EXCEEDED' },
+};
+app.use('/auth/v1/token', rateLimit({
+  ...loginLimiterBase,
+  skip: (req) => !isPasswordGrantRequest(req),
+}));
+app.use('/auth/v1/token', rateLimit({
+  ...loginLimiterBase,
+  skip: skipLoginAccountLimiter,
+  keyGenerator: getLoginAccountKey,
+}));
 app.use('/auth/v1/signup', rateLimit({ windowMs: 60 * 60 * 1000, max: 10, message: { error: 'Too many signup attempts, try again later' } }));
 app.use('/auth/v1/recover', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Слишком много попыток. Попробуйте позже' } }));
 app.use('/functions/v1/send-auth-email', rateLimit({ windowMs: 60 * 1000, max: 3, message: { error: 'Too many email requests, try again later' } }));

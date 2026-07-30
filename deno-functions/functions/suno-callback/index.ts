@@ -43,17 +43,19 @@ async function resolveTrackDuration(
   directDuration: unknown,
   candidateUrls: Array<string | null | undefined>,
 ): Promise<number | null> {
-  if (directDuration != null) {
-    const parsed = Math.round(Number(directDuration));
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  }
-
+  // The provider's duration is advisory and has been observed to describe the
+  // wrong generated variant. The stored audio file is the source of truth.
   for (const url of candidateUrls) {
     if (!url) continue;
     const ffmpegDur = await getDurationFromFfmpeg(url);
     if (ffmpegDur != null && ffmpegDur > 0) {
       return ffmpegDur;
     }
+  }
+
+  if (directDuration != null) {
+    const parsed = Math.round(Number(directDuration));
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
 
   return null;

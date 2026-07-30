@@ -1,6 +1,6 @@
 /**
  * Получить длительность аудио из FFmpeg API.
- * Используется когда erweima.ai возвращает duration: null.
+ * Источник истины для длительности сохранённого аудиофайла.
  */
 export async function getDurationFromFfmpeg(audioUrl: string): Promise<number | null> {
   const ffmpegApiUrl = Deno.env.get("FFMPEG_API_URL");
