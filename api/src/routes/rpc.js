@@ -19,7 +19,7 @@ const RPC_BUSINESS_CODE_RE = /^[a-z][a-z0-9_]+$/i;
 
 const ALLOWED_RPC = new Set([
   'accept_role_invitation', 'add_user_credits', 'admin_add_xp',   'admin_annul_vote', 'admin_approve_purchase',
-  'admin_end_voting_early', 'admin_extend_promotion', 'admin_get_active_votings', 'admin_send_mass_broadcast',
+  'admin_end_voting_early', 'admin_extend_promotion', 'admin_get_active_votings', 'admin_send_mass_broadcast', 'super_admin_assign_user_tariff',
   'admin_get_all_promotions', 'admin_get_deal_blockchain_info', 'admin_get_deal_content',
   'admin_get_flagged_votes', 'admin_get_voting_dashboard', 'admin_grant_user_income',
   'admin_reject_purchase', 'admin_review_flagged_votes', 'admin_stop_promotion',
