@@ -10,6 +10,25 @@ const corsHeaders = {
 const APP_NAME = "AIMUZA";
 const APP_URL = "https://aimuza.ru";
 
+function toBase64Url(bytes: Uint8Array) {
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+async function getUnsubscribeToken(userId: string, secret: string) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(userId));
+  return toBase64Url(new Uint8Array(signature));
+}
+
 function wrapInTemplate(bodyHtml: string, senderType: string, unsubscribeUrl?: string) {
   const senderLabel = senderType === "personal" ? "Личное сообщение от администратора" : APP_NAME;
 
@@ -54,7 +73,32 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Verify admin
+    const body = await req.json();
+    const { action } = body;
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const adminClient = createClient(supabaseUrl, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+
+    // Public unsubscribe links are signed so a user id cannot be substituted.
+    if (action === "unsubscribe") {
+      const { user_id, token } = body;
+      if (!user_id || !token || token !== await getUnsubscribeToken(user_id, serviceKey)) {
+        return new Response(JSON.stringify({ error: "Invalid unsubscribe link" }), {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const { error } = await adminClient.from("profiles").update({ email_unsubscribed: true }).eq("user_id", user_id);
+      if (error) throw error;
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // All delivery actions require an administrator session.
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -62,10 +106,6 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
     // Verify the caller is admin
     const userClient = createClient(supabaseUrl, anonKey, {
@@ -79,10 +119,6 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    const adminClient = createClient(supabaseUrl, serviceKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
 
     // Check admin role
     const { data: roleCheck } = await adminClient.rpc("has_role", {
@@ -100,9 +136,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    const body = await req.json();
-    const { action } = body;
-
     // ---- SEND EMAIL ----
     if (action === "send") {
       const { recipients, subject, body_html, sender_type, template_id } = body;
@@ -117,11 +150,32 @@ Deno.serve(async (req) => {
 
       let sent = 0;
       let failed = 0;
+      let skipped = 0;
       const errors: string[] = [];
 
+      const recipientIds = recipients
+        .map((recipient: { user_id?: string }) => recipient.user_id)
+        .filter((recipientId: string | undefined): recipientId is string => Boolean(recipientId));
+      const unsubscribedIds = new Set<string>();
+      if (recipientIds.length > 0) {
+        const { data: preferences, error: preferencesError } = await adminClient
+          .from("profiles")
+          .select("user_id, email_unsubscribed")
+          .in("user_id", recipientIds);
+        if (preferencesError) throw preferencesError;
+        preferences?.forEach((profile) => {
+          if (profile.email_unsubscribed) unsubscribedIds.add(profile.user_id);
+        });
+      }
+
       for (const r of recipients) {
+        if (r.user_id && unsubscribedIds.has(r.user_id)) {
+          skipped++;
+          continue;
+        }
         try {
-          const unsubscribeUrl = `${APP_URL}/unsubscribe?uid=${r.user_id}`;
+          const unsubscribeToken = await getUnsubscribeToken(r.user_id, serviceKey);
+          const unsubscribeUrl = `${APP_URL}/unsubscribe?uid=${encodeURIComponent(r.user_id)}&token=${encodeURIComponent(unsubscribeToken)}`;
           const html = wrapInTemplate(body_html, sender_type || "project", unsubscribeUrl);
           await sendEmail(r.email, subject, html);
 
@@ -136,9 +190,10 @@ Deno.serve(async (req) => {
             status: "sent",
           });
           sent++;
-        } catch (err: any) {
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : "Unknown email delivery error";
           failed++;
-          errors.push(`${r.email}: ${err.message}`);
+          errors.push(`${r.email}: ${errorMessage}`);
           await adminClient.from("admin_emails").insert({
             sender_id: user.id,
             sender_type: sender_type || "project",
@@ -148,33 +203,15 @@ Deno.serve(async (req) => {
             body_html,
             template_id: template_id || null,
             status: "failed",
-            error_message: err.message,
+            error_message: errorMessage,
           });
         }
       }
 
-      console.log(`[send-admin-email] Sent: ${sent}, Failed: ${failed}`);
+      console.log(`[send-admin-email] Sent: ${sent}, Failed: ${failed}, Skipped: ${skipped}`);
 
       return new Response(
-        JSON.stringify({ success: true, sent, failed, errors }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // ---- UNSUBSCRIBE ----
-    if (action === "unsubscribe") {
-      const { user_id } = body;
-      if (!user_id) {
-        return new Response(JSON.stringify({ error: "user_id required" }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      await adminClient.from("profiles").update({ email_unsubscribed: true }).eq("user_id", user_id);
-
-      return new Response(
-        JSON.stringify({ success: true }),
+        JSON.stringify({ success: true, sent, failed, skipped, errors }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }

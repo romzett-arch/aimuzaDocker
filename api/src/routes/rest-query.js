@@ -9,6 +9,7 @@ import { getMusicReadScope } from '../security/music-rest-policy.js';
 import { getGalleryReadScope } from '../security/gallery-rest-policy.js';
 import { assertAdsReadAccess } from '../security/ads-rest-policy.js';
 import { getRadioReadScope } from '../security/radio-rest-policy.js';
+import { assertAdminEmailAccess } from '../security/admin-email-rest-policy.js';
 
 function addScope(where, scopeSql) {
   if (!scopeSql) return where;
@@ -22,6 +23,7 @@ export async function handleHead(req, res) {
     await setJwtClaims(client, req.user);
 
     const table = sanitizeTable(req.params.table);
+    await assertAdminEmailAccess(client, req.params.table, req.user);
     assertEconomyReadAccess(req.params.table, req.user);
     assertSupportQaReadAccess(req.params.table, req.user);
     assertAdsReadAccess(req.params.table, req.user);
@@ -60,6 +62,7 @@ export async function handleGet(req, res) {
 
     const tableName = req.params.table;
     const table = sanitizeTable(tableName);
+    await assertAdminEmailAccess(client, tableName, req.user);
     assertEconomyReadAccess(tableName, req.user);
     assertSupportQaReadAccess(tableName, req.user);
     assertAdsReadAccess(tableName, req.user);

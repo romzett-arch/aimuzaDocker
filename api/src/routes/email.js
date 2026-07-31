@@ -8,7 +8,6 @@
 import { Router } from 'express';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
-import { requireAuth } from '../middleware/auth.js';
 import { pool } from '../db.js';
 import { recoveryCodeForToken } from '../security/password.js';
 
@@ -22,6 +21,18 @@ const SMTP_PORT = parseInt(process.env.SMTP_PORT || '465');
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const SMTP_FROM = process.env.SMTP_FROM || `"${APP_NAME}" <${SMTP_USER}>`;
+const UNSUBSCRIBE_SECRET = process.env.SERVICE_ROLE_KEY || process.env.JWT_SECRET;
+
+function getUnsubscribeToken(userId) {
+  return crypto.createHmac('sha256', UNSUBSCRIBE_SECRET).update(userId).digest('base64url');
+}
+
+function isValidUnsubscribeToken(userId, token) {
+  if (!userId || !token || !UNSUBSCRIBE_SECRET) return false;
+  const expected = Buffer.from(getUnsubscribeToken(userId));
+  const received = Buffer.from(String(token));
+  return expected.length === received.length && crypto.timingSafeEqual(expected, received);
+}
 
 // ─── Генерация 6-значного кода ─────────────────
 function generateCode() {
@@ -151,15 +162,35 @@ router.post('/send-auth-email', async (req, res) => {
 // POST /functions/v1/send-admin-email
 // Полная версия: action=send (рассылка), action=unsubscribe
 // ═══════════════════════════════════════════════
-router.post('/send-admin-email', requireAuth, async (req, res) => {
+router.post('/send-admin-email', async (req, res) => {
   try {
-    // A5: Проверяем что вызывающий — admin или superadmin
-    const role = req.user?.app_role || req.user?.role || '';
-    if (!['superadmin', 'admin', 'service_role'].includes(role)) {
-      return res.status(403).json({ error: 'Forbidden: admin role required' });
+    const { action } = req.body;
+
+    if (action === 'unsubscribe') {
+      const { user_id, token } = req.body;
+      if (!isValidUnsubscribeToken(user_id, token)) {
+        return res.status(403).json({ error: 'Invalid unsubscribe link' });
+      }
+      await pool.query('UPDATE public.profiles SET email_unsubscribed = true WHERE user_id = $1', [user_id]);
+      return res.json({ success: true });
     }
 
-    const { action } = req.body;
+    if (!req.user?.id) {
+      return res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' });
+    }
+
+    if (req.user.role !== 'service_role') {
+      const adminCheck = await pool.query(
+        `SELECT EXISTS (
+           SELECT 1 FROM public.user_roles
+           WHERE user_id = $1 AND role::text IN ('admin', 'super_admin')
+         ) AS allowed`,
+        [req.user.id]
+      );
+      if (!adminCheck.rows[0]?.allowed) {
+        return res.status(403).json({ error: 'Forbidden: admin role required' });
+      }
+    }
 
     // Простой формат (to, subject, html) — обратная совместимость
     if (!action && req.body.to) {
@@ -186,8 +217,17 @@ router.post('/send-admin-email', requireAuth, async (req, res) => {
       }
 
       const senderId = req.user?.id || null;
-      let sent = 0, failed = 0;
+      let sent = 0, failed = 0, skipped = 0;
       const errors = [];
+
+      const recipientIds = recipients.map((recipient) => recipient.user_id).filter(Boolean);
+      const unsubscribedResult = recipientIds.length
+        ? await pool.query(
+            'SELECT user_id FROM public.profiles WHERE user_id = ANY($1::uuid[]) AND email_unsubscribed IS TRUE',
+            [recipientIds]
+          )
+        : { rows: [] };
+      const unsubscribedIds = new Set(unsubscribedResult.rows.map((row) => row.user_id));
 
       const wrapHtml = (bodyHtml, sType, unsubUrl) => {
         const label = sType === 'personal' ? 'Личное сообщение от администратора' : APP_NAME;
@@ -197,8 +237,13 @@ router.post('/send-admin-email', requireAuth, async (req, res) => {
       const transporter = createTransport();
 
       for (const r of recipients) {
+        if (r.user_id && unsubscribedIds.has(r.user_id)) {
+          skipped++;
+          continue;
+        }
         try {
-          const unsubscribeUrl = `${BASE_URL}/unsubscribe?uid=${r.user_id}`;
+          const unsubscribeToken = getUnsubscribeToken(r.user_id);
+          const unsubscribeUrl = `${BASE_URL}/unsubscribe?uid=${encodeURIComponent(r.user_id)}&token=${encodeURIComponent(unsubscribeToken)}`;
           const html = wrapHtml(body_html, sender_type || 'project', unsubscribeUrl);
 
           if (transporter) {
@@ -222,20 +267,8 @@ router.post('/send-admin-email', requireAuth, async (req, res) => {
         }
       }
 
-      console.log(`[Email] Admin send: ${sent} sent, ${failed} failed`);
-      return res.json({ success: true, sent, failed, errors });
-    }
-
-    // ── action=unsubscribe ──
-    if (action === 'unsubscribe') {
-      const { user_id } = req.body;
-      if (!user_id) return res.status(400).json({ error: 'user_id required' });
-
-      await pool.query(
-        'UPDATE public.profiles SET email_unsubscribed = true WHERE user_id = $1',
-        [user_id]
-      );
-      return res.json({ success: true });
+      console.log(`[Email] Admin send: ${sent} sent, ${failed} failed, ${skipped} skipped`);
+      return res.json({ success: true, sent, failed, skipped, errors });
     }
 
     res.status(400).json({ error: 'Unknown action' });
