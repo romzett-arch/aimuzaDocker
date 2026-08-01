@@ -169,11 +169,27 @@ serve(async (req) => {
       }
     } else if (matchProfile || matchArtist) {
       const slugOrId = (matchProfile || matchArtist)![1];
-      const { data: profile } = await supabase
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slugOrId);
+      let { data: profile } = await supabase
         .from("profiles")
         .select("username, avatar_url, bio")
-        .or(`user_id.eq.${slugOrId},slug.eq.${slugOrId}`)
+        .or(isUuid ? `user_id.eq.${slugOrId}` : `slug.eq.${slugOrId}`)
         .maybeSingle();
+      if (!profile) {
+        const shortId = slugOrId.split("-").at(-1);
+        if (shortId && /^[0-9a-f]{6}$/i.test(shortId)) {
+          const { data: matches } = await supabase.rpc("find_user_by_short_id", { short_id: shortId });
+          const resolvedUserId = matches?.[0]?.user_id;
+          if (resolvedUserId) {
+            const result = await supabase
+              .from("profiles")
+              .select("username, avatar_url, bio")
+              .eq("user_id", resolvedUserId)
+              .maybeSingle();
+            profile = result.data;
+          }
+        }
+      }
       if (profile) {
         title = `${profile.username || "Артист"} | AIMUZA`;
         description = profile.bio || `Профиль ${profile.username || "артиста"} на AIMUZA`;
