@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getGenerationVariantIndex } from "../_shared/track-generation-metadata.ts";
 import {
   AUDIO_RECOVERY_REQUIRED_MESSAGE,
   copyFirstAvailableFileToStorage,
@@ -147,9 +148,12 @@ async function fetchSunoTaskRecords(taskId: string): Promise<{ status: string | 
   };
 }
 
-function pickRecordForTrack(records: NormalizedSunoRecord[], title: string | null | undefined): NormalizedSunoRecord | null {
-  const isV2 = /\(v2\)\s*$/.test(title || "");
-  const recordIndex = isV2 ? 1 : 0;
+function pickRecordForTrack(
+  records: NormalizedSunoRecord[],
+  description: string | null | undefined,
+  title: string | null | undefined,
+): NormalizedSunoRecord | null {
+  const recordIndex = getGenerationVariantIndex(description, title);
   return records[recordIndex] || null;
 }
 
@@ -191,7 +195,7 @@ export async function recoverGeneratedTrack(
   try {
     const response = await fetchSunoTaskRecords(taskId);
     sunoStatus = response.status;
-    record = pickRecordForTrack(response.records, track.title);
+    record = pickRecordForTrack(response.records, track.description, track.title);
   } catch (error) {
     return {
       ok: false,

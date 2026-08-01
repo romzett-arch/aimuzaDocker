@@ -1,6 +1,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
+  getGenerationVariantIndex,
+  stripTrackGenerationMetadata,
+} from "../_shared/track-generation-metadata.ts";
+import {
   AUDIO_RECOVERY_REQUIRED_MESSAGE,
   copyFirstAvailableFileToStorage,
   isManagedTrackStorageUrl,
@@ -227,11 +231,12 @@ serve(async (req) => {
 
     console.log(`Matching ${normalizedSunoResults.length} Suno results to ${pendingDbTracks.length} pending DB tracks (total DB: ${allMatchedTracks.length})`);
 
-    // Match each DB track to its Suno record by title version (v1→index 0, v2→index 1).
-    // This is the same logic as suno-check-status to prevent mismatches.
+    // Match by hidden variant metadata; legacy title suffixes remain supported.
     for (const trackToUpdate of pendingDbTracks) {
-      const isV2 = /\(v2\)\s*$/.test(trackToUpdate.title || "");
-      const recordIndex = isV2 ? 1 : 0;
+      const recordIndex = getGenerationVariantIndex(
+        trackToUpdate.description,
+        trackToUpdate.title,
+      );
 
       if (recordIndex >= normalizedSunoResults.length) {
         console.log(`No Suno record at index ${recordIndex} for track ${trackToUpdate.id} (${trackToUpdate.title})`);
@@ -360,7 +365,7 @@ serve(async (req) => {
 
         await processTrackAddons(supabaseAdmin, trackToUpdate.id, trackToUpdate.title || "Untitled", finalCoverUrl, finalAudioUrl, taskId, sunoAudioId);
 
-        const originalDescription = trackToUpdate.description?.replace(/\n\n\[task_id:.*\]$/, "") || null;
+        const originalDescription = stripTrackGenerationMetadata(trackToUpdate.description) || null;
         const trackLyrics = trackToUpdate.lyrics || null;
 
         runBackgroundTask(

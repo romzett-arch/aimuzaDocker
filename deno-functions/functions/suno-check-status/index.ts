@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getGenerationVariantIndex } from "../_shared/track-generation-metadata.ts";
 import {
   AUDIO_RECOVERY_REQUIRED_MESSAGE,
   copyFirstAvailableFileToStorage,
@@ -290,8 +291,7 @@ serve(async (req) => {
         console.log(`Found ${tracksWithTask.length} tracks matching task_id ${taskId} (statuses: ${tracksWithTask.map((t: { status: string }) => t.status).join(",")})`);
 
         for (const trk of tracksWithTask) {
-          const isV2 = /\(v2\)\s*$/.test(trk.title || "");
-          const recordIndex = isV2 ? 1 : 0;
+          const recordIndex = getGenerationVariantIndex(trk.description, trk.title);
 
           if (recordIndex >= normalizedRecords.length) {
             console.log(`No Suno record at index ${recordIndex} for track ${trk.id} (${trk.title})`);
