@@ -55,6 +55,7 @@ import {
 import { assertAdsMutationAccess } from '../security/ads-rest-policy.js';
 import { assertRadioMutationAccess } from '../security/radio-rest-policy.js';
 import { assertAdminEmailAccess } from '../security/admin-email-rest-policy.js';
+import { assertCatalogMutationAccess } from '../security/catalog-rest-policy.js';
 
 const PROTECTED_COLUMNS = new Set([
   'role', 'is_super_admin', 'balance', 'likes_count', 'plays_count',
@@ -105,6 +106,7 @@ export async function handlePost(req, res) {
 
     const table = sanitizeTable(req.params.table);
     await assertAdminEmailAccess(client, req.params.table, req.user);
+    assertCatalogMutationAccess(req.params.table, req.user);
     assertForumMutationAccess(req.params.table, req.user);
     assertMarketplaceMutationAccess(req.params.table, req.user);
     assertEventsMutationAccess(req.params.table, req.user);
@@ -243,6 +245,7 @@ export async function handlePatch(req, res) {
 
     const table = sanitizeTable(req.params.table);
     await assertAdminEmailAccess(client, req.params.table, req.user);
+    assertCatalogMutationAccess(req.params.table, req.user);
     assertForumMutationAccess(req.params.table, req.user);
     assertMarketplaceMutationAccess(req.params.table, req.user);
     assertEventsMutationAccess(req.params.table, req.user);
@@ -359,6 +362,7 @@ export async function handleDelete(req, res) {
 
     const table = sanitizeTable(req.params.table);
     await assertAdminEmailAccess(client, req.params.table, req.user);
+    assertCatalogMutationAccess(req.params.table, req.user);
     assertForumMutationAccess(req.params.table, req.user);
     assertMarketplaceMutationAccess(req.params.table, req.user);
     assertEventsMutationAccess(req.params.table, req.user);
