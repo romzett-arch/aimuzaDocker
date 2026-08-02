@@ -11,7 +11,7 @@ import {
 } from "./audio-storage.ts";
 import { classifyTrackWithAI, processTrackAddons } from "./classification.ts";
 import { getDurationFromFfmpeg } from "./ffmpeg-duration.ts";
-import { createAndStorePlaybackMaster } from "./master-audio.ts";
+import { claimSunoOriginalIngest, enqueuePlaybackMaster } from "./master-job.ts";
 import { getSunoErrorMessage, handleFailedTracksWithRefunds } from "./errors.ts";
 import { corsHeaders } from "./types.ts";
 import type { MatchedTrack, SunoCallbackPayload, SunoTrackData, TrackToFail } from "./types.ts";
@@ -273,6 +273,33 @@ serve(async (req) => {
         continue;
       }
 
+      if (
+        sunoAudioId &&
+        trackToUpdate.suno_audio_id === sunoAudioId &&
+        isManagedTrackStorageUrl(trackToUpdate.audio_url)
+      ) {
+        await enqueuePlaybackMaster(supabaseAdmin, trackToUpdate.id, trackToUpdate.audio_url!);
+        await supabaseAdmin.from("tracks").update({
+          status: "completed",
+          processing_stage: "mastering_queued",
+          processing_progress: 85,
+          error_message: null,
+        }).eq("id", trackToUpdate.id).is("master_audio_url", null);
+        await supabaseAdmin.from("generation_logs").update({ status: "completed" }).eq("track_id", trackToUpdate.id);
+        console.log(`Track ${trackToUpdate.id} original is already stored; master job is queued`);
+        continue;
+      }
+
+      const ingestClaimed = await claimSunoOriginalIngest(
+        supabaseAdmin,
+        trackToUpdate.id,
+        sunoAudioId ? String(sunoAudioId) : null,
+      );
+      if (!ingestClaimed) {
+        console.log(`Track ${trackToUpdate.id} original ingest is already owned by another request`);
+        continue;
+      }
+
       console.log(`Updating track ${trackToUpdate.id} (${trackToUpdate.title}) with Suno record[${recordIndex}]: ${audioUrl}`);
 
       let finalAudioUrl: string | null =
@@ -352,33 +379,15 @@ serve(async (req) => {
 
       const durationSec = await resolveTrackDuration(duration, [finalAudioUrl, ...track.audioUrls]);
 
-      let master: { url: string; lufs: number; peakDb: number };
-      try {
-        master = await createAndStorePlaybackMaster(supabaseAdmin, trackToUpdate.id, finalAudioUrl);
-        console.log(`Playback master created: ${master.url} (${master.lufs} LUFS, ${master.peakDb} dBTP)`);
-      } catch (masterError) {
-        console.error(`Master creation failed for track ${trackToUpdate.id}; preserving original for retry:`, masterError);
-        await supabaseAdmin.from("tracks").update({
-          audio_url: finalAudioUrl,
-          cover_url: finalCoverUrl || null,
-          ...(durationSec != null ? { duration: durationSec } : {}),
-          error_message: "Оригинал сохранён, мастер −10 LUFS временно не создан. Обработка будет повторена.",
-          suno_audio_id: sunoAudioId || null,
-          description: updatedDescription,
-        }).eq("id", trackToUpdate.id);
-        continue;
-      }
-
       const { error: updateError } = await supabaseAdmin
         .from("tracks")
         .update({
           audio_url: finalAudioUrl,
-          master_audio_url: master.url,
-          normalized_audio_url: master.url,
-          lufs_normalized: true,
           cover_url: finalCoverUrl || null,
           ...(durationSec != null ? { duration: durationSec } : {}),
-          status: "completed",
+          status: "processing",
+          processing_stage: "mastering_queued",
+          processing_progress: 85,
           error_message: null,
           suno_audio_id: sunoAudioId || null,
           description: updatedDescription,
@@ -388,18 +397,24 @@ serve(async (req) => {
       if (updateError) {
         console.error("Error updating track:", updateError);
       } else {
+        try {
+          await enqueuePlaybackMaster(supabaseAdmin, trackToUpdate.id, finalAudioUrl);
+        } catch (queueError) {
+          console.error(`Could not queue master for track ${trackToUpdate.id}:`, queueError);
+          await supabaseAdmin.from("tracks").update({ processing_stage: "mastering_queue_failed" }).eq("id", trackToUpdate.id);
+          continue;
+        }
+        await supabaseAdmin.from("tracks").update({ status: "completed" })
+          .eq("id", trackToUpdate.id)
+          .is("master_audio_url", null);
+        await supabaseAdmin.from("generation_logs").update({ status: "completed" }).eq("track_id", trackToUpdate.id);
         await supabaseAdmin.from("track_health_reports").upsert({
           track_id: trackToUpdate.id,
-          normalized_audio_url: master.url,
-          lufs_normalized: master.lufs,
-          peak_db: master.peakDb,
-          normalization_status: "completed",
+          normalization_status: "pending",
           updated_at: new Date().toISOString(),
         }, { onConflict: "track_id" });
-        console.log(`Track ${trackToUpdate.id} updated successfully with Storage URLs`);
+        console.log(`Track ${trackToUpdate.id} original saved; durable master job queued`);
         updatedCount++;
-
-        await supabaseAdmin.from("generation_logs").update({ status: "completed" }).eq("track_id", trackToUpdate.id);
 
         await processTrackAddons(supabaseAdmin, trackToUpdate.id, trackToUpdate.title || "Untitled", finalCoverUrl, finalAudioUrl, taskId, sunoAudioId);
 

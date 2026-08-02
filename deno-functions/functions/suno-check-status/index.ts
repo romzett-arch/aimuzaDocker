@@ -7,7 +7,7 @@ import {
   isManagedTrackStorageUrl,
 } from "../suno-callback/audio-storage.ts";
 import { getDurationFromFfmpeg } from "../suno-callback/ffmpeg-duration.ts";
-import { createAndStorePlaybackMaster } from "../suno-callback/master-audio.ts";
+import { claimSunoOriginalIngest, enqueuePlaybackMaster } from "../suno-callback/master-job.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -261,8 +261,7 @@ serve(async (req) => {
               console.warn(`Track ${trackId} does not belong to task ${taskId}, skipping polling recovery`);
             } else if (
               targetTrack.status === "completed" &&
-              isManagedTrackStorageUrl(targetTrack.audio_url) &&
-              isManagedTrackStorageUrl(targetTrack.master_audio_url)
+              isManagedTrackStorageUrl(targetTrack.audio_url)
             ) {
               return new Response(
                 JSON.stringify({
@@ -322,6 +321,34 @@ serve(async (req) => {
             continue;
           }
 
+          if (
+            rec.id &&
+            trk.suno_audio_id === String(rec.id) &&
+            isManagedTrackStorageUrl(trk.audio_url)
+          ) {
+            await enqueuePlaybackMaster(supabaseAdmin, trk.id, trk.audio_url!);
+            await supabaseAdmin.from("tracks").update({
+              status: "completed",
+              processing_stage: "mastering_queued",
+              processing_progress: 85,
+              error_message: null,
+            }).eq("id", trk.id).is("master_audio_url", null);
+            await supabaseAdmin.from("generation_logs").update({ status: "completed" }).eq("track_id", trk.id);
+            completedByPolling = true;
+            console.log(`Track ${trk.id} original is already stored; master job is queued`);
+            continue;
+          }
+
+          const ingestClaimed = await claimSunoOriginalIngest(
+            supabaseAdmin,
+            trk.id,
+            rec.id ? String(rec.id) : null,
+          );
+          if (!ingestClaimed) {
+            console.log(`Track ${trk.id} original ingest is already owned by another request`);
+            continue;
+          }
+
           const finalAudioUrl =
             rec.id && trk.suno_audio_id === String(rec.id) && isManagedTrackStorageUrl(trk.audio_url)
               ? trk.audio_url
@@ -367,34 +394,15 @@ serve(async (req) => {
 
           const durationSec = await resolveTrackDuration(rec.duration, [finalAudioUrl, ...rec.audioUrls]);
 
-          let master: { url: string; lufs: number; peakDb: number };
-          try {
-            master = await createAndStorePlaybackMaster(supabaseAdmin, trk.id, finalAudioUrl);
-          } catch (masterError) {
-            console.error(`Master creation failed for polling track ${trk.id}:`, masterError);
-            await supabaseClient.from("tracks").update({
-              audio_url: finalAudioUrl,
-              cover_url: finalCoverUrl,
-              ...(durationSec != null ? { duration: durationSec } : {}),
-              status: "processing",
-              error_message: "Оригинал сохранён, мастер −10 LUFS временно не создан. Обработка будет повторена.",
-              suno_audio_id: rec.id ? String(rec.id) : null,
-            }).eq("id", trk.id).eq("user_id", userId);
-            continue;
-          }
-
-          // Completion fields are protected from user-token writes by the custom
-          // REST policy. This verified server-side polling path must use service role.
           const { error: updateError } = await supabaseAdmin
             .from("tracks")
             .update({
               audio_url: finalAudioUrl,
-              master_audio_url: master.url,
-              normalized_audio_url: master.url,
-              lufs_normalized: true,
               cover_url: finalCoverUrl,
               ...(durationSec != null ? { duration: durationSec } : {}),
-              status: "completed",
+              status: "processing",
+              processing_stage: "mastering_queued",
+              processing_progress: 85,
               error_message: null,
               suno_audio_id: rec.id ? String(rec.id) : null,
             })
@@ -404,17 +412,24 @@ serve(async (req) => {
           if (updateError) {
             console.error(`Error updating track ${trk.id}:`, updateError);
           } else {
+            try {
+              await enqueuePlaybackMaster(supabaseAdmin, trk.id, finalAudioUrl);
+            } catch (queueError) {
+              console.error(`Could not queue master for polling track ${trk.id}:`, queueError);
+              await supabaseAdmin.from("tracks").update({ processing_stage: "mastering_queue_failed" }).eq("id", trk.id);
+              continue;
+            }
+            await supabaseAdmin.from("tracks").update({ status: "completed" })
+              .eq("id", trk.id)
+              .is("master_audio_url", null);
+            await supabaseAdmin.from("generation_logs").update({ status: "completed" }).eq("track_id", trk.id);
             await supabaseAdmin.from("track_health_reports").upsert({
               track_id: trk.id,
-              normalized_audio_url: master.url,
-              lufs_normalized: master.lufs,
-              peak_db: master.peakDb,
-              normalization_status: "completed",
+              normalization_status: "pending",
               updated_at: new Date().toISOString(),
             }, { onConflict: "track_id" });
             completedByPolling = true;
-            await supabaseAdmin.from("generation_logs").update({ status: "completed" }).eq("track_id", trk.id);
-            console.log(`Track ${trk.id} (${trk.title}) completed via polling, record[${recordIndex}], suno_audio_id=${rec.id}`);
+            console.log(`Track ${trk.id} (${trk.title}) original saved via polling; durable master job queued`);
           }
         }
 

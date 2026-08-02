@@ -13,6 +13,8 @@ const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(__dirname, 'output');
 const TEMP_MAX_AGE_MS = Number(process.env.FFMPEG_TEMP_MAX_AGE_MS) || 24 * 60 * 60 * 1000;
 const DOWNLOAD_CACHE_MAX_AGE_MS = Number(process.env.FFMPEG_DOWNLOAD_CACHE_MAX_AGE_MS) || 30 * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = Number(process.env.FFMPEG_CLEANUP_INTERVAL_MS) || 6 * 60 * 60 * 1000;
+const MAX_CONCURRENT_JOBS = Math.min(Math.max(Number(process.env.FFMPEG_MAX_CONCURRENT_JOBS) || 4, 1), 32);
+const MAX_QUEUED_JOBS = Math.min(Math.max(Number(process.env.FFMPEG_MAX_QUEUED_JOBS) || 512, 1), 5000);
 
 [UPLOAD_DIR, OUTPUT_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -41,15 +43,80 @@ function pruneDirectory(dir, maxAgeMs, shouldDelete = () => true) {
 
 function cleanupFfmpegFiles() {
   const removedTemp = pruneDirectory(UPLOAD_DIR, TEMP_MAX_AGE_MS);
+  const removedTransientOutputs = pruneDirectory(
+    OUTPUT_DIR,
+    TEMP_MAX_AGE_MS,
+    (name) => name.startsWith('normalized_') || name.startsWith('.normalized_')
+  );
   const removedDownloads = pruneDirectory(
     OUTPUT_DIR,
     DOWNLOAD_CACHE_MAX_AGE_MS,
     (name) => name.startsWith('download_') || name.startsWith('.download_') || name.startsWith('distribution_') || name.startsWith('.distribution_')
   );
-  if (removedTemp || removedDownloads) {
-    console.log(`[cleanup] Removed temp=${removedTemp}, download_cache=${removedDownloads}`);
+  if (removedTemp || removedTransientOutputs || removedDownloads) {
+    console.log(`[cleanup] Removed temp=${removedTemp}, transient_output=${removedTransientOutputs}, download_cache=${removedDownloads}`);
   }
 }
+
+function createConcurrencyLimiter(maxConcurrent, maxQueued) {
+  let active = 0;
+  const queue = [];
+
+  const startNext = () => {
+    while (active < maxConcurrent && queue.length > 0) {
+      const nextJob = queue.shift();
+      if (!nextJob.res.destroyed) nextJob.start();
+    }
+  };
+
+  const middleware = (req, res, next) => {
+    const start = () => {
+      active += 1;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        active = Math.max(0, active - 1);
+        startNext();
+      };
+      res.once('finish', release);
+      res.once('close', release);
+      next();
+    };
+
+    if (active < maxConcurrent) return start();
+    if (queue.length >= maxQueued) {
+      res.set('Retry-After', '15');
+      return res.status(503).json({
+        error: 'FFmpeg queue is full',
+        message: 'Audio processing capacity is temporarily full; retry later',
+      });
+    }
+
+    let queuedJob;
+    const removeQueuedJob = () => {
+      const index = queue.indexOf(queuedJob);
+      if (index >= 0) queue.splice(index, 1);
+    };
+    queuedJob = {
+      req,
+      res,
+      start: () => {
+        req.off('aborted', removeQueuedJob);
+        res.off('close', removeQueuedJob);
+        start();
+      },
+    };
+    queue.push(queuedJob);
+    req.once('aborted', removeQueuedJob);
+    res.once('close', removeQueuedJob);
+  };
+
+  middleware.stats = () => ({ active, queued: queue.length, maxConcurrent, maxQueued });
+  return middleware;
+}
+
+const heavyJobLimiter = createConcurrencyLimiter(MAX_CONCURRENT_JOBS, MAX_QUEUED_JOBS);
 
 cleanupFfmpegFiles();
 setInterval(cleanupFfmpegFiles, CLEANUP_INTERVAL_MS).unref();
@@ -89,26 +156,29 @@ app.use((req, res, next) => {
 });
 
 app.use('/analyze', requireApiKey(API_KEY));
-app.post('/analyze', createAnalyzeHandler(UPLOAD_DIR));
+app.post('/analyze', heavyJobLimiter, createAnalyzeHandler(UPLOAD_DIR));
 
 app.use('/normalize', requireApiKey(API_KEY));
-app.post('/normalize', createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR));
+app.post('/normalize', heavyJobLimiter, createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR));
 
 app.use('/process-wav', requireApiKey(API_KEY));
-app.post('/process-wav', createProcessWavHandler(UPLOAD_DIR, OUTPUT_DIR));
+app.post('/process-wav', heavyJobLimiter, createProcessWavHandler(UPLOAD_DIR, OUTPUT_DIR));
 
 app.use('/clean-metadata', requireApiKey(API_KEY));
 app.post('/clean-metadata', createCleanMetadataHandler(UPLOAD_DIR, OUTPUT_DIR));
 
 app.use('/convert-format', requireApiKey(API_KEY));
-app.post('/convert-format', createConvertFormatHandler(UPLOAD_DIR, OUTPUT_DIR));
+app.post('/convert-format', heavyJobLimiter, createConvertFormatHandler(UPLOAD_DIR, OUTPUT_DIR));
 
 app.use('/output', express.static(OUTPUT_DIR));
 
 app.get('/health', (req, res) => {
+  res.set('X-FFmpeg-Active', String(heavyJobLimiter.stats().active));
+  res.set('X-FFmpeg-Queued', String(heavyJobLimiter.stats().queued));
   res.status(200).send('OK');
 });
 
 app.listen(PORT, HOST, () => {
   console.log(`FFmpeg microservice listening on ${HOST}:${PORT}`);
+  console.log(`FFmpeg concurrency limit=${MAX_CONCURRENT_JOBS}, queue limit=${MAX_QUEUED_JOBS}`);
 });

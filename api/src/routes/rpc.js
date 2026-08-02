@@ -68,6 +68,7 @@ const ALLOWED_RPC = new Set([
   'has_purchased_item', 'has_purchased_prompt', 'has_role',
   'hide_contest_comment', 'hide_track_comment', 'increment_promotion_click',
   'increment_promotion_impression', 'increment_prompt_downloads', 'increment_track_download_count',
+  'claim_track_audio_ingest', 'enqueue_audio_master_job', 'claim_audio_master_jobs',
   'is_admin', 'is_maintenance_active', 'is_maintenance_whitelisted',
   'is_participant_in_conversation', 'is_super_admin', 'is_user_blocked',
   'messaging_archive_conversation', 'messaging_block_user', 'messaging_close_admin_conversation',
@@ -105,6 +106,9 @@ const ALLOWED_RPC = new Set([
 // the database owner, so PostgreSQL GRANT alone cannot protect them here.
 const SERVICE_ROLE_ONLY_RPC = new Set([
   'record_lyrics_blockchain_deposit',
+  'claim_track_audio_ingest',
+  'enqueue_audio_master_job',
+  'claim_audio_master_jobs',
   ...ECONOMY_SERVICE_ROLE_ONLY_RPC,
 ]);
 

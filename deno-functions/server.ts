@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { startAudioMasterWorker } from "./workers/audio-master-worker.ts";
 
 type Handler = (req: Request) => Promise<Response> | Response;
 
@@ -82,6 +83,7 @@ function resolveFunctionName(pathname: string): string | null {
 }
 
 await loadHandlers();
+startAudioMasterWorker();
 
 serve(async (req) => {
   const url = new URL(req.url);

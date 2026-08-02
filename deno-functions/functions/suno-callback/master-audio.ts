@@ -4,7 +4,7 @@ const MASTER_TARGET_LUFS = -10;
 const MASTER_TARGET_TRUE_PEAK_DB = -1;
 const MP3_ENCODING_LOUDNESS_TARGET_LUFS = -9.5;
 const MP3_ENCODING_TRUE_PEAK_TARGET_DB = -1.7;
-const MASTER_ATTEMPTS = 3;
+const MASTER_ATTEMPTS = 1;
 
 function ffmpegBaseUrl(): string {
   const configured = Deno.env.get("FFMPEG_API_URL") || Deno.env.get("VPS_FFMPEG_URL");
