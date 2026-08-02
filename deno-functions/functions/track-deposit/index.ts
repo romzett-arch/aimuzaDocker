@@ -2,9 +2,9 @@ import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "./types.ts";
 import { generateHash, getAudioHash } from "./utils.ts";
-import { checkAndDeductBalance, recordDepositTransaction, refundBalance } from "./billing.ts";
+import { beginTrackDeposit, failTrackDepositAndRefund } from "./billing.ts";
 import { getEffectiveAuthorData, validateTrack } from "./validation.ts";
-import { processDepositByMethod } from "./deposit-processor.ts";
+import { processDeposit } from "./deposit-processor.ts";
 import type { DepositRequest, DepositError } from "./types.ts";
 
 serve(async (req) => {
@@ -30,6 +30,9 @@ serve(async (req) => {
     }
 
     const { trackId, method, authorData }: DepositRequest = await req.json();
+    if (method !== "blockchain") {
+      throw new Error("Доступна только цифровая защита AIMUZA");
+    }
     console.log(`Deposit request: track=${trackId}, method=${method}, user=${user.id}`);
 
     const { data: track, error: trackError } = await supabase
@@ -49,63 +52,12 @@ serve(async (req) => {
       .eq("user_id", user.id)
       .single();
 
-    const username = profile?.username || "Unknown";
-    const effectiveAuthorData = getEffectiveAuthorData(authorData, track, username);
-
     if (trackError || !track) {
       throw new Error("Трек не найден или не принадлежит вам");
     }
     validateTrack(track, trackId);
-
-    const { data: existingDeposit } = await supabase
-      .from("track_deposits")
-      .select("id, status")
-      .eq("track_id", trackId)
-      .eq("method", method)
-      .single();
-
-    if (existingDeposit) {
-      if (existingDeposit.status === "completed") {
-        throw new Error("Трек уже депонирован этим методом");
-      }
-      await supabase
-        .from("track_deposits")
-        .delete()
-        .eq("id", existingDeposit.id);
-    }
-
-    const { data: settings } = await supabase
-      .from("settings")
-      .select("key, value")
-      .in("key", [
-        `deposit_price_${method}`,
-        "nris_api_key",
-        "nris_api_url",
-        "irma_api_key",
-        "irma_api_url",
-      ]);
-
-    const settingsMap = new Map(settings?.map(s => [s.key, s.value]) || []);
-    const priceKey = `deposit_price_${method}`;
-    const priceValue = settingsMap.get(priceKey);
-    const basePrice = parseInt(priceValue || "0", 10);
-
-    let effectivePrice = basePrice;
-
-    if (method === "blockchain") {
-      const { data: depositLimit, error: limitError } = await supabase.rpc("check_deposit_limit", {
-        p_user_id: user.id,
-      });
-
-      if (limitError) {
-        console.error("Deposit limit error:", limitError);
-        throw new Error("Не удалось проверить лимит бесплатных депонирований");
-      }
-
-      if ((depositLimit as { is_free?: boolean } | null)?.is_free) {
-        effectivePrice = 0;
-      }
-    }
+    const username = profile?.username || "Unknown";
+    const effectiveAuthorData = getEffectiveAuthorData(authorData, track, username);
 
     console.log("Generating audio hash...");
     const fileHash = await getAudioHash(track.audio_url);
@@ -121,45 +73,32 @@ serve(async (req) => {
     }));
 
     const depositId = crypto.randomUUID();
-    console.log(`Deposit pricing: key=${priceKey}, rawValue=${priceValue}, basePrice=${basePrice}, effectivePrice=${effectivePrice}`);
-
-    const billing = await checkAndDeductBalance(supabase, user.id, effectivePrice);
-    if (effectivePrice <= 0) {
+    const billing = await beginTrackDeposit(supabase, {
+      depositId,
+      trackId,
+      userId: user.id,
+      method,
+      fileHash,
+      metadataHash,
+      performerName: effectiveAuthorData.performer_name,
+      lyricsAuthor: effectiveAuthorData.lyrics_author,
+    });
+    if (billing.price <= 0) {
       console.log(`Deposit is free for method ${method}`);
     }
 
-    const { error: insertError } = await supabase
-      .from("track_deposits")
-      .upsert({
-        id: depositId,
-        track_id: trackId,
-        user_id: user.id,
-        method,
-        status: "processing",
-        file_hash: fileHash,
-        metadata_hash: metadataHash,
-        performer_name: effectiveAuthorData.performer_name,
-        lyrics_author: effectiveAuthorData.lyrics_author,
-      });
-
-    if (insertError) {
-      console.error("Insert error:", insertError);
-      await refundBalance(supabase, user.id, effectivePrice);
-      throw new Error("Не удалось создать запись депонирования");
-    }
-
+    let externalServiceCompleted = false;
     try {
-      const result = await processDepositByMethod(
-        method,
+      const result = await processDeposit(
         supabase,
         track,
         fileHash,
         depositId,
         effectiveAuthorData,
-        settingsMap
       );
+      externalServiceCompleted = true;
 
-      await supabase
+      const { error: completionError } = await supabase
         .from("track_deposits")
         .update({
           status: "completed",
@@ -179,8 +118,12 @@ serve(async (req) => {
           external_certificate_url: result.externalCertificateUrl,
         })
         .eq("id", depositId);
+      if (completionError) {
+        console.error("Deposit completion update error:", completionError);
+        throw new Error("Услуга выполнена, но статус не удалось сохранить. Обратитесь в поддержку.");
+      }
 
-      await supabase.from("notifications").insert({
+      const { error: notificationError } = await supabase.from("notifications").insert({
         user_id: user.id,
         type: "system",
         title: "Депонирование завершено",
@@ -188,17 +131,7 @@ serve(async (req) => {
         target_type: "track",
         target_id: trackId,
       });
-
-      await recordDepositTransaction(supabase, {
-        userId: user.id,
-        price: effectivePrice,
-        previousBalance: billing.previousBalance,
-        newBalance: billing.newBalance,
-        depositId,
-        trackId,
-        trackTitle: track.title,
-        method,
-      });
+      if (notificationError) console.error("Deposit notification error:", notificationError);
 
       console.log(`Deposit completed: ${depositId}`);
 
@@ -215,15 +148,11 @@ serve(async (req) => {
       const error = processError as DepositError;
       console.error("Process error:", error);
 
-      await supabase
-        .from("track_deposits")
-        .update({
-          status: "failed",
-          error_message: error.message || "Unknown error",
-        })
-        .eq("id", depositId);
-
-      await refundBalance(supabase, user.id, effectivePrice);
+      if (!externalServiceCompleted) {
+        await failTrackDepositAndRefund(supabase, depositId, error.message || "Unknown error");
+      } else {
+        console.error(`CRITICAL: deposit ${depositId} completed externally but local completion failed; no refund issued`);
+      }
       throw error;
     }
 

@@ -1,9 +1,5 @@
 interface SupabaseClient {
-  from: (table: string) => {
-    select: (columns: string) => { eq: (col: string, val: string) => { single: () => Promise<{ data: { balance: number } | null; error: unknown }> } };
-    update: (data: { balance: number }) => { eq: (col: string, val: string) => Promise<{ error: unknown }> };
-    insert: (data: Record<string, unknown>) => Promise<{ error: unknown }>;
-  };
+  rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { message?: string } | null }>;
 }
 
 export interface BillingResult {
@@ -12,110 +8,46 @@ export interface BillingResult {
   newBalance: number;
 }
 
-export async function checkAndDeductBalance(
+export async function beginTrackDeposit(
   supabase: SupabaseClient,
-  userId: string,
-  price: number
+  params: {
+    depositId: string;
+    trackId: string;
+    userId: string;
+    method: string;
+    fileHash: string;
+    metadataHash: string;
+    performerName: string;
+    lyricsAuthor: string;
+  },
 ): Promise<BillingResult> {
-  if (price <= 0) {
-    return {
-      price,
-      previousBalance: 0,
-      newBalance: 0,
-    };
-  }
-
-  const { data: userProfile, error: profileError } = await supabase
-    .from("profiles")
-    .select("balance")
-    .eq("user_id", userId)
-    .single();
-
-  console.log(`User balance check: balance=${userProfile?.balance}, price=${price}, error=${(profileError as Error)?.message}`);
-
-  if (!userProfile || userProfile.balance < price) {
-    throw new Error(`Недостаточно средств. Требуется: ${price} ₽, баланс: ${userProfile?.balance || 0} ₽`);
-  }
-
-  const newBalance = userProfile.balance - price;
-  console.log(`Deducting balance: ${userProfile.balance} - ${price} = ${newBalance}`);
-
-  const { error: updateError } = await supabase
-    .from("profiles")
-    .update({ balance: newBalance })
-    .eq("user_id", userId);
-
-  if (updateError) {
-    console.error("Balance update error:", updateError);
-    throw new Error("Ошибка списания средств");
-  }
-
-  console.log(`Balance updated successfully for user ${userId}`);
+  const { data, error } = await supabase.rpc("begin_track_deposit", {
+    p_deposit_id: params.depositId,
+    p_track_id: params.trackId,
+    p_user_id: params.userId,
+    p_method: params.method,
+    p_file_hash: params.fileHash,
+    p_metadata_hash: params.metadataHash,
+    p_performer_name: params.performerName,
+    p_lyrics_author: params.lyricsAuthor,
+  });
+  if (error) throw new Error(error.message || "Не удалось начать депонирование");
+  const result = data as { price: number; balance_before: number; balance_after: number };
   return {
-    price,
-    previousBalance: userProfile.balance,
-    newBalance,
+    price: Number(result.price || 0),
+    previousBalance: Number(result.balance_before || 0),
+    newBalance: Number(result.balance_after || 0),
   };
 }
 
-export async function recordDepositTransaction(
+export async function failTrackDepositAndRefund(
   supabase: SupabaseClient,
-  params: {
-    userId: string;
-    price: number;
-    previousBalance: number;
-    newBalance: number;
-    depositId: string;
-    trackId: string;
-    trackTitle: string;
-    method: string;
-  }
+  depositId: string,
+  message: string,
 ): Promise<void> {
-  if (params.price <= 0) {
-    return;
-  }
-
-  const { error } = await supabase.from("balance_transactions").insert({
-    user_id: params.userId,
-    amount: -params.price,
-    balance_before: params.previousBalance,
-    balance_after: params.newBalance,
-    type: "track_deposit",
-    description: `Депонирование трека «${params.trackTitle}» (${params.method})`,
-    reference_id: params.depositId,
-    reference_type: "track_deposit",
-    metadata: {
-      track_id: params.trackId,
-      track_title: params.trackTitle,
-      method: params.method,
-    },
+  const { error } = await supabase.rpc("fail_track_deposit_and_refund", {
+    p_deposit_id: depositId,
+    p_error_message: message,
   });
-
-  if (error) {
-    console.error("Balance transaction insert error:", error);
-    throw new Error("Ошибка записи истории списания");
-  }
-}
-
-export async function refundBalance(
-  supabase: SupabaseClient,
-  userId: string,
-  price: number
-): Promise<void> {
-  if (price <= 0) {
-    return;
-  }
-
-  const { data: currentProfile } = await supabase
-    .from("profiles")
-    .select("balance")
-    .eq("user_id", userId)
-    .single();
-
-  if (currentProfile) {
-    await supabase
-      .from("profiles")
-      .update({ balance: currentProfile.balance + price })
-      .eq("user_id", userId);
-  }
+  if (error) throw new Error(error.message || "Не удалось оформить возврат");
 }

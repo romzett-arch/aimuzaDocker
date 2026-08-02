@@ -6,7 +6,7 @@ export interface AuthorData {
 
 export interface DepositRequest {
   trackId: string;
-  method: "internal" | "pdf" | "blockchain" | "nris" | "irma";
+  method: "blockchain";
   authorData?: AuthorData;
 }
 

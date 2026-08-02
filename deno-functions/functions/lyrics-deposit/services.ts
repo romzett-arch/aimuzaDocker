@@ -60,8 +60,6 @@ export async function upgradeOpenTimestamps(
   const hashBytes = hexToBytes(hash);
   const proofBytes = base64ToBytes(proofBase64);
 
-  // Calendar /digest returns the timestamp tree without the detached-file header.
-  // Recreate the detached proof so the official client can request its upgrade.
   const context = new OpenTimestamps.Context.StreamDeserialization(Array.from(proofBytes));
   const timestamp = OpenTimestamps.Timestamp.deserialize(context, Array.from(hashBytes));
   const detached = OpenTimestamps.DetachedTimestampFile.fromHash(
@@ -80,81 +78,5 @@ export async function upgradeOpenTimestamps(
     confirmed,
     changed,
     proofBase64: bytesToBase64(output.getOutput()),
-  };
-}
-
-export async function submitToNris(
-  lyrics: Record<string, unknown>,
-  hash: string,
-  apiKey: string,
-  apiUrl: string
-): Promise<{ depositId: string; certificateUrl?: string }> {
-  if (!apiKey) {
-    throw new Error("API ключ n'RIS не настроен");
-  }
-
-  const response = await fetch(`${apiUrl}/deposits`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      type: "lyrics",
-      title: lyrics.title,
-      author: lyrics.author_name,
-      hash: hash,
-      metadata: {
-        created_at: lyrics.created_at,
-        language: lyrics.language,
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`n'RIS API error: ${error}`);
-  }
-
-  const result = await response.json();
-  return {
-    depositId: result.deposit_id || result.id,
-    certificateUrl: result.certificate_url,
-  };
-}
-
-export async function submitToIrma(
-  lyrics: Record<string, unknown>,
-  hash: string,
-  apiKey: string,
-  apiUrl: string
-): Promise<{ depositId: string; certificateUrl?: string }> {
-  if (!apiKey) {
-    throw new Error("API ключ IRMA не настроен");
-  }
-
-  const response = await fetch(`${apiUrl}/register`, {
-    method: "POST",
-    headers: {
-      "X-API-Key": apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      work_type: "lyrics",
-      title: lyrics.title,
-      creators: [{ role: "author", name: lyrics.author_name }],
-      content_hash: hash,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`IRMA API error: ${error}`);
-  }
-
-  const result = await response.json();
-  return {
-    depositId: result.registration_id || result.id,
-    certificateUrl: result.certificate_url,
   };
 }
