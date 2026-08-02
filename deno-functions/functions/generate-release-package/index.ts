@@ -10,7 +10,7 @@ const corsHeaders = {
 
 const TRACKS_BUCKET = "tracks";
 const DEFAULT_BASE_URL = "https://aimuza.ru";
-const RELEASE_PACKAGE_FILE_NAME = "release-package-audio-v2.zip";
+const RELEASE_PACKAGE_FILE_NAME = "release-package-audio-v3.zip";
 const STORAGE_UPLOAD_MAX_ATTEMPTS = 12;
 const STORAGE_UPLOAD_BASE_DELAY_MS = 5_000;
 const STORAGE_UPLOAD_MAX_DELAY_MS = 45_000;
@@ -69,6 +69,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function isRetryableStorageError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
 
@@ -85,7 +90,7 @@ function isRetryableStorageError(error: unknown): boolean {
 }
 
 function stripFfmpegRoute(url: string): string {
-  return url.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "");
+  return url.replace(/\/(clean-metadata|analyze|normalize|process-wav|convert-format)\/?$/, "");
 }
 
 function sanitizeBaseName(value: string): string {
@@ -374,7 +379,7 @@ function buildGenreText(input: {
 async function callFfmpegJson(
   ffmpegBaseUrl: string,
   ffmpegApiSecret: string,
-  endpoint: "normalize" | "process-wav",
+  endpoint: "clean-metadata" | "convert-format",
   payload: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const response = await fetch(`${ffmpegBaseUrl}/${endpoint}`, {
@@ -567,7 +572,7 @@ serve(async (req) => {
     const { data: track, error: trackError } = await supabase
       .from("tracks")
       .select(`
-        id, user_id, title, description, audio_url, wav_url, cover_url, status, source_type, created_at, suno_audio_id, lyrics,
+        id, user_id, title, description, audio_url, master_audio_url, normalized_audio_url, wav_url, cover_url, status, source_type, created_at, suno_audio_id, lyrics,
         performer_name, label_name, music_author, lyrics_author,
         genre:genres(name_ru, name)
       `)
@@ -643,14 +648,6 @@ serve(async (req) => {
       error_message: null,
     });
 
-    const wavPreparation = await ensurePreparedWav(supabase, supabaseUrl, supabaseServiceKey, track);
-    if (wavPreparation.status === "processing" || !wavPreparation.wavUrl) {
-      return new Response(
-        JSON.stringify({ success: true, status: "processing", message: "release_package_waiting_for_wav" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
     const profileIdentity = await loadProfileIdentity(supabase, track.user_id);
     const releaseMeta = buildReleaseMetadata({
       ...track,
@@ -662,23 +659,38 @@ serve(async (req) => {
     });
     const { metadata } = releaseMeta;
 
-    const mp3InputUrl = toInternalFetchUrl(track.audio_url, req.url, ffmpegBaseUrl, storageOrigin);
-    const mp3Result = await callFfmpegJson(ffmpegBaseUrl, ffmpegApiSecret, "normalize", {
-      audio_url: mp3InputUrl,
-      target_lufs: -14,
-      strip_metadata: true,
-      brand_metadata: true,
+    const masterUrl = track.master_audio_url || track.normalized_audio_url || track.audio_url;
+    const masterInputUrl = toInternalFetchUrl(masterUrl, req.url, ffmpegBaseUrl, storageOrigin);
+    const metadataKey = await sha256Hex(JSON.stringify({ version: 3, trackId, masterUrl, metadata }));
+    const mp3Result = await callFfmpegJson(ffmpegBaseUrl, ffmpegApiSecret, "clean-metadata", {
+      audio_url: masterInputUrl,
       metadata,
+      cache_key: metadataKey,
     });
-    const mp3Url = String(mp3Result.output_url || mp3Result.normalized_url || "");
+    const mp3Url = String(mp3Result.output_url || mp3Result.cleaned_url || "");
     if (!mp3Url) {
       throw new Error("release_package_mp3_missing");
     }
 
-    const wavUrl = wavPreparation.wavUrl;
+    const wavResult = await callFfmpegJson(ffmpegBaseUrl, ffmpegApiSecret, "convert-format", {
+      audio_url: masterInputUrl,
+      format: "wav",
+      metadata,
+      cache_key: await sha256Hex(JSON.stringify({ version: 3, trackId, masterUrl, metadata, format: "wav" })),
+    });
+    const flacResult = await callFfmpegJson(ffmpegBaseUrl, ffmpegApiSecret, "convert-format", {
+      audio_url: masterInputUrl,
+      format: "flac",
+      metadata,
+      cache_key: await sha256Hex(JSON.stringify({ version: 3, trackId, masterUrl, metadata, format: "flac" })),
+    });
+    const wavUrl = String(wavResult.output_url || "");
+    const flacUrl = String(flacResult.output_url || "");
+    if (!wavUrl || !flacUrl) throw new Error("release_package_distribution_audio_missing");
 
     const mp3Bytes = await fetchBytes(mp3Url, req.url, ffmpegBaseUrl, storageOrigin);
     const wavBytes = await fetchBytes(wavUrl, req.url, ffmpegBaseUrl, storageOrigin);
+    const flacBytes = await fetchBytes(flacUrl, req.url, ffmpegBaseUrl, storageOrigin);
 
     const promptText = track.description || null;
     const lyricsText = track.lyrics || null;
@@ -715,6 +727,7 @@ serve(async (req) => {
     const zip = new JSZip();
     zip.file(`${safeBaseName}.mp3`, mp3Bytes);
     zip.file(`${safeBaseName}.wav`, wavBytes);
+    zip.file(`${safeBaseName}.flac`, flacBytes);
     zip.file("genre.txt", genreBytes);
     zip.file("release-info.txt", releaseInfoBytes);
 
@@ -756,6 +769,7 @@ serve(async (req) => {
         zip_url: zipUrl,
         mp3_url: mp3Url,
         wav_url: wavUrl,
+        flac_url: flacUrl,
         cover_url: resolvePublicUrl(track.cover_url, req.url),
         genre_txt_url: genreTxtUrl,
         certificate_url: deposit?.certificate_url ?? null,

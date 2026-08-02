@@ -44,6 +44,7 @@ export interface MatchedTrack {
   user_id: string;
   status: string;
   audio_url?: string | null;
+  master_audio_url?: string | null;
   suno_audio_id?: string | null;
 }
 

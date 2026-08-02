@@ -79,7 +79,7 @@ serve(async (req: Request) => {
     const { 
       audio_url, 
       track_id, 
-      target_lufs = -14, 
+      target_lufs = -10,
       strip_metadata = true,
       brand_metadata = true 
     } = body;

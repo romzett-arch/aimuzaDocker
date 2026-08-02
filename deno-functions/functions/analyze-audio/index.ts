@@ -270,7 +270,7 @@ function parseVpsResult(vpsResult: any): AnalysisResult {
     original_lufs: originalLufs,
     peak_db: lufs?.true_peak || -1,
     dynamic_range: lufs?.range || 8,
-    needs_normalization: Math.abs(originalLufs - (-14)) > 1,
+      needs_normalization: Math.abs(originalLufs - (-10)) > 1,
     sample_rate: sampleRate,
     bit_depth: bitDepth,
     channels: audioStream.channels || 2,

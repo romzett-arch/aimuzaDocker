@@ -125,19 +125,19 @@ export async function runMasterProcessing(
   await updateStage('normalization');
   let processedUrl = masterAudioUrl;
   let normalizedLufs = analysis.originalLufs;
-  const needsNorm = Math.abs(analysis.originalLufs - (-14)) > 1;
+  const needsNorm = Math.abs(analysis.originalLufs - (-10)) > 1;
 
   if (needsNorm) {
-    console.log(`[process-master-audio] Normalizing: ${analysis.originalLufs} → -14 LUFS`);
+    console.log(`[process-master-audio] Normalizing: ${analysis.originalLufs} → -10 LUFS`);
     const normResult = await callVps(VPS_URL, '/normalize', {
       audio_url: masterAudioUrl,
-      target_lufs: -14,
+      target_lufs: -10,
       strip_metadata: false,
       brand_metadata: false,
     }, 90000);
     if (normResult?.normalized_url) {
       processedUrl = normResult.normalized_url;
-      normalizedLufs = normResult.normalized_lufs ?? -14;
+      normalizedLufs = normResult.normalized_lufs ?? -10;
       console.log(`[process-master-audio] ✓ Normalized: ${analysis.originalLufs} → ${normalizedLufs} LUFS`);
     } else {
       console.log(`[process-master-audio] ⚠ Normalization failed, keeping original`);
@@ -200,7 +200,7 @@ export async function runMasterProcessing(
     console.log(`[process-master-audio] Metadata cleaning via VPS /normalize`);
     const metaResult = await callVps(VPS_URL, '/normalize', {
       audio_url: processedUrl,
-      target_lufs: -14,
+      target_lufs: -10,
       strip_metadata: true,
       brand_metadata: true,
       metadata: {

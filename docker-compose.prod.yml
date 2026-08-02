@@ -128,6 +128,7 @@ services:
       BASE_URL: ${BASE_URL:-https://aimuza.ru}
     volumes:
       - ffmpeg_tmp:/app/uploads
+      - ffmpeg_output:/app/output
     ports:
       - "127.0.0.1:3100:3001"
     healthcheck:
@@ -227,6 +228,7 @@ volumes:
   pg_data:
   uploads_data:
   ffmpeg_tmp:
+  ffmpeg_output:
 
 networks:
   aimuza-net:

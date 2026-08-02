@@ -11,6 +11,7 @@ import {
 } from "./audio-storage.ts";
 import { classifyTrackWithAI, processTrackAddons } from "./classification.ts";
 import { getDurationFromFfmpeg } from "./ffmpeg-duration.ts";
+import { createAndStorePlaybackMaster } from "./master-audio.ts";
 import { getSunoErrorMessage, handleFailedTracksWithRefunds } from "./errors.ts";
 import { corsHeaders } from "./types.ts";
 import type { MatchedTrack, SunoCallbackPayload, SunoTrackData, TrackToFail } from "./types.ts";
@@ -179,7 +180,7 @@ serve(async (req) => {
     if (taskId) {
       const { data: taskTracks, error: taskFindError } = await supabaseAdmin
         .from("tracks")
-        .select("id, title, description, lyrics, user_id, status, audio_url, suno_audio_id")
+        .select("id, title, description, lyrics, user_id, status, audio_url, master_audio_url, suno_audio_id")
         .ilike("description", `%[task_id: ${taskId}]%`)
         .order("created_at", { ascending: true })
         .limit(4);
@@ -265,7 +266,8 @@ serve(async (req) => {
       if (
         sunoAudioId &&
         trackToUpdate.suno_audio_id === sunoAudioId &&
-        isManagedTrackStorageUrl(trackToUpdate.audio_url)
+        isManagedTrackStorageUrl(trackToUpdate.audio_url) &&
+        isManagedTrackStorageUrl(trackToUpdate.master_audio_url)
       ) {
         console.log(`Track ${trackToUpdate.id} already saved for Suno audio ${sunoAudioId}, skipping duplicate callback processing`);
         continue;
@@ -273,10 +275,16 @@ serve(async (req) => {
 
       console.log(`Updating track ${trackToUpdate.id} (${trackToUpdate.title}) with Suno record[${recordIndex}]: ${audioUrl}`);
 
-      let finalAudioUrl: string | null = null;
+      let finalAudioUrl: string | null =
+        sunoAudioId && trackToUpdate.suno_audio_id === sunoAudioId && isManagedTrackStorageUrl(trackToUpdate.audio_url)
+          ? trackToUpdate.audio_url || null
+          : null;
       let finalCoverUrl = coverUrl;
 
       try {
+        if (finalAudioUrl) {
+          console.log(`Reusing already stored Suno original: ${finalAudioUrl}`);
+        } else {
         const audioFileName = `${trackToUpdate.id}.mp3`;
         const storedAudioUrl = await copyFirstAvailableFileToStorage(
           supabaseAdmin,
@@ -289,6 +297,7 @@ serve(async (req) => {
           console.log(`Audio copied to storage: ${finalAudioUrl}`);
         } else {
           console.error(`Failed to copy audio for track ${trackToUpdate.id}; keeping track in recovery-required state`);
+        }
         }
       } catch (audioErr) {
         console.error(`Error copying audio:`, audioErr);
@@ -343,13 +352,34 @@ serve(async (req) => {
 
       const durationSec = await resolveTrackDuration(duration, [finalAudioUrl, ...track.audioUrls]);
 
+      let master: { url: string; lufs: number; peakDb: number };
+      try {
+        master = await createAndStorePlaybackMaster(supabaseAdmin, trackToUpdate.id, finalAudioUrl);
+        console.log(`Playback master created: ${master.url} (${master.lufs} LUFS, ${master.peakDb} dBTP)`);
+      } catch (masterError) {
+        console.error(`Master creation failed for track ${trackToUpdate.id}; preserving original for retry:`, masterError);
+        await supabaseAdmin.from("tracks").update({
+          audio_url: finalAudioUrl,
+          cover_url: finalCoverUrl || null,
+          ...(durationSec != null ? { duration: durationSec } : {}),
+          error_message: "Оригинал сохранён, мастер −10 LUFS временно не создан. Обработка будет повторена.",
+          suno_audio_id: sunoAudioId || null,
+          description: updatedDescription,
+        }).eq("id", trackToUpdate.id);
+        continue;
+      }
+
       const { error: updateError } = await supabaseAdmin
         .from("tracks")
         .update({
           audio_url: finalAudioUrl,
+          master_audio_url: master.url,
+          normalized_audio_url: master.url,
+          lufs_normalized: true,
           cover_url: finalCoverUrl || null,
           ...(durationSec != null ? { duration: durationSec } : {}),
           status: "completed",
+          error_message: null,
           suno_audio_id: sunoAudioId || null,
           description: updatedDescription,
         })
@@ -358,6 +388,14 @@ serve(async (req) => {
       if (updateError) {
         console.error("Error updating track:", updateError);
       } else {
+        await supabaseAdmin.from("track_health_reports").upsert({
+          track_id: trackToUpdate.id,
+          normalized_audio_url: master.url,
+          lufs_normalized: master.lufs,
+          peak_db: master.peakDb,
+          normalization_status: "completed",
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "track_id" });
         console.log(`Track ${trackToUpdate.id} updated successfully with Storage URLs`);
         updatedCount++;
 

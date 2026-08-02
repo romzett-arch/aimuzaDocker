@@ -7,6 +7,7 @@ import {
   isManagedTrackStorageUrl,
 } from "../suno-callback/audio-storage.ts";
 import { getDurationFromFfmpeg } from "../suno-callback/ffmpeg-duration.ts";
+import { createAndStorePlaybackMaster } from "../suno-callback/master-audio.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -22,6 +23,8 @@ type MatchedTrack = {
   description: string | null;
   status: string;
   audio_url: string | null;
+  master_audio_url: string | null;
+  cover_url: string | null;
   suno_audio_id: string | null;
   error_message: string | null;
 };
@@ -242,7 +245,7 @@ serve(async (req) => {
         if (trackId) {
           const { data: targetTrack, error: targetTrackError } = await supabaseClient
             .from("tracks")
-            .select("id, title, description, status, audio_url, suno_audio_id, error_message")
+            .select("id, title, description, status, audio_url, master_audio_url, cover_url, suno_audio_id, error_message")
             .eq("id", trackId)
             .eq("user_id", userId)
             .maybeSingle();
@@ -256,7 +259,11 @@ serve(async (req) => {
 
             if (!belongsToTask) {
               console.warn(`Track ${trackId} does not belong to task ${taskId}, skipping polling recovery`);
-            } else if (targetTrack.status === "completed" && isManagedTrackStorageUrl(targetTrack.audio_url)) {
+            } else if (
+              targetTrack.status === "completed" &&
+              isManagedTrackStorageUrl(targetTrack.audio_url) &&
+              isManagedTrackStorageUrl(targetTrack.master_audio_url)
+            ) {
               return new Response(
                 JSON.stringify({
                   success: true,
@@ -278,7 +285,7 @@ serve(async (req) => {
           // Backward-compatible fallback for callers without trackId.
           const { data: matchedTracks } = await supabaseClient
             .from("tracks")
-            .select("id, title, description, status, audio_url, suno_audio_id, error_message")
+            .select("id, title, description, status, audio_url, master_audio_url, cover_url, suno_audio_id, error_message")
             .eq("user_id", userId)
             .in("status", ["processing", "pending", "failed"])
             .order("created_at", { ascending: true });
@@ -307,23 +314,27 @@ serve(async (req) => {
           if (
             rec.id &&
             trk.suno_audio_id === String(rec.id) &&
-            isManagedTrackStorageUrl(trk.audio_url)
+            isManagedTrackStorageUrl(trk.audio_url) &&
+            isManagedTrackStorageUrl(trk.master_audio_url)
           ) {
             console.log(`Track ${trk.id} already saved for Suno audio ${rec.id}, skipping duplicate polling processing`);
             completedByPolling = true;
             continue;
           }
 
-          const finalAudioUrl = await copyFirstAvailableFileToStorage(
-            supabaseAdmin,
-            rec.audioUrls,
-            "tracks",
-            `audio/${trk.id}.mp3`,
-          );
+          const finalAudioUrl =
+            rec.id && trk.suno_audio_id === String(rec.id) && isManagedTrackStorageUrl(trk.audio_url)
+              ? trk.audio_url
+              : await copyFirstAvailableFileToStorage(
+                supabaseAdmin,
+                rec.audioUrls,
+                "tracks",
+                `audio/${trk.id}.mp3`,
+              );
 
           // Download cover with fallback chain
-          let finalCoverUrl: string | null = null;
-          if (rec.imageUrls.length > 0) {
+          let finalCoverUrl: string | null = trk.cover_url;
+          if (!finalCoverUrl && rec.imageUrls.length > 0) {
             finalCoverUrl = await copyFirstAvailableFileToStorage(
               supabaseAdmin,
               rec.imageUrls,
@@ -356,10 +367,31 @@ serve(async (req) => {
 
           const durationSec = await resolveTrackDuration(rec.duration, [finalAudioUrl, ...rec.audioUrls]);
 
-          const { error: updateError } = await supabaseClient
+          let master: { url: string; lufs: number; peakDb: number };
+          try {
+            master = await createAndStorePlaybackMaster(supabaseAdmin, trk.id, finalAudioUrl);
+          } catch (masterError) {
+            console.error(`Master creation failed for polling track ${trk.id}:`, masterError);
+            await supabaseClient.from("tracks").update({
+              audio_url: finalAudioUrl,
+              cover_url: finalCoverUrl,
+              ...(durationSec != null ? { duration: durationSec } : {}),
+              status: "processing",
+              error_message: "Оригинал сохранён, мастер −10 LUFS временно не создан. Обработка будет повторена.",
+              suno_audio_id: rec.id ? String(rec.id) : null,
+            }).eq("id", trk.id).eq("user_id", userId);
+            continue;
+          }
+
+          // Completion fields are protected from user-token writes by the custom
+          // REST policy. This verified server-side polling path must use service role.
+          const { error: updateError } = await supabaseAdmin
             .from("tracks")
             .update({
               audio_url: finalAudioUrl,
+              master_audio_url: master.url,
+              normalized_audio_url: master.url,
+              lufs_normalized: true,
               cover_url: finalCoverUrl,
               ...(durationSec != null ? { duration: durationSec } : {}),
               status: "completed",
@@ -372,6 +404,14 @@ serve(async (req) => {
           if (updateError) {
             console.error(`Error updating track ${trk.id}:`, updateError);
           } else {
+            await supabaseAdmin.from("track_health_reports").upsert({
+              track_id: trk.id,
+              normalized_audio_url: master.url,
+              lufs_normalized: master.lufs,
+              peak_db: master.peakDb,
+              normalization_status: "completed",
+              updated_at: new Date().toISOString(),
+            }, { onConflict: "track_id" });
             completedByPolling = true;
             await supabaseAdmin.from("generation_logs").update({ status: "completed" }).eq("track_id", trk.id);
             console.log(`Track ${trk.id} (${trk.title}) completed via polling, record[${recordIndex}], suno_audio_id=${rec.id}`);

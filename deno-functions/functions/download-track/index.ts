@@ -8,8 +8,12 @@ const corsHeaders = {
 
 function toInternalAssetUrl(url: string, supabaseUrl: string, ffmpegApiUrl?: string | null): string {
   const ffmpegInternalBase = ffmpegApiUrl
-    ? ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "")
+    ? ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav|convert-format)\/?$/, "")
     : "http://ffmpeg-api:3001";
+
+  if (url.startsWith("/")) {
+    return `${supabaseUrl.replace(/\/$/, "")}${url}`;
+  }
 
   if (url.includes("localhost")) {
     return url.replace("http://localhost", supabaseUrl.replace(/\/$/, ""));
@@ -24,6 +28,11 @@ function toInternalAssetUrl(url: string, supabaseUrl: string, ffmpegApiUrl?: str
   }
 
   return url;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 serve(async (req) => {
@@ -79,7 +88,7 @@ serve(async (req) => {
     // Get track info
     const { data: track, error: trackError } = await supabase
       .from("tracks")
-      .select("id, user_id, title, audio_url, status, created_at")
+      .select("id, user_id, title, audio_url, master_audio_url, normalized_audio_url, status, created_at")
       .eq("id", track_id)
       .single();
 
@@ -104,6 +113,8 @@ serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    const downloadSourceUrl = track.master_audio_url || track.normalized_audio_url || track.audio_url;
 
     // Get user profile for artist name
     const { data: profile } = await supabase
@@ -155,6 +166,11 @@ serve(async (req) => {
         }
         extendedMetadata.custom["TXXX_BLOCKCHAIN_DATE"] = deposit.deposited_at;
         extendedMetadata.comment += ` | Blockchain: ${deposit.metadata_hash.substring(0, 16)}...`;
+      } else {
+        return new Response(
+          JSON.stringify({ error: "Блокчейн-метка ещё не готова" }),
+          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
     }
 
@@ -162,12 +178,12 @@ serve(async (req) => {
     if (!ffmpegApiUrl || !ffmpegApiSecret) {
       console.log("FFmpeg API not configured, returning original");
       if (stream) {
-        return await proxyFile(track.audio_url, filename, corsHeaders, ffmpegApiUrl ?? undefined);
+        return await proxyFile(downloadSourceUrl, filename, corsHeaders, ffmpegApiUrl ?? undefined);
       }
       return new Response(
         JSON.stringify({ 
           success: true, 
-          download_url: track.audio_url,
+          download_url: downloadSourceUrl,
           filename,
           cleaned: false,
         }),
@@ -175,22 +191,27 @@ serve(async (req) => {
       );
     }
 
-    // Call FFmpeg API for loudness normalization + metadata branding
-    console.log("Calling FFmpeg API for normalize + metadata...");
+    // The persistent master is already normalized. Downloads only replace metadata
+    // with codec copy, so the audio stream is never encoded again.
+    console.log("Calling FFmpeg API for metadata-only copy...");
+    const cacheKey = await sha256Hex(JSON.stringify({
+      version: 2,
+      track_id,
+      audio_url: downloadSourceUrl,
+      metadata: extendedMetadata,
+    }));
     
-    const baseUrl = ffmpegApiUrl!.replace(/\/(clean-metadata|analyze|normalize)\/?$/, "");
-    const ffmpegResponse = await fetch(`${baseUrl}/normalize`, {
+    const baseUrl = ffmpegApiUrl!.replace(/\/(clean-metadata|analyze|normalize|process-wav|convert-format)\/?$/, "");
+    const ffmpegResponse = await fetch(`${baseUrl}/clean-metadata`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-api-key": ffmpegApiSecret!,
       },
       body: JSON.stringify({
-        audio_url: toInternalAssetUrl(track.audio_url, supabaseUrl, ffmpegApiUrl),
-        target_lufs: -14,
-        strip_metadata: true,
-        brand_metadata: true,
+        audio_url: toInternalAssetUrl(downloadSourceUrl, supabaseUrl, ffmpegApiUrl),
         metadata: extendedMetadata,
+        cache_key: cacheKey,
       }),
     });
 
@@ -218,7 +239,7 @@ serve(async (req) => {
     const ffmpegResult = await ffmpegResponse.json();
     console.log("FFmpeg API response:", ffmpegResult);
 
-    let outputUrl = ffmpegResult.output_url || ffmpegResult.normalized_url || track.audio_url;
+    let outputUrl = ffmpegResult.output_url || ffmpegResult.cleaned_url || downloadSourceUrl;
     const cleaned = !!(ffmpegResult.output_url || ffmpegResult.normalized_url);
 
     // FFmpeg API returns public BASE_URL in output_url, but we're inside Docker —
@@ -232,13 +253,19 @@ serve(async (req) => {
       }
     }
 
-    // Increment download count
-    await supabase.rpc("increment_download_count", { track_id });
-
     // Stream mode: proxy the file through edge function to avoid CORS
     if (stream) {
       console.log("Streaming file to client:", outputUrl);
-      return await proxyFile(outputUrl, filename, corsHeaders, ffmpegApiUrl ?? undefined);
+      const response = await proxyFile(outputUrl, filename, corsHeaders, ffmpegApiUrl ?? undefined);
+      if (response.ok) {
+        const { error: countError } = await supabase.rpc("increment_track_download_count", {
+          p_track_id: track_id,
+        });
+        if (countError) {
+          console.error("Failed to increment track download count:", countError);
+        }
+      }
+      return response;
     }
 
     // JSON mode (legacy)
@@ -281,7 +308,7 @@ async function proxyFile(
   try {
     let internalUrl = url;
     const ffmpegInternalBase = ffmpegApiUrl
-      ? ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "")
+      ? ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav|convert-format)\/?$/, "")
       : "http://ffmpeg-api:3100";
     if (url.includes('localhost')) {
       internalUrl = url.replace('http://localhost', 'http://nginx');

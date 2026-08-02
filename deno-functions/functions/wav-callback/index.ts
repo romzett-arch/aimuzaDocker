@@ -87,7 +87,7 @@ async function processWavViaFfmpeg(
       },
       body: JSON.stringify({
         audio_url: rawWavUrl,
-        target_lufs: -14,
+        target_lufs: -10,
         metadata: {
           title: trackTitle || "",
           artist: artistName || "AIMuza Artist",
