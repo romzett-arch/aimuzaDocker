@@ -56,6 +56,11 @@ import { assertAdsMutationAccess } from '../security/ads-rest-policy.js';
 import { assertRadioMutationAccess } from '../security/radio-rest-policy.js';
 import { assertAdminEmailAccess } from '../security/admin-email-rest-policy.js';
 import { assertCatalogMutationAccess } from '../security/catalog-rest-policy.js';
+import {
+  applyUsersAccessInsertOwnership,
+  assertUsersAccessMutation,
+  getUsersAccessMutationScope,
+} from '../security/users-access-rest-policy.js';
 
 const PROTECTED_COLUMNS = new Set([
   'role', 'is_super_admin', 'balance', 'likes_count', 'plays_count',
@@ -64,6 +69,8 @@ const PROTECTED_COLUMNS = new Set([
   'chart_position', 'chart_score', 'weighted_likes_sum', 'weighted_dislikes_sum',
   'created_at', 'downloads_count', 'shares_count', 'xp', 'level', 'tier',
   'vote_weight', 'reputation_score', 'authority_score',
+  'is_verified', 'verified_at', 'verified_by', 'verification_type',
+  'is_blocked', 'blocked_at', 'blocked_by', 'blocked_reason',
 ]);
 
 const MAX_BATCH_SIZE = 100;
@@ -116,8 +123,9 @@ export async function handlePost(req, res) {
     assertGalleryMutationAccess(req.params.table, req.user, 'insert');
     assertAdsMutationAccess(req.params.table, req.user, 'insert', req.body || {});
     assertRadioMutationAccess(req.params.table, req.user);
+    assertUsersAccessMutation(req.params.table, req.user, 'insert');
     const inputRows = Array.isArray(req.body) ? req.body : [req.body];
-    const rows = inputRows.map(row => applyGalleryInsertOwnership(req.params.table, applyMusicInsertOwnership(req.params.table, applySupportQaInsertOwnership(req.params.table, applyEventsInsertOwnership(
+    const rows = inputRows.map(row => applyUsersAccessInsertOwnership(req.params.table, applyGalleryInsertOwnership(req.params.table, applyMusicInsertOwnership(req.params.table, applySupportQaInsertOwnership(req.params.table, applyEventsInsertOwnership(
       req.params.table,
       applyMarketplaceInsertOwnership(
         req.params.table,
@@ -125,7 +133,7 @@ export async function handlePost(req, res) {
         req.user,
       ),
       req.user,
-    ), req.user), req.user), req.user));
+    ), req.user), req.user), req.user), req.user));
     if (rows.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'No data' }); }
     if (rows.length > MAX_BATCH_SIZE) { await client.query('ROLLBACK'); return res.status(400).json({ error: `Batch size exceeds limit of ${MAX_BATCH_SIZE}` }); }
 
@@ -255,6 +263,7 @@ export async function handlePatch(req, res) {
     assertGalleryMutationAccess(req.params.table, req.user, 'update');
     assertAdsMutationAccess(req.params.table, req.user, 'update', req.body || {});
     assertRadioMutationAccess(req.params.table, req.user);
+    assertUsersAccessMutation(req.params.table, req.user, 'update');
     const updates = applyGalleryUpdateValues(req.params.table, req.body, req.user);
     const validCols = Object.keys(updates).filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
     const cols = filterGalleryMutationColumns(req.params.table, filterMusicMutationColumns(req.params.table, filterSupportQaMutationColumns(req.params.table, filterEconomyMutationColumns(
@@ -318,10 +327,15 @@ export async function handlePatch(req, res) {
       req.user,
       idx + filterParams.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length,
     );
-    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(adjustedWhere, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql);
+    const usersAccessScope = getUsersAccessMutationScope(
+      req.params.table,
+      req.user,
+      idx + filterParams.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + galleryScope.params.length,
+    );
+    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(adjustedWhere, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql), usersAccessScope.sql);
 
     const sql = `UPDATE ${table} SET ${setClauses.join(', ')} ${scopedWhere} RETURNING *`;
-    const result = await client.query(sql, [...setParams, ...filterParams, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params]);
+    const result = await client.query(sql, [...setParams, ...filterParams, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params, ...usersAccessScope.params]);
 
     await client.query('COMMIT');
 
@@ -372,6 +386,7 @@ export async function handleDelete(req, res) {
     assertGalleryMutationAccess(req.params.table, req.user, 'delete');
     assertAdsMutationAccess(req.params.table, req.user, 'delete');
     assertRadioMutationAccess(req.params.table, req.user);
+    assertUsersAccessMutation(req.params.table, req.user, 'delete');
     const { where, params } = parseFilters(req.query);
     if (!where) {
       await client.query('ROLLBACK');
@@ -409,9 +424,14 @@ export async function handleDelete(req, res) {
       req.user,
       params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + 1,
     );
-    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql);
+    const usersAccessScope = getUsersAccessMutationScope(
+      req.params.table,
+      req.user,
+      params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + galleryScope.params.length + 1,
+    );
+    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql), usersAccessScope.sql);
     const sql = `DELETE FROM ${table} ${scopedWhere} RETURNING *`;
-    const result = await client.query(sql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params]);
+    const result = await client.query(sql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params, ...usersAccessScope.params]);
 
     await client.query('COMMIT');
 

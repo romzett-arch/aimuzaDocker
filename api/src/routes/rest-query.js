@@ -11,6 +11,7 @@ import { assertAdsReadAccess } from '../security/ads-rest-policy.js';
 import { getRadioReadScope } from '../security/radio-rest-policy.js';
 import { assertAdminEmailAccess } from '../security/admin-email-rest-policy.js';
 import { getCatalogReadScope } from '../security/catalog-rest-policy.js';
+import { getUsersAccessReadScope } from '../security/users-access-rest-policy.js';
 
 function addScope(where, scopeSql) {
   if (!scopeSql) return where;
@@ -38,9 +39,10 @@ export async function handleHead(req, res) {
     const musicScope = getMusicReadScope(req.params.table, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + 1);
     const galleryScope = getGalleryReadScope(req.params.table, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + 1);
     const radioScope = getRadioReadScope(req.params.table, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + galleryScope.params.length + 1);
-    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql), radioScope.sql), catalogScope.sql);
+    const usersAccessScope = getUsersAccessReadScope(req.params.table, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + galleryScope.params.length + radioScope.params.length + 1);
+    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql), radioScope.sql), catalogScope.sql), usersAccessScope.sql);
     const countSql = `SELECT COUNT(*) FROM ${table} ${scopedWhere}`;
-    const cr = await client.query(countSql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params, ...radioScope.params]);
+    const cr = await client.query(countSql, [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params, ...radioScope.params, ...usersAccessScope.params]);
 
     await client.query('COMMIT');
     res.set('Content-Range', `0-0/${cr.rows[0].count}`);
@@ -49,7 +51,7 @@ export async function handleHead(req, res) {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[REST HEAD]', err.message);
-    res.status(200).set('Content-Range', '0-0/0').set('X-Total-Count', '0').end();
+    res.status(err.status || 400).json({ error: err.message || 'Count query failed', code: err.code || 'REST_HEAD_ERROR' });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -80,8 +82,9 @@ export async function handleGet(req, res) {
     const musicScope = getMusicReadScope(tableName, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + 1);
     const galleryScope = getGalleryReadScope(tableName, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + 1);
     const radioScope = getRadioReadScope(tableName, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + galleryScope.params.length + 1);
-    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql), radioScope.sql), catalogScope.sql);
-    const scopedParams = [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params, ...radioScope.params];
+    const usersAccessScope = getUsersAccessReadScope(tableName, req.user, params.length + scope.params.length + marketplaceScope.params.length + eventsScope.params.length + economyScope.params.length + supportQaScope.params.length + musicScope.params.length + galleryScope.params.length + radioScope.params.length + 1);
+    const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql), radioScope.sql), catalogScope.sql), usersAccessScope.sql);
+    const scopedParams = [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params, ...radioScope.params, ...usersAccessScope.params];
     const order = parseOrder(req.query.order);
     const limit = parseInt(req.query.limit) || null;
     const offset = parseInt(req.query.offset) || 0;

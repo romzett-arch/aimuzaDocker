@@ -8,6 +8,7 @@ const ADMIN_ONLY_RPC = new Set([
 ]);
 
 const STAFF_ONLY_RPC = new Set([
+  'close_voting_topic_on_rejection',
   'delete_forum_topic_cascade',
   'forum_issue_sanction',
   'forum_lift_sanction',

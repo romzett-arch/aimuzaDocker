@@ -13,6 +13,9 @@ const UPLOADS_DIR = path.resolve(process.env.UPLOADS_DIR || '/opt/aimuza/data/up
 
 const MUSIC_TABLES = new Set([
   'tracks',
+  'copyright_requests',
+  'moderation_events',
+  'track_health_reports',
   'addon_services',
   'track_addons',
   'silk_releases',
@@ -27,7 +30,7 @@ const MUSIC_TABLES = new Set([
 const SILK_TABLES = new Set([...MUSIC_TABLES].filter((table) => table.startsWith('silk_')));
 
 const USER_TRACK_PROTECTED_COLUMNS = new Set([
-  'id', 'user_id', 'created_at', 'moderation_status', 'moderation_reviewed_by',
+  'id', 'user_id', 'created_at', 'status', 'moderation_status', 'moderation_reviewed_by',
   'moderation_reviewed_at', 'moderation_notes', 'moderation_rejection_reason',
   'voting_result', 'voting_likes_count', 'voting_dislikes_count', 'voting_started_at',
   'voting_ends_at', 'voting_type', 'distribution_status', 'distribution_submitted_at',
@@ -91,6 +94,27 @@ export function getMusicReadScope(table, user, startIndex = 1) {
     };
   }
 
+  if (table === 'copyright_requests') {
+    if (isTrackStaff(user)) return { sql: '', params: [] };
+    if (!user?.id) return { sql: 'FALSE', params: [] };
+    return { sql: `"user_id" = $${startIndex}`, params: [user.id] };
+  }
+
+  if (table === 'track_health_reports') {
+    if (isTrackStaff(user)) return { sql: '', params: [] };
+    if (!user?.id) return { sql: 'FALSE', params: [] };
+    return {
+      sql: `EXISTS (SELECT 1 FROM public.tracks moderation_track WHERE moderation_track.id = "track_id" AND moderation_track.user_id = $${startIndex})`,
+      params: [user.id],
+    };
+  }
+
+  if (table === 'moderation_events') {
+    if (isTrackStaff(user)) return { sql: '', params: [] };
+    if (!user?.id) return { sql: 'FALSE', params: [] };
+    return { sql: `"track_user_id" = $${startIndex}`, params: [user.id] };
+  }
+
   if (table === 'addon_services') {
     if (isMusicAdmin(user)) return { sql: '', params: [] };
     return { sql: '"is_active" IS TRUE', params: [] };
@@ -140,6 +164,10 @@ export function assertMusicMutationAccess(table, user, operation, row = {}) {
   requireAuthenticated(user);
 
   if (table === 'tracks') return;
+  if (['copyright_requests', 'moderation_events', 'track_health_reports'].includes(table)) {
+    if (user.role === 'service_role') return;
+    throw httpError(403, 'Moderation data can only be changed through a server command', 'MODERATION_RPC_REQUIRED');
+  }
   if (table === 'addon_services') {
     if (!isMusicAdmin(user)) throw httpError(403, 'Administrator access required', 'ADMIN_REQUIRED');
     return;

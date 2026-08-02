@@ -12,6 +12,7 @@ import { assertEconomyRpcAccess, ECONOMY_SERVICE_ROLE_ONLY_RPC } from '../securi
 import { assertQaRpcAccess } from '../security/qa-rpc-policy.js';
 import { assertAdsRpcAccess } from '../security/ads-rpc-policy.js';
 import { assertRadioRpcAccess } from '../security/radio-rpc-policy.js';
+import { assertModerationRpcAccess } from '../security/moderation-rpc-policy.js';
 
 const router = Router();
 const RPC_ERROR_SQL_BLACKLIST = /\b(select|insert|update|delete|syntax|column|relation|constraint|violates|duplicate key|null value|permission denied|operator does not exist|invalid input syntax)\b/i;
@@ -19,6 +20,8 @@ const RPC_BUSINESS_CODE_RE = /^[a-z][a-z0-9_]+$/i;
 
 const ALLOWED_RPC = new Set([
   'accept_role_invitation', 'add_user_credits', 'admin_add_xp',   'admin_annul_vote', 'admin_approve_purchase',
+  'admin_cancel_role_invitation', 'admin_create_role_invitation', 'admin_process_verification',
+  'admin_reconcile_expired_blocks', 'admin_revoke_user_role', 'admin_set_user_permission',
   'admin_adjust_user_xp', 'admin_end_voting_early', 'admin_extend_promotion', 'admin_get_active_votings',
   'admin_get_user_financial_summary', 'admin_send_mass_broadcast', 'admin_set_maintenance_access',
   'super_admin_assign_user_tariff', 'super_admin_revoke_user_tariff',
@@ -31,6 +34,8 @@ const ALLOWED_RPC = new Set([
   'check_achievements_after_finalize', 'check_contest_achievements',
   'check_maintenance_access', 'check_user_achievements', 'check_voting_eligibility',
   'close_voting_topic_on_rejection',
+  'get_admin_moderation_history', 'get_admin_moderation_stats', 'moderate_track',
+  'request_track_copyright_evidence', 'respond_copyright_request', 'resolve_copyright_request',
   'create_paid_user_prompt', 'create_voting_forum_topic', 'deactivate_expired_promotions', 'debit_balance', 'debit_for_generation',
   'deduct_user_xp', 'delete_forum_topic_cascade', 'delete_user_prompt', 'delete_user_prompts', 'finalize_contest',
   'expire_blocks', 'finalize_contest_winners', 'find_similar_qa_tickets', 'find_user_by_short_id',
@@ -90,6 +95,7 @@ const ALLOWED_RPC = new Set([
   'request_seller_payout', 'resolve_qa_ticket', 'resolve_track_voting', 'revoke_share_token',
   'revoke_verification', 'revoke_vote', 'safe_award_xp',
   'send_silk_release_to_voting', 'send_track_to_voting', 'submit_contest_entry', 'take_voting_snapshot',
+  'submit_verification_request',
   'unblock_user', 'unhide_contest_comment', 'update_last_seen',
   'update_referral_settings',
   'update_voter_ranks', 'vote_qa_ticket', 'withdraw_contest_entry',
@@ -160,6 +166,7 @@ async function handleRpc(req, res) {
     assertQaRpcAccess(fnName, req.user, params);
     assertAdsRpcAccess(fnName, req.user, params);
     assertRadioRpcAccess(fnName, req.user, params);
+    assertModerationRpcAccess(fnName, req.user);
     if (fnName === 'cast_weighted_vote') {
       // Клиент не может подменить адрес: антифрод получает только IP,
       // вычисленный Express с учётом доверенного reverse proxy.
