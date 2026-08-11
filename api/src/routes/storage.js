@@ -14,6 +14,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { pool } from '../db.js';
+import { assertOwnedMediaPath } from '../security/storage-path-policy.js';
 
 const router = Router();
 
@@ -306,6 +307,7 @@ router.post('/object/:bucket/*', requireStorageAuth, upload.any(), async (req, r
     await assertSilkPathAccess(req, bucket, filePath);
     await assertGalleryPathAccess(req, bucket, filePath);
     assertAdvertisingStorageAccess(req, bucket);
+    assertOwnedMediaPath(req.user, bucket, filePath);
 
     if (!/^[a-zA-Z0-9_-]+$/.test(bucket)) {
       return res.status(400).json({ error: 'Invalid bucket name' });
@@ -374,6 +376,7 @@ router.put('/object/:bucket/*', requireStorageAuth, upload.any(), async (req, re
     await assertSilkPathAccess(req, bucket, filePath);
     await assertGalleryPathAccess(req, bucket, filePath);
     assertAdvertisingStorageAccess(req, bucket);
+    assertOwnedMediaPath(req.user, bucket, filePath);
 
     const ext = path.extname(filePath).toLowerCase();
     const isCertificatesBucket = bucket === 'certificates';
@@ -513,6 +516,7 @@ router.delete('/object/:bucket', requireStorageAuth, async (req, res) => {
       if (typeof p !== 'string' || !p) continue;
       await assertSilkPathAccess(req, bucket, p);
       await assertGalleryPathAccess(req, bucket, p);
+      assertOwnedMediaPath(req.user, bucket, p);
       const fullPath = safePath(bucket, p);
       if (fullPath && fs.existsSync(fullPath)) {
         fs.unlinkSync(fullPath);

@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import type { CheckStep } from "./types.ts";
 
 const corsHeaders = {
@@ -8,6 +8,14 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
+
+interface TrackRecord {
+  id: string;
+  user_id: string;
+  title: string;
+  audio_url: string | null;
+  source_type: string;
+}
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -20,9 +28,13 @@ function toHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function resolveAudioUrl(audioUrl: string, supabaseUrl: string): string {
-  if (/^https?:\/\//i.test(audioUrl)) return audioUrl;
-  return new URL(audioUrl.startsWith("/") ? audioUrl : `/${audioUrl}`, supabaseUrl).toString();
+function resolveAudioUrl(audioUrl: string, supabaseUrl: string, userId: string): string {
+  const parsed = new URL(audioUrl, supabaseUrl);
+  const expectedPrefix = `/storage/v1/object/public/tracks/${userId}/`;
+  if (!parsed.pathname.startsWith(expectedPrefix)) {
+    throw new Error("Некорректный путь аудиофайла трека");
+  }
+  return new URL(parsed.pathname, supabaseUrl).toString();
 }
 
 serve(async (req) => {
@@ -52,22 +64,25 @@ serve(async (req) => {
 
     const { data: track, error: trackError } = await serviceClient
       .from("tracks")
-      .select("id,user_id,title,audio_url")
+      .select("id,user_id,title,audio_url,source_type")
       .eq("id", trackId)
       .single();
     if (trackError || !track) return jsonResponse({ success: false, error: "Track not found" }, 404);
+    const trackRecord = track as unknown as TrackRecord;
 
-    const { data: roleRows } = await serviceClient
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", authData.user.id);
-    const isStaff = roleRows?.some((row) => ["admin", "moderator", "super_admin"].includes(row.role));
-    if (track.user_id !== authData.user.id && !isStaff) {
-      return jsonResponse({ success: false, error: "Forbidden" }, 403);
+    if (trackRecord.user_id !== authData.user.id) {
+      const { data: canModerate, error: permissionError } = await serviceClient.rpc("has_permission", {
+        _user_id: authData.user.id,
+        _category_key: "moderation",
+      });
+      if (permissionError || canModerate !== true) {
+        return jsonResponse({ success: false, error: "Forbidden" }, 403);
+      }
     }
-    if (!track.audio_url) throw new Error("У трека отсутствует аудиофайл");
+    if (trackRecord.source_type !== "uploaded") throw new Error("Проверка доступна только для загруженных треков");
+    if (!trackRecord.audio_url) throw new Error("У трека отсутствует аудиофайл");
 
-    const audioResponse = await fetch(resolveAudioUrl(track.audio_url, supabaseUrl));
+    const audioResponse = await fetch(resolveAudioUrl(trackRecord.audio_url, supabaseUrl, trackRecord.user_id));
     if (!audioResponse.ok) throw new Error(`Не удалось получить аудио: HTTP ${audioResponse.status}`);
     const declaredSize = Number(audioResponse.headers.get("content-length") || 0);
     if (declaredSize > MAX_AUDIO_BYTES) throw new Error("Аудиофайл превышает лимит 100 МБ");
@@ -115,7 +130,7 @@ serve(async (req) => {
 
     await serviceClient.from("distribution_logs").insert({
       track_id: trackId,
-      user_id: track.user_id,
+      user_id: trackRecord.user_id,
       action: isClean ? "plagiarism_check_clean" : "plagiarism_check_flagged",
       stage: "upload",
       details: { mode: "internal_sha256", hash, matchCount: matches?.length || 0 },

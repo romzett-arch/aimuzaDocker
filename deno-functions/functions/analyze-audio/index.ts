@@ -57,6 +57,16 @@ function resolveTrustedTrackUrl(
   return trustedUrls.has(normalizedCandidate) ? normalizedCandidate : null;
 }
 
+function resolveManagedUploadedTrackUrl(rawUrl: string, userId: string, requestUrl: string): string | null {
+  const normalized = normalizeTrackUrl(rawUrl, requestUrl);
+  if (!normalized) return null;
+  const parsed = new URL(normalized);
+  const expectedPrefix = `/storage/v1/object/public/tracks/${userId}/`;
+  if (!parsed.pathname.startsWith(expectedPrefix)) return null;
+  const baseUrl = Deno.env.get("BASE_URL") || new URL(requestUrl).origin;
+  return new URL(parsed.pathname, baseUrl).toString();
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -94,7 +104,7 @@ serve(async (req: Request) => {
     if (track_id) {
       const { data: track, error: trackError } = await supabase
         .from("tracks")
-        .select("id, user_id, audio_url, master_audio_url, normalized_audio_url")
+        .select("id, user_id, source_type, audio_url, master_audio_url, normalized_audio_url")
         .eq("id", track_id)
         .maybeSingle();
 
@@ -103,7 +113,13 @@ serve(async (req: Request) => {
       }
 
       if (track.user_id !== user.id) {
-        throw new Error("Forbidden");
+        const { data: canModerate, error: permissionError } = await supabase.rpc("has_permission", {
+          _user_id: user.id,
+          _category_key: "moderation",
+        });
+        if (permissionError || canModerate !== true) {
+          throw new Error("Forbidden");
+        }
       }
 
       trustedAudioUrl = resolveTrustedTrackUrl(
@@ -114,6 +130,10 @@ serve(async (req: Request) => {
 
       if (!trustedAudioUrl) {
         throw new Error("audio_url must match the track file URL");
+      }
+      if (track.source_type === "uploaded") {
+        trustedAudioUrl = resolveManagedUploadedTrackUrl(trustedAudioUrl, track.user_id, req.url);
+        if (!trustedAudioUrl) throw new Error("Invalid uploaded track storage path");
       }
     }
 

@@ -32,6 +32,9 @@ const SILK_TABLES = new Set([...MUSIC_TABLES].filter((table) => table.startsWith
 const USER_TRACK_PROTECTED_COLUMNS = new Set([
   'id', 'user_id', 'created_at', 'status', 'moderation_status', 'moderation_reviewed_by',
   'moderation_reviewed_at', 'moderation_notes', 'moderation_rejection_reason',
+  'audio_url', 'cover_url', 'source_type', 'content_sha256',
+  'copyright_check_status', 'copyright_check_result', 'copyright_checked_at',
+  'plagiarism_check_status', 'plagiarism_check_result',
   'voting_result', 'voting_likes_count', 'voting_dislikes_count', 'voting_started_at',
   'voting_ends_at', 'voting_type', 'distribution_status', 'distribution_submitted_at',
   'distribution_reviewed_at', 'distribution_rejection_reason', 'distribution_platforms',
@@ -68,7 +71,42 @@ export function isMusicAdmin(user) {
 
 export function isTrackStaff(user) {
   if (isMusicAdmin(user)) return true;
-  return String(user?.app_role || '').toLowerCase() === 'moderator';
+  return String(user?.app_role || '').toLowerCase() === 'moderator'
+    && user?.permissions?.includes('moderation');
+}
+
+function getManagedObjectPath(value, bucket) {
+  if (!value) return null;
+  let pathname;
+  try {
+    pathname = new URL(String(value), 'https://storage.invalid').pathname;
+  } catch {
+    return null;
+  }
+  const prefix = `/storage/v1/object/public/${bucket}/`;
+  if (!pathname.startsWith(prefix)) return null;
+  let objectPath;
+  try {
+    objectPath = decodeURIComponent(pathname.slice(prefix.length)).replace(/\\/g, '/');
+  } catch {
+    return null;
+  }
+  const segments = objectPath.split('/');
+  if (!objectPath || segments.some((segment) => !segment || segment === '.' || segment === '..')) return null;
+  return objectPath;
+}
+
+function assertOwnedTrackAsset(value, bucket, user) {
+  if (!value) return;
+  const objectPath = getManagedObjectPath(value, bucket);
+  if (!objectPath || !objectPath.startsWith(`${user.id}/`)) {
+    throw httpError(403, `Invalid ${bucket} asset path`, 'INVALID_TRACK_ASSET_PATH');
+  }
+  const bucketRoot = path.resolve(UPLOADS_DIR, bucket);
+  const fullPath = path.resolve(bucketRoot, objectPath);
+  if (!fullPath.startsWith(`${bucketRoot}${path.sep}`) || !fs.existsSync(fullPath) || fs.statSync(fullPath).size <= 0) {
+    throw httpError(400, `Uploaded ${bucket} asset was not found`, 'TRACK_ASSET_NOT_FOUND');
+  }
 }
 
 export function getMusicReadScope(table, user, startIndex = 1) {
@@ -219,7 +257,23 @@ export function applyMusicInsertOwnership(table, row, user) {
   if (table === 'track_addons') {
     return { ...row, user_id: user.id, status: 'pending', result_url: null };
   }
-  if (table === 'tracks' || table === 'silk_releases' || table === 'silk_release_requests') {
+  if (table === 'tracks') {
+    if (!row.audio_url) return { ...row, user_id: user.id };
+    return {
+      ...row,
+      user_id: user.id,
+      source_type: 'uploaded',
+      status: 'pending',
+      moderation_status: 'none',
+      is_public: false,
+      content_sha256: null,
+      copyright_check_status: 'checking',
+      copyright_check_result: null,
+      plagiarism_check_status: 'pending',
+      plagiarism_check_result: null,
+    };
+  }
+  if (table === 'silk_releases' || table === 'silk_release_requests') {
     return { ...row, user_id: user.id };
   }
   if (table === 'silk_release_events') {
@@ -233,7 +287,11 @@ export function filterMusicMutationColumns(table, columns, user, isInsert = fals
   if (!isMusicTable(table) || isMusicAdmin(user)) return columns;
   if (table === 'tracks') {
     const protectedColumns = isInsert
-      ? new Set([...USER_TRACK_PROTECTED_COLUMNS].filter((column) => column !== 'user_id'))
+      ? new Set([...USER_TRACK_PROTECTED_COLUMNS].filter((column) => ![
+        'user_id', 'audio_url', 'cover_url', 'source_type',
+        'copyright_check_status', 'copyright_check_result', 'copyright_checked_at',
+        'plagiarism_check_status', 'plagiarism_check_result',
+      ].includes(column)))
       : USER_TRACK_PROTECTED_COLUMNS;
     return columns.filter((column) => !protectedColumns.has(column));
   }
@@ -317,6 +375,12 @@ export function getMusicMutationScope(table, user, startIndex = 1, operation = '
 
 export async function assertMusicInsertRelation(client, table, row, user) {
   if (isMusicAdmin(user)) return;
+
+  if (table === 'tracks') {
+    assertOwnedTrackAsset(row.audio_url, 'tracks', user);
+    assertOwnedTrackAsset(row.cover_url, 'covers', user);
+    return;
+  }
 
   if (table === 'track_addons') {
     const relation = await client.query(

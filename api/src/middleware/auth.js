@@ -45,7 +45,14 @@ export async function authMiddleware(req, res, next) {
               THEN (raw_user_meta_data->>'session_version')::integer
               ELSE 0 END,
          0
-       ) AS session_version
+       ) AS session_version,
+       COALESCE(ARRAY(
+         SELECT DISTINCT category.key
+         FROM public.moderator_permissions permission
+         JOIN public.permission_categories category ON category.id = permission.category_id
+         WHERE permission.user_id = auth.users.id
+           AND category.is_active IS TRUE
+       ), ARRAY[]::text[]) AS permissions
        FROM auth.users
        WHERE id = $1`,
       [decoded.sub]
@@ -60,6 +67,7 @@ export async function authMiddleware(req, res, next) {
       role: decoded.role || 'authenticated',
       app_role: decoded.app_role || 'user',
       is_super_admin: decoded.is_super_admin || false,
+      permissions: versionResult.rows[0]?.permissions || [],
       session_version: tokenVersion,
     };
   } catch (err) {

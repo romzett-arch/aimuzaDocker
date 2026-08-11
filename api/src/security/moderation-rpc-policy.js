@@ -14,8 +14,9 @@ const AUTHENTICATED_RPC = new Set([
 
 function isStaff(user) {
   if (user?.role === 'service_role') return true;
-  return ['admin', 'moderator', 'super_admin', 'superadmin']
-    .includes(String(user?.app_role || '').toLowerCase());
+  const role = String(user?.app_role || '').toLowerCase();
+  if (['admin', 'super_admin', 'superadmin'].includes(role)) return true;
+  return role === 'moderator' && user?.permissions?.includes('moderation');
 }
 
 export function assertModerationRpcAccess(fnName, user) {
