@@ -5,6 +5,7 @@ $ErrorActionPreference = "Stop"
 $reg = "romzett"
 $images = @("aimuza-api", "aimuza-frontend", "aimuza-realtime", "aimuza-ffmpeg", "aimuza-radio", "aimuza-deno")
 $localNames = @("deploy-api", "deploy-frontend", "deploy-realtime", "deploy-ffmpeg-api", "deploy-radio", "deploy-deno-functions")
+$version = (Get-Content (Join-Path $PSScriptRoot "..\package.json") | ConvertFrom-Json).version
 
 Write-Host "Push to Docker Hub: $reg"
 Write-Host ""
@@ -19,11 +20,13 @@ Write-Host ""
 Write-Host "Step 2: Tag and push..."
 for ($i = 0; $i -lt $images.Length; $i++) {
     $local = "$($localNames[$i]):latest"
-    $remote = "$reg/$($images[$i]):latest"
-    Write-Host "  $local -> $remote"
-    docker tag $local $remote
-    docker push $remote
-    if ($LASTEXITCODE -ne 0) { exit 1 }
+    foreach ($tag in @("latest", "v$version")) {
+        $remote = "$reg/$($images[$i]):$tag"
+        Write-Host "  $local -> $remote"
+        docker tag $local $remote
+        docker push $remote
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+    }
 }
 
 Write-Host ""
