@@ -78,7 +78,8 @@ const ALLOWED_RPC = new Set([
   'messaging_send_message', 'messaging_unblock_user',
   'pin_comment', 'process_payment_completion', 'process_payment_refund', 'process_payout_request',
   'process_store_item_purchase', 'purchase_ad_free', 'purchase_track_boost',
-  'record_lyrics_blockchain_deposit', 'register_referral',
+  'begin_track_deposit', 'fail_track_deposit_and_refund',
+  'record_feed_listen', 'record_lyrics_blockchain_deposit', 'register_referral',
   'process_contest_lifecycle',
   'create_support_ticket', 'promote_support_ticket_to_qa', 'qa_increment_reports_total', 'qa_recalculate_priority', 'qa_update_tester_tier',
   'admin_set_radio_queue_override', 'admin_update_radio_config',
@@ -105,6 +106,8 @@ const ALLOWED_RPC = new Set([
 // These functions are internal transaction boundaries. The API connects as
 // the database owner, so PostgreSQL GRANT alone cannot protect them here.
 const SERVICE_ROLE_ONLY_RPC = new Set([
+  'begin_track_deposit',
+  'fail_track_deposit_and_refund',
   'record_lyrics_blockchain_deposit',
   'claim_track_audio_ingest',
   'enqueue_audio_master_job',
@@ -143,24 +146,35 @@ function getSafeRpcMessage(message) {
   return 'RPC call failed';
 }
 
+function sendRpcError(res, status, message, code, extra = {}) {
+  return res.status(status).json({
+    message,
+    error: message,
+    code,
+    details: null,
+    hint: null,
+    ...extra,
+  });
+}
+
 async function handleRpc(req, res) {
   const client = await pool.connect();
   try {
     const fnName = req.params.fn;
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(fnName)) {
-      return res.status(400).json({ error: 'Invalid function name' });
+      return sendRpcError(res, 400, 'Invalid function name', 'INVALID_RPC_NAME');
     }
 
     if (!ALLOWED_RPC.has(fnName)) {
-      return res.status(403).json({ error: 'Function not allowed', code: 'RPC_FORBIDDEN' });
+      return sendRpcError(res, 403, 'Function not allowed', 'RPC_FORBIDDEN');
     }
 
     if (SERVICE_ROLE_ONLY_RPC.has(fnName) && req.user?.role !== 'service_role') {
-      return res.status(403).json({ error: 'Service role required', code: 'SERVICE_ROLE_REQUIRED' });
+      return sendRpcError(res, 403, 'Service role required', 'SERVICE_ROLE_REQUIRED');
     }
 
     if (['cast_weighted_vote', 'revoke_vote', 'get_my_weighted_vote'].includes(fnName) && !req.user?.id) {
-      return res.status(401).json({ error: 'Необходимо войти в систему', code: 'AUTH_REQUIRED' });
+      return sendRpcError(res, 401, 'Необходимо войти в систему', 'AUTH_REQUIRED');
     }
 
     const params = { ...((req.method === 'GET') ? req.query : (req.body || {})) };
@@ -184,7 +198,9 @@ async function handleRpc(req, res) {
       !['select', 'order', 'limit', 'offset'].includes(k) && !KEY_REGEX.test(k)
     );
     if (rejectedKeys.length > 0) {
-      return res.status(400).json({ error: 'Invalid parameter names', rejected: rejectedKeys });
+      return sendRpcError(res, 400, 'Invalid parameter names', 'INVALID_RPC_PARAMS', {
+        rejected: rejectedKeys,
+      });
     }
 
     // set_config(is_local=true) and the RPC call must share one transaction.
