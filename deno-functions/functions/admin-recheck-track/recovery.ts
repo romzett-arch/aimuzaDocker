@@ -225,14 +225,14 @@ export async function recoverGeneratedTrack(
     `audio/${track.id}.mp3`,
   );
 
-  let finalCoverUrl = track.cover_url;
+  let finalCoverUrl = isManagedTrackStorageUrl(track.cover_url) ? track.cover_url : null;
   if (record.imageUrls.length > 0) {
     finalCoverUrl = await copyFirstAvailableFileToStorage(
       supabaseAdmin,
       record.imageUrls,
       "tracks",
       `covers/${track.id}.jpg`,
-    ) || record.imageUrl || track.cover_url;
+    ) || finalCoverUrl;
   }
 
   if (!finalAudioUrl) {

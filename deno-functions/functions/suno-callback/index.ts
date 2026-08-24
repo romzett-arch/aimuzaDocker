@@ -306,7 +306,9 @@ serve(async (req) => {
         sunoAudioId && trackToUpdate.suno_audio_id === sunoAudioId && isManagedTrackStorageUrl(trackToUpdate.audio_url)
           ? trackToUpdate.audio_url || null
           : null;
-      let finalCoverUrl = coverUrl;
+      let finalCoverUrl = isManagedTrackStorageUrl(trackToUpdate.cover_url)
+        ? trackToUpdate.cover_url
+        : null;
 
       try {
         if (finalAudioUrl) {
@@ -343,7 +345,7 @@ serve(async (req) => {
             finalCoverUrl = storedCoverUrl;
             console.log(`Cover copied to storage: ${finalCoverUrl}`);
           } else {
-            console.log(`Failed to copy cover, using original URL`);
+            console.log(`Failed to copy cover; external provider URL will not be persisted`);
           }
         } catch (coverErr) {
           console.error(`Error copying cover:`, coverErr);

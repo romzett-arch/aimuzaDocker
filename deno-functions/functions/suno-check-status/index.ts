@@ -360,7 +360,9 @@ serve(async (req) => {
               );
 
           // Download cover with fallback chain
-          let finalCoverUrl: string | null = trk.cover_url;
+          let finalCoverUrl: string | null = isManagedTrackStorageUrl(trk.cover_url)
+            ? trk.cover_url
+            : null;
           if (!finalCoverUrl && rec.imageUrls.length > 0) {
             finalCoverUrl = await copyFirstAvailableFileToStorage(
               supabaseAdmin,
@@ -368,7 +370,6 @@ serve(async (req) => {
               "tracks",
               `covers/${trk.id}.jpg`,
             );
-            if (!finalCoverUrl) finalCoverUrl = rec.imageUrl;
           }
 
           if (!finalAudioUrl) {
