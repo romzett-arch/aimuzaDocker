@@ -68,6 +68,7 @@ async function processJob(supabase: SupabaseClient, job: AudioMasterJob) {
     const { error: trackError } = await supabase.from("tracks").update({
       master_audio_url: master.url,
       normalized_audio_url: master.url,
+      duration: Math.floor(master.duration),
       lufs_normalized: true,
       status: "completed",
       processing_stage: "completed",

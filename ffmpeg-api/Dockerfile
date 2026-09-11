@@ -7,7 +7,7 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --production
 
-COPY server.js handlers.js utils.js ./
+COPY server.js handlers.js utils.js duration.js ./
 RUN mkdir -p uploads output
 
 EXPOSE 3001

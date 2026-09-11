@@ -49,10 +49,12 @@ export async function getDurationFromFfmpeg(audioUrl: string): Promise<number | 
     }
 
     const data = await resp.json();
-    const dur = data?.format?.duration != null ? parseFloat(data.format.duration) : null;
+    const rawDuration = data?.decoded_duration ?? data?.format?.duration;
+    const dur = rawDuration != null ? parseFloat(String(rawDuration)) : null;
     if (dur != null && dur > 0) {
-      console.log(`[ffmpeg-duration] Got duration: ${Math.round(dur)}s`);
-      return Math.round(dur);
+      const wholeSeconds = Math.floor(dur);
+      console.log(`[ffmpeg-duration] Got decoded duration: ${dur}s (${wholeSeconds}s stored)`);
+      return wholeSeconds;
     }
     return null;
   } catch (err) {

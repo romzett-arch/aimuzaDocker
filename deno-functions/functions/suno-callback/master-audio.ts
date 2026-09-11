@@ -48,7 +48,7 @@ export async function createAndStorePlaybackMaster(
   supabaseAdmin: SupabaseClient,
   trackId: string,
   originalAudioUrl: string,
-): Promise<{ url: string; lufs: number; peakDb: number }> {
+): Promise<{ url: string; lufs: number; peakDb: number; duration: number }> {
   const baseUrl = ffmpegBaseUrl();
   const apiSecret = Deno.env.get("FFMPEG_API_SECRET") || "";
   let lastError: unknown = null;
@@ -81,6 +81,10 @@ export async function createAndStorePlaybackMaster(
 
       const temporaryUrl = String(result?.output_url || result?.normalized_url || "");
       if (!temporaryUrl) throw new Error("ffmpeg_master_url_missing");
+      const outputDuration = Number(result?.output_duration ?? result?.decoded_duration);
+      if (!Number.isFinite(outputDuration) || outputDuration <= 0) {
+        throw new Error("ffmpeg_master_duration_missing");
+      }
 
       const masterResponse = await fetch(toInternalFfmpegOutput(temporaryUrl, baseUrl));
       if (!masterResponse.ok) throw new Error(`master_download_failed_${masterResponse.status}`);
@@ -100,6 +104,7 @@ export async function createAndStorePlaybackMaster(
         url: `${publicBaseUrl.replace(/\/$/, "")}/storage/v1/object/public/tracks/${filePath}`,
         lufs: MASTER_TARGET_LUFS,
         peakDb: MASTER_TARGET_TRUE_PEAK_DB,
+        duration: outputDuration,
       };
     } catch (error) {
       lastError = error;

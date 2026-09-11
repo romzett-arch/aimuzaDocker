@@ -4,7 +4,8 @@
   "description": "FFmpeg микросервис aimuza.ru",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test handlers.test.js"
   },
   "dependencies": {
     "express": "^4.21.0",

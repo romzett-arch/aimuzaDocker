@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { execFileAsync, fetchAudio } = require('./utils');
+const { parseDecodedDuration, durationsMatch } = require('./duration');
 
 function pickMp3Bitrate(inputBitrate) {
   const allowed = [96, 128, 160, 192, 224, 256, 320];
@@ -98,19 +99,22 @@ function createAnalyzeHandler(UPLOAD_DIR) {
       ], { timeout: 30000 });
 
       const probe = JSON.parse(stdout || '{}');
-      const { stderr } = await execFileAsync('ffmpeg', [
+      const { stdout: progressOutput, stderr } = await execFileAsync('ffmpeg', [
         '-i', inputFile,
         '-af', 'loudnorm=I=-10:TP=-1:LRA=11:print_format=json',
+        '-progress', 'pipe:1', '-nostats',
         '-f', 'null', '-'
       ], { timeout: 120000 });
 
       const loudnorm = parseLoudnormJson(stderr);
+      const decodedDuration = parseDecodedDuration(progressOutput);
       const audioStream = probe?.streams?.find((stream) => stream.codec_type === 'audio') || {};
       const sampleRate = safeNumber(audioStream.sample_rate, 44100);
 
       return res.json({
         format: probe?.format || {},
         streams: probe?.streams || [],
+        decoded_duration: decodedDuration,
         lufs: loudnorm ? {
           integrated: safeNumber(loudnorm.input_i, -14),
           true_peak: safeNumber(loudnorm.input_tp, -1),
@@ -214,13 +218,16 @@ function createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR) {
     }
 
     let analysis = null;
+    let sourceDecodedDuration = null;
     try {
-      const { stderr } = await execFileAsync('ffmpeg', [
+      const { stdout: progressOutput, stderr } = await execFileAsync('ffmpeg', [
         '-i', inputFile,
         '-af', `loudnorm=I=${target_lufs}:TP=${target_true_peak}:LRA=11:print_format=json`,
+        '-progress', 'pipe:1', '-nostats',
         '-f', 'null', '-'
       ], { timeout: 120000 });
       analysis = parseLoudnormJson(stderr);
+      sourceDecodedDuration = parseDecodedDuration(progressOutput);
     } catch (e) {
       try { fs.unlinkSync(inputFile); } catch (_) {}
       return res.status(500).json({
@@ -259,7 +266,7 @@ function createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR) {
     );
 
     return new Promise((resolve) => {
-      execFile('ffmpeg', args, { timeout: 180000 }, (err, stdout, stderr) => {
+      execFile('ffmpeg', args, { timeout: 180000 }, async (err, stdout, stderr) => {
         try { fs.unlinkSync(inputFile); } catch (_) {}
         if (err) {
           try { fs.unlinkSync(encodingOutputFile); } catch (_) {}
@@ -279,6 +286,32 @@ function createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR) {
             }));
           }
         }
+
+        let outputDuration = null;
+        try {
+          const { stdout: durationOutput } = await execFileAsync('ffprobe', [
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            outputFile,
+          ], { timeout: 30000 });
+          outputDuration = safeNumber(durationOutput);
+        } catch (probeError) {
+          try { fs.unlinkSync(outputFile); } catch (_) {}
+          return resolve(res.status(500).json({
+            error: 'Duration validation failed',
+            message: 'Could not measure normalized output: ' + (probeError.message || String(probeError))
+          }));
+        }
+
+        if (!durationsMatch(sourceDecodedDuration, outputDuration)) {
+          try { fs.unlinkSync(outputFile); } catch (_) {}
+          return resolve(res.status(500).json({
+            error: 'Duration validation failed',
+            message: `Normalized output duration ${outputDuration ?? 'unknown'}s does not match decoded source duration ${sourceDecodedDuration ?? 'unknown'}s`
+          }));
+        }
+
         const baseUrl = getPublicFfmpegBaseUrl();
         const output_url = `${baseUrl}/output/${outName}`;
         const normalized_url = output_url;
@@ -295,6 +328,8 @@ function createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR) {
           output_bitrate: targetBitrateKbps * 1000,
           peak_before: isNaN(peak_before) ? undefined : peak_before,
           peak_after: isNaN(peak_after) ? undefined : peak_after,
+          decoded_duration: sourceDecodedDuration,
+          output_duration: outputDuration,
           cache_hit: false
         }));
       });
@@ -567,4 +602,10 @@ function createConvertFormatHandler(UPLOAD_DIR, OUTPUT_DIR) {
   };
 }
 
-module.exports = { createAnalyzeHandler, createNormalizeHandler, createProcessWavHandler, createCleanMetadataHandler, createConvertFormatHandler };
+module.exports = {
+  createAnalyzeHandler,
+  createNormalizeHandler,
+  createProcessWavHandler,
+  createCleanMetadataHandler,
+  createConvertFormatHandler,
+};
