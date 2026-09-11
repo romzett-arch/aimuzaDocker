@@ -58,7 +58,7 @@ const ALLOWED_RPC = new Set([
   'get_my_referral_stats', 'get_referral_overview', 'get_public_progression_config',
   'get_qa_leaderboard', 'get_qa_ticket_comment_counts', 'get_radio_listeners', 'get_radio_smart_queue',
   'get_l2e_admin_stats', 'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',
-  'get_reputation_leaderboard', 'get_reputation_profile', 'get_smart_feed', 'get_smart_feed_v3', 'get_admin_subscription_metrics',
+  'get_reputation_leaderboard', 'get_reputation_profile', 'get_smart_feed', 'get_smart_feed_v3', 'get_admin_monetization_dashboard', 'get_admin_subscription_metrics',
   'get_sidebar_pending_counts', 'get_track_by_share_token', 'get_track_comments_counts',
   'get_track_prompt_if_accessible', 'get_track_prompt_info', 'get_unread_counts', 'get_user_block_info', 'get_deposit_method_catalog',
   'get_user_contest_rating', 'get_user_emails', 'get_user_role',

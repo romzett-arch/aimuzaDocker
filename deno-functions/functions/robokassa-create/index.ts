@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildBankCardInvoicePayload, createInvoiceJwt } from "./invoice.ts";
 
 const ALLOWED_ORIGINS = [
   "https://aimuza.ru",
@@ -24,6 +25,9 @@ const ROBOKASSA_TEST_MODE = Deno.env.get("ROBOKASSA_TEST_MODE") === "true";
 
 const MIN_AMOUNT = 10;
 const MAX_AMOUNT = 150_000;
+const ROBOKASSA_INVOICE_URL =
+  "https://services.robokassa.ru/InvoiceServiceWebApi/api/CreateInvoice";
+const ALLOWED_RETURN_HOSTS = ["aimuza.ru"];
 
 function getMissingRequiredEnvNames() {
   const requiredEnv = {
@@ -173,6 +177,13 @@ serve(async (req) => {
     // --- Validate input ---
     const body = await req.json();
     const amount = Number(body.amount);
+    const paymentMethod = body.payment_method === undefined
+      ? "sbp"
+      : body.payment_method;
+
+    if (paymentMethod !== "bank_card" && paymentMethod !== "sbp") {
+      return json(cors, 400, { error: "Неподдерживаемый способ оплаты" });
+    }
 
     if (!Number.isFinite(amount) || !Number.isInteger(amount)) {
       return json(cors, 400, { error: "Сумма должна быть целым числом" });
@@ -207,6 +218,7 @@ serve(async (req) => {
         payment_system: "robokassa",
         description,
         external_id: invId,
+        metadata: { method: paymentMethod },
       })
       .select()
       .single();
@@ -232,6 +244,79 @@ serve(async (req) => {
     });
     const outSum = String(amount);
 
+    if (paymentMethod === "bank_card") {
+      const returnUrl = sanitizeReturnUrl(body.return_url, req.headers.get("origin"));
+      const invoicePayload = buildBankCardInvoicePayload({
+        merchantLogin: ROBOKASSA_MERCHANT_LOGIN,
+        invId,
+        amount,
+        description,
+        email: user.email || "",
+        successUrl: returnUrl,
+        failUrl: returnUrl,
+        isTest: ROBOKASSA_TEST_MODE,
+      });
+      const invoiceJwt = createInvoiceJwt(
+        invoicePayload,
+        ROBOKASSA_MERCHANT_LOGIN,
+        ROBOKASSA_PASSWORD1,
+      );
+      const invoiceResponse = await fetch(ROBOKASSA_INVOICE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(invoiceJwt),
+      });
+      const invoiceResult = await invoiceResponse.json().catch(() => null) as {
+        id?: string;
+        invId?: number;
+        url?: string;
+        isSuccess?: boolean;
+        message?: string;
+      } | null;
+
+      if (
+        !invoiceResponse.ok ||
+        !invoiceResult?.isSuccess ||
+        !invoiceResult.url ||
+        Number(invoiceResult.invId) !== Number(invId)
+      ) {
+        console.error("Robokassa Invoice API error:", {
+          status: invoiceResponse.status,
+          isSuccess: invoiceResult?.isSuccess,
+          message: invoiceResult?.message,
+        });
+        await supabase
+          .from("payments")
+          .update({
+            status: "failed",
+            metadata: {
+              method: "bank_card",
+              invoice_error: invoiceResult?.message || `HTTP ${invoiceResponse.status}`,
+            },
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", payment.id);
+        return json(cors, 502, { error: "Не удалось создать оплату банковской картой" });
+      }
+
+      await supabase
+        .from("payments")
+        .update({
+          metadata: {
+            method: "bank_card",
+            invoice_id: invoiceResult.id,
+          },
+        })
+        .eq("id", payment.id);
+
+      return json(cors, 200, {
+        success: true,
+        payment_id: payment.id,
+        payment_method: "bank_card",
+        payment_url: invoiceResult.url,
+      });
+    }
+
     // --- Подпись для Robokassa.pay.startOp с Receipt ---
     const signatureString =
       `${ROBOKASSA_MERCHANT_LOGIN}:${outSum}:${invId}:${receipt}:${ROBOKASSA_PASSWORD1}`;
@@ -240,6 +325,7 @@ serve(async (req) => {
     return json(cors, 200, {
       success: true,
       payment_id: payment.id,
+      payment_method: "sbp",
       qr_options: {
         paymentMethod: "SBP",
         email: user.email || "",
@@ -256,6 +342,41 @@ serve(async (req) => {
     return json(getCorsHeaders(req), 500, { error: "Внутренняя ошибка сервера" });
   }
 });
+
+function sanitizeReturnUrl(rawUrl: unknown, origin: string | null): string {
+  const fallbackOrigin = origin && isAllowedPublicOrigin(origin)
+    ? origin
+    : "https://aimuza.ru";
+  const fallback = `${fallbackOrigin}/profile`;
+  if (typeof rawUrl !== "string" || rawUrl.length > 500) return fallback;
+
+  try {
+    const url = new URL(rawUrl);
+    const isAllowed = url.protocol === "https:" && ALLOWED_RETURN_HOSTS.some(
+      (host) => url.hostname === host || url.hostname.endsWith(`.${host}`),
+    );
+    if (!isAllowed) return fallback;
+
+    // Robokassa Invoice API rejects otherwise valid return URLs when they
+    // contain query parameters or a fragment ("Url был сформирован некорректно").
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return fallback;
+  }
+}
+
+function isAllowedPublicOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return url.protocol === "https:" && ALLOWED_RETURN_HOSTS.some(
+      (host) => url.hostname === host || url.hostname.endsWith(`.${host}`),
+    );
+  } catch {
+    return false;
+  }
+}
 
 function json(
   cors: Record<string, string>,

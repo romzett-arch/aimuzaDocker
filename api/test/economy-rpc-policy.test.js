@@ -37,8 +37,15 @@ test('referral registration is bound to the authenticated referee', () => {
   assert.equal(params.p_referee_id, 'user-1');
 });
 
-test('referral settings update and economy health require admin', () => {
-  for (const fn of ['update_referral_settings', 'get_referral_overview', 'get_economy_health', 'process_payment_refund']) {
+test('finance dashboards, referral settings and economy health require admin', () => {
+  for (const fn of [
+    'update_referral_settings',
+    'get_referral_overview',
+    'get_economy_health',
+    'get_admin_monetization_dashboard',
+    'get_admin_subscription_metrics',
+    'process_payment_refund',
+  ]) {
     assert.throws(() => assertEconomyRpcAccess(fn, user, {}), error => error.status === 403);
     assert.doesNotThrow(() => assertEconomyRpcAccess(fn, admin, {}));
   }

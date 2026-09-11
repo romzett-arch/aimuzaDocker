@@ -7,6 +7,8 @@ const ADMIN_ONLY_RPC = new Set([
   'deduct_user_xp',
   'fn_add_xp',
   'get_economy_health',
+  'get_admin_monetization_dashboard',
+  'get_admin_subscription_metrics',
   'get_referral_overview',
   'process_payment_refund',
   'process_payout_request',

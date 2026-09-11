@@ -22,7 +22,7 @@ const ALLOWED_FUNCTIONS = new Set([
   'maintenance-status', 'normalize-audio', 'og-renderer', 'process-master-audio',
   'qa-generate-spec',
   'promo-video-callback', 'request-distribution',
-  'robokassa-callback', 'robokassa-create', 'robots-txt', 'send-admin-email',
+  'robokassa-callback', 'robokassa-check', 'robokassa-create', 'robots-txt', 'send-admin-email',
   'send-auth-email', 'seo-ai-generate', 'sitemap-generator', 'submit-to-distributor',
   'suno-callback', 'suno-check-status', 'suno-credits', 'suno-generate',
   'suno-video-callback', 'support-categorize', 'support-suggest-reply',
