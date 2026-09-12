@@ -22,7 +22,12 @@ async function injectBoostedTracks(pool) {
       FROM public.track_promotions tp
       JOIN public.tracks t ON t.id = tp.track_id
       LEFT JOIN public.profiles p ON p.user_id = t.user_id
-      WHERE (tp.is_active = true OR tp.status = 'active') AND tp.expires_at > NOW()
+      WHERE tp.is_active = true
+        AND tp.expires_at > NOW()
+        AND t.is_public = true
+        AND t.status = 'completed'
+        AND COALESCE(t.is_in_my_releases, false) = false
+        AND t.audio_url IS NOT NULL
       ORDER BY
         CASE tp.boost_type
           WHEN 'top' THEN 1
@@ -71,9 +76,15 @@ async function injectBoostedTracks(pool) {
       injectedThisHour.set(track.track_id, Date.now());
 
       await pool.query(
-        'UPDATE public.track_promotions SET impressions = COALESCE(impressions, 0) + 1 WHERE id = $1',
+        `UPDATE public.track_promotions
+         SET impressions = COALESCE(impressions, 0) + 1,
+             impressions_count = COALESCE(impressions_count, 0) + 1,
+             radio_impressions_count = COALESCE(radio_impressions_count, 0) + 1
+         WHERE id = $1 AND is_active = true AND expires_at > NOW()`,
         [track.promotion_id]
-      ).catch(() => {});
+      ).catch((error) => {
+        console.error('[Boost] Failed to record radio impression:', error.message);
+      });
 
       console.log(`[Boost] Injected ${track.boost_type} track: ${track.title}`);
     }
