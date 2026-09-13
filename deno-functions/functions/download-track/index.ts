@@ -149,14 +149,22 @@ serve(async (req) => {
     // If blockchain protection is requested, get deposit info
     let blockchainHash: string | null = null;
     if (include_blockchain) {
-      const { data: deposit } = await supabase
+      const { data: deposit, error: depositError } = await supabase
         .from("track_deposits")
-        .select("metadata_hash, blockchain_tx_id, deposited_at")
+        .select("metadata_hash, blockchain_tx_id, completed_at")
         .eq("track_id", track_id)
         .eq("status", "completed")
-        .order("deposited_at", { ascending: false })
+        .order("completed_at", { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
+
+      if (depositError) {
+        console.error("Completed blockchain deposit lookup failed:", depositError);
+        return new Response(
+          JSON.stringify({ error: "Не удалось проверить блокчейн-метку" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
 
       if (deposit?.metadata_hash) {
         blockchainHash = deposit.metadata_hash;
@@ -164,7 +172,9 @@ serve(async (req) => {
         if (deposit.blockchain_tx_id) {
           extendedMetadata.custom["TXXX_BLOCKCHAIN_TX"] = deposit.blockchain_tx_id;
         }
-        extendedMetadata.custom["TXXX_BLOCKCHAIN_DATE"] = deposit.deposited_at;
+        if (deposit.completed_at) {
+          extendedMetadata.custom["TXXX_BLOCKCHAIN_DATE"] = deposit.completed_at;
+        }
         extendedMetadata.comment += ` | Blockchain: ${deposit.metadata_hash.substring(0, 16)}...`;
       } else {
         return new Response(
