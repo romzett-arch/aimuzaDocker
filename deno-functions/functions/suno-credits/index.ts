@@ -69,7 +69,7 @@ serve(async (req) => {
       console.error("Suno API returned non-JSON:", text.substring(0, 200));
       return new Response(
         JSON.stringify({ 
-          error: "Suno API unavailable",
+          error: "Музыкальный API недоступен",
           details: `Status: ${sunoResponse.status}, returned HTML instead of JSON`
         }),
         { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -83,7 +83,7 @@ serve(async (req) => {
       console.error("Suno API error:", sunoData);
       return new Response(
         JSON.stringify({ 
-          error: "Failed to fetch Suno credits",
+        error: "Не удалось получить баланс музыкального API",
           details: sunoData.msg || "Unknown error"
         }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

@@ -15,7 +15,7 @@ test('money and admin XP functions are admin-only and never anonymous', () => {
 });
 
 test('internal credit and XP transaction boundaries require service role', () => {
-  for (const fn of ['award_xp', 'safe_award_xp', 'process_payment_completion', 'refund_generation_failed']) {
+  for (const fn of ['award_xp', 'debit_addon_service', 'safe_award_xp', 'process_payment_completion', 'refund_addon_service', 'refund_generation_failed']) {
     assert.throws(() => assertEconomyRpcAccess(fn, user, {}), error => error.code === 'SERVICE_ROLE_REQUIRED');
     assert.throws(() => assertEconomyRpcAccess(fn, admin, {}), error => error.code === 'SERVICE_ROLE_REQUIRED');
     assert.doesNotThrow(() => assertEconomyRpcAccess(fn, service, {}));
@@ -23,7 +23,7 @@ test('internal credit and XP transaction boundaries require service role', () =>
 });
 
 test('self-service RPC identities are bound to authenticated caller', () => {
-  for (const fn of ['check_user_achievements', 'debit_balance', 'debit_for_generation', 'get_creator_earnings_profile', 'get_or_create_referral_code', 'radio_award_listen_xp']) {
+  for (const fn of ['check_user_achievements', 'debit_balance', 'debit_for_generation', 'debit_for_generation_v6', 'get_creator_earnings_profile', 'get_or_create_referral_code', 'radio_award_listen_xp']) {
     const params = { p_user_id: 'victim', user_uuid: 'victim' };
     assertEconomyRpcAccess(fn, user, params);
     assert.equal(params.p_user_id, 'user-1');

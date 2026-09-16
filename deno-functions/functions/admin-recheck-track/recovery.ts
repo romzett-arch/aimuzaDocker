@@ -200,7 +200,7 @@ export async function recoverGeneratedTrack(
     return {
       ok: false,
       action: "suno_api_error",
-      message: error instanceof Error ? error.message : "Не удалось получить данные из Suno API",
+      message: error instanceof Error ? error.message : "Не удалось получить данные из музыкального API",
       trackId: track.id,
       taskId,
       sunoStatus,
@@ -211,7 +211,7 @@ export async function recoverGeneratedTrack(
     return {
       ok: false,
       action: "no_audio_record",
-      message: "Suno не вернул аудио для этого трека",
+      message: "Музыкальный API не вернул аудио для этого трека",
       trackId: track.id,
       taskId,
       sunoStatus,

@@ -80,7 +80,7 @@ export function getSunoErrorMessage(code: number, originalMessage?: string): { s
     if (lowerMsg.includes("too long") || lowerMsg.includes("too large") || lowerMsg.includes("exceeds")) {
       return {
         short: "Превышен лимит символов",
-        full: "Описание, стиль или текст песни слишком длинные. Для генерации по аудиореференсу в V5/V5.5 лимиты AIMUZA: до 5000 символов текста и до 1000 символов стиля.",
+        full: "Описание, стиль или текст песни слишком длинные. Лимиты AIMUZA: до 5000 символов точного текста, до 1000 символов стиля и до 500 символов описания при генерации по аудиореференсу.",
       };
     }
 
@@ -181,6 +181,12 @@ export async function handleFailedTracksWithRefunds(
         console.error(`Refund failed for track ${track.id}:`, refundError);
       } else {
         console.log(`Refunded ${genLog.cost_rub} ₽ to user ${track.user_id}`);
+
+        await supabaseAdmin
+          .from("generation_logs")
+          .update({ refund_rub: genLog.cost_rub })
+          .eq("track_id", track.id)
+          .eq("status", "pending");
 
         await supabaseAdmin.from("notifications").insert({
           user_id: track.user_id,

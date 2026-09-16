@@ -11,30 +11,31 @@ const corsHeaders = {
 const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
 const SUNO_API_BASE = "https://api.sunoapi.org";
 
-function mapAiModelVersionToSunoModel(version: string | null | undefined): string {
-  const normalized = (version || "").trim().toUpperCase().replace(/\s+/g, "");
+const SUNO_MODEL = "V6";
+const CUSTOM_PROMPT_LIMIT = 5000;
+const STYLE_CHAR_LIMIT = 1000;
+const TITLE_CHAR_LIMIT = 100;
+const STANDARD_PROMPT_LIMIT = 3000;
+const UPLOAD_COVER_PROMPT_LIMIT = 500;
+const NEGATIVE_TAGS_LIMIT = 1000;
 
-  switch (normalized) {
-    case "V5.5":
-    case "V5_5":
-      return "V5_5";
-    case "V5":
-      return "V5";
-    case "V4.5ALL":
-    case "V4_5ALL":
-      return "V4_5ALL";
-    case "V4.5PLUS":
-    case "V4.5+":
-    case "V4_5PLUS":
-      return "V4_5PLUS";
-    case "V4.5":
-    case "V4_5":
-      return "V4_5";
-    case "V4":
-      return "V4";
-    default:
-      return "V5";
+function validationError(message: string, field: string) {
+  return new Response(
+    JSON.stringify({ error: "Некорректные параметры генерации", details: message, field }),
+    { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+  );
+}
+
+function parseOptionalWeight(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`${field}: укажите число от 0 до 1`);
   }
+  if (Math.abs(Math.round(parsed * 100) - parsed * 100) > 1e-8) {
+    throw new Error(`${field}: допускается не более двух знаков после запятой`);
+  }
+  return parsed;
 }
 
 serve(async (req) => {
@@ -70,7 +71,25 @@ serve(async (req) => {
       );
     }
 
-    const { trackId, trackIds, prompt, lyrics, style, title, instrumental, modelId, audioReferenceUrl, negativeTags, vocalGender, personaId } = await req.json();
+    const {
+      trackId,
+      trackIds,
+      customMode,
+      prompt,
+      lyrics,
+      style,
+      title,
+      instrumental,
+      audioReferenceUrl,
+      negativeTags,
+      vocalGender,
+      duration,
+      personaId,
+      personaModel,
+      styleWeight,
+      weirdnessConstraint,
+      audioWeight,
+    } = await req.json();
 
     if (!trackId) {
       return new Response(
@@ -89,25 +108,61 @@ serve(async (req) => {
     console.log(`Negative tags: ${negativeTags || 'none'}`);
     console.log(`Vocal gender: ${vocalGender || 'none'}`);
     console.log(`Persona ID: ${personaId || 'none'}`);
-    console.log(`Model ID: ${modelId || 'default'}`);
+    console.log(`Model: ${SUNO_MODEL} (fixed)`);
 
     const cleanedStyle = cleanStyleForSuno(style || "");
     console.log(`Cleaned style: ${cleanedStyle}`);
 
-    let resolvedSunoModel = "V5";
-    if (modelId) {
-      const { data: aiModel, error: modelError } = await supabaseClient
-        .from("ai_models")
-        .select("id, version")
-        .eq("id", modelId)
-        .maybeSingle();
+    const cleanPrompt = typeof prompt === "string" ? prompt.trim() : "";
+    const cleanLyrics = typeof lyrics === "string" ? lyrics.trim() : "";
+    const cleanTitle = typeof title === "string" ? title.trim() : "";
+    const cleanNegativeTags = typeof negativeTags === "string" ? negativeTags.trim() : "";
+    const isCustomMode = customMode === true;
+    const isInstrumental = instrumental === true;
 
-      if (modelError) {
-        console.error("Failed to resolve ai_models version:", modelError);
-      } else {
-        resolvedSunoModel = mapAiModelVersionToSunoModel(aiModel?.version);
-        console.log(`Resolved Suno model: ${resolvedSunoModel} from version "${aiModel?.version}"`);
+    if (typeof customMode !== "boolean") return validationError("Режим генерации не указан", "customMode");
+    if (cleanNegativeTags.length > NEGATIVE_TAGS_LIMIT) return validationError(`Максимум ${NEGATIVE_TAGS_LIMIT} символов`, "negativeTags");
+    if (vocalGender !== undefined && vocalGender !== null && vocalGender !== "" && vocalGender !== "m" && vocalGender !== "f") {
+      return validationError("Допустимы только m или f", "vocalGender");
+    }
+
+    let parsedDuration: number | undefined;
+    if (duration !== undefined && duration !== null && duration !== "") {
+      parsedDuration = Number(duration);
+      if (!Number.isInteger(parsedDuration) || parsedDuration < 10 || parsedDuration > 360) {
+        return validationError("Укажите целое число от 10 до 360 секунд", "duration");
       }
+      if (!isCustomMode) return validationError("Длительность доступна только в режиме «Про»", "duration");
+    }
+
+    if (personaModel !== undefined && personaModel !== null && personaModel !== "" && personaModel !== "style_persona" && personaModel !== "voice_persona") {
+      return validationError("Допустимы style_persona или voice_persona", "personaModel");
+    }
+    if (personaId && !isCustomMode) return validationError("Persona доступна только в режиме «Про»", "personaId");
+
+    let parsedStyleWeight: number | undefined;
+    let parsedWeirdness: number | undefined;
+    let parsedAudioWeight: number | undefined;
+    try {
+      parsedStyleWeight = parseOptionalWeight(styleWeight, "styleWeight");
+      parsedWeirdness = parseOptionalWeight(weirdnessConstraint, "weirdnessConstraint");
+      parsedAudioWeight = parseOptionalWeight(audioWeight, "audioWeight");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Некорректный вес";
+      return validationError(message, message.split(":")[0]);
+    }
+
+    if (isCustomMode) {
+      if (!cleanedStyle) return validationError("Укажите стиль и аранжировку", "style");
+      if (cleanedStyle.length > STYLE_CHAR_LIMIT) return validationError(`Максимум ${STYLE_CHAR_LIMIT} символов`, "style");
+      if (!cleanTitle) return validationError("Укажите название", "title");
+      if (cleanTitle.length > TITLE_CHAR_LIMIT) return validationError(`Максимум ${TITLE_CHAR_LIMIT} символов`, "title");
+      if (!isInstrumental && !cleanLyrics) return validationError("Добавьте точный текст песни", "prompt");
+      if (cleanLyrics.length > CUSTOM_PROMPT_LIMIT) return validationError(`Максимум ${CUSTOM_PROMPT_LIMIT} символов`, "prompt");
+    } else {
+      const promptLimit = audioReferenceUrl ? UPLOAD_COVER_PROMPT_LIMIT : STANDARD_PROMPT_LIMIT;
+      if (!cleanPrompt) return validationError("Опишите песню, которую нужно создать", "prompt");
+      if (cleanPrompt.length > promptLimit) return validationError(`Максимум ${promptLimit} символов`, "prompt");
     }
 
     const { error: updateError } = await supabaseClient
@@ -120,14 +175,6 @@ serve(async (req) => {
       console.error("Failed to update track status:", updateError);
     }
 
-    const STYLE_CHAR_LIMIT = 1000;
-    const PROMPT_CHAR_LIMIT = 5000;
-    const NON_CUSTOM_PROMPT_LIMIT = 500;
-
-    const hasLyrics = !!lyrics && lyrics.trim().length > 0;
-    const hasStyle = !!cleanedStyle && cleanedStyle.trim().length > 0;
-    const useCustomMode = hasLyrics || hasStyle;
-
     const callbackSecret = Deno.env.get("SUNO_CALLBACK_SECRET");
     const explicitCallbackUrl = Deno.env.get("SUNO_CALLBACK_URL");
     const baseCallbackUrl = explicitCallbackUrl || `${Deno.env.get("SUPABASE_URL")}/functions/v1/suno-callback`;
@@ -136,57 +183,40 @@ serve(async (req) => {
       : baseCallbackUrl;
 
     const sunoPayload: Record<string, unknown> = {
-      model: resolvedSunoModel,
-      customMode: useCustomMode,
-      instrumental: instrumental || false,
+      model: SUNO_MODEL,
+      customMode: isCustomMode,
+      instrumental: isInstrumental,
       callBackUrl,
     };
 
-    if (negativeTags && negativeTags.trim()) {
-      sunoPayload.negativeTags = negativeTags.trim();
+    if (cleanNegativeTags) {
+      sunoPayload.negativeTags = cleanNegativeTags;
       console.log(`Negative tags for Suno: ${sunoPayload.negativeTags}`);
     }
 
-    if (vocalGender && (vocalGender === 'm' || vocalGender === 'f')) {
+    if (!isInstrumental && (vocalGender === 'm' || vocalGender === 'f')) {
       sunoPayload.vocalGender = vocalGender;
       console.log(`Vocal gender for Suno: ${sunoPayload.vocalGender}`);
     }
 
-    if (personaId) {
+    if (isCustomMode && personaId) {
       sunoPayload.personaId = personaId;
+      sunoPayload.personaModel = personaModel || "style_persona";
       console.log(`Persona for Suno: ${personaId}`);
     }
 
-    if (useCustomMode) {
-      if (hasLyrics) {
-        sunoPayload.prompt = lyrics.slice(0, PROMPT_CHAR_LIMIT);
-      } else {
-        sunoPayload.customMode = false;
-        sunoPayload.prompt = (prompt || cleanedStyle).slice(0, NON_CUSTOM_PROMPT_LIMIT);
-      }
+    if (parsedStyleWeight !== undefined) sunoPayload.styleWeight = parsedStyleWeight;
+    if (parsedWeirdness !== undefined) sunoPayload.weirdnessConstraint = parsedWeirdness;
+    if (parsedAudioWeight !== undefined) sunoPayload.audioWeight = parsedAudioWeight;
 
-      let finalStyle = cleanedStyle || "pop";
-
-      if (finalStyle.length > STYLE_CHAR_LIMIT) {
-        const parts = finalStyle.split(", ");
-        let truncated = "";
-        for (const part of parts) {
-          if ((truncated + ", " + part).length <= STYLE_CHAR_LIMIT) {
-            truncated = truncated ? truncated + ", " + part : part;
-          } else {
-            break;
-          }
-        }
-        finalStyle = truncated || finalStyle.slice(0, STYLE_CHAR_LIMIT);
-        console.log(`Style truncated from ${cleanedStyle.length} to ${finalStyle.length} chars`);
-      }
-
-      sunoPayload.style = finalStyle;
-      sunoPayload.title = (title || "Untitled").slice(0, 100);
-
-      console.log(`Final style for Suno (${sunoPayload.style.length} chars): ${sunoPayload.style}`);
+    if (isCustomMode) {
+      if (!isInstrumental) sunoPayload.prompt = cleanLyrics;
+      sunoPayload.style = cleanedStyle;
+      sunoPayload.title = cleanTitle;
+      if (parsedDuration !== undefined) sunoPayload.duration = parsedDuration;
+      console.log(`Final style for Suno (${cleanedStyle.length} chars): ${cleanedStyle}`);
     } else {
-      sunoPayload.prompt = (prompt || "").slice(0, NON_CUSTOM_PROMPT_LIMIT);
+      sunoPayload.prompt = cleanPrompt;
     }
 
     let sunoEndpoint = `${SUNO_API_BASE}/api/v1/generate`;
@@ -264,6 +294,12 @@ serve(async (req) => {
             console.error(`Refund failed for track ${trackId}:`, refundError);
           } else {
             console.log(`Refunded ${totalRefund} to user ${user.id}`);
+            await Promise.all(logs.map((log) =>
+              supabaseAdmin
+                .from("generation_logs")
+                .update({ refund_rub: log.cost_rub || 0 })
+                .eq("id", log.id)
+            ));
           }
         }
       }

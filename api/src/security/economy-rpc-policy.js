@@ -17,7 +17,9 @@ const ADMIN_ONLY_RPC = new Set([
 
 const SERVICE_ROLE_ONLY_RPC = new Set([
   'award_xp',
+  'debit_addon_service',
   'process_payment_completion',
+  'refund_addon_service',
   'refund_generation_failed',
   'safe_award_xp',
 ]);
@@ -26,6 +28,7 @@ const AUTHENTICATED_RPC = new Set([
   'check_user_achievements',
   'debit_balance',
   'debit_for_generation',
+  'debit_for_generation_v6',
   'get_creator_earnings_profile',
   'get_my_referral_stats',
   'get_or_create_referral_code',
@@ -78,6 +81,7 @@ export function assertEconomyRpcAccess(fnName, user, params = {}) {
     if (fnName === 'check_user_achievements'
         || fnName === 'debit_balance'
         || fnName === 'debit_for_generation'
+        || fnName === 'debit_for_generation_v6'
         || fnName === 'get_creator_earnings_profile'
         || fnName === 'get_or_create_referral_code'
         || fnName === 'radio_award_listen_xp'

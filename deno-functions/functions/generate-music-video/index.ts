@@ -278,7 +278,7 @@ serve(async (req) => {
     let audioId = track.suno_audio_id;
 
     if (!taskId) {
-      throw new Error("Track has no Suno task ID for music video generation");
+      throw new Error("У трека нет исходного ID для создания видео");
     }
 
     if (!audioId) {
@@ -302,7 +302,7 @@ serve(async (req) => {
     }
 
     if (!audioId) {
-      throw new Error("Track has no Suno audio ID and could not resolve it");
+      throw new Error("Не удалось определить исходный ID аудио");
     }
 
     const existingVideoTaskId = getStoredVideoTaskId(existingAddon?.result_url);
