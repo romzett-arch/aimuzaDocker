@@ -80,6 +80,7 @@ serve(async (req) => {
 
     const body = await req.json();
     const trackId = cleanString(body?.track_id);
+    const replacementMode = cleanString(body?.replacement_mode) || "lyrics";
     const title = cleanString(body?.title);
     const prompt = cleanString(body?.prompt);
     const fullLyrics = cleanString(body?.full_lyrics);
@@ -89,6 +90,7 @@ serve(async (req) => {
     const infillEndS = roundTime(Number(body?.infill_end_s));
 
     if (!trackId) throw new RequestError("Выберите исходный трек", 422);
+    if (!['lyrics', 'instrumental'].includes(replacementMode)) throw new RequestError("Неверный тип замены", 422);
     if (!title || title.length > 100) throw new RequestError("Название обязательно, максимум 100 символов", 422);
     if (!prompt || prompt.length > 5000) throw new RequestError("Новый текст фрагмента обязателен, максимум 5000 символов", 422);
     if (!fullLyrics || fullLyrics.length > 10000) throw new RequestError("Полный итоговый текст обязателен", 422);
@@ -162,6 +164,7 @@ serve(async (req) => {
     const generationParams = {
       source_track_id: trackId,
       source_mode: sourceMode,
+      replacement_mode: replacementMode,
       infill_start_s: infillStartS,
       infill_end_s: infillEndS,
       selected_duration_s: selectedDuration,
@@ -198,8 +201,9 @@ serve(async (req) => {
     const publicBaseUrl = (Deno.env.get("BASE_URL") || "https://aimuza.ru").replace(/\/$/, "");
     const callbackToken = await signCallback(createdLogId, serviceRoleKey);
     const callBackUrl = `${publicBaseUrl}/functions/v1/replace-music-section-callback?log_id=${encodeURIComponent(createdLogId)}&token=${encodeURIComponent(callbackToken)}`;
+    const providerPrompt = replacementMode === "instrumental" ? `[Instrumental]\n${prompt}` : prompt;
     const providerPayload: Record<string, unknown> = {
-      prompt,
+      prompt: providerPrompt,
       tags,
       title,
       infillStartS,
@@ -207,7 +211,11 @@ serve(async (req) => {
       fullLyrics,
       callBackUrl,
     };
-    if (negativeTags) providerPayload.negativeTags = negativeTags;
+    if (replacementMode === "instrumental") {
+      providerPayload.negativeTags = "vocals, singing, spoken word";
+    } else if (negativeTags) {
+      providerPayload.negativeTags = negativeTags;
+    }
     if (sourceMode === "generated") {
       providerPayload.taskId = originalTaskId;
       providerPayload.audioId = track.suno_audio_id;
