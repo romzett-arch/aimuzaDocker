@@ -1,8 +1,8 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const MASTER_TARGET_LUFS = -10;
+const MASTER_TARGET_LUFS = -14;
 const MASTER_TARGET_TRUE_PEAK_DB = -1;
-const MP3_ENCODING_LOUDNESS_TARGET_LUFS = -9.5;
+const MP3_ENCODING_LOUDNESS_TARGET_LUFS = -13.5;
 const MP3_ENCODING_TRUE_PEAK_TARGET_DB = -1.7;
 const MASTER_ATTEMPTS = 1;
 
@@ -64,13 +64,14 @@ export async function createAndStorePlaybackMaster(
         body: JSON.stringify({
           audio_url: toInternalStorageUrl(originalAudioUrl),
           // MP3 encode/decode measures about 0.5 LU quieter than loudnorm's
-          // pre-codec output, so compensate internally for a measured -10 LUFS file.
+          // pre-codec output, so compensate internally for a measured -14 LUFS file.
           target_lufs: MP3_ENCODING_LOUDNESS_TARGET_LUFS,
           // MP3 decoding can add ~0.3 dB inter-sample overshoot. The internal
           // margin keeps the measured final file at or below the public -1 dBTP ceiling.
           target_true_peak: MP3_ENCODING_TRUE_PEAK_TARGET_DB,
           strip_metadata: true,
           brand_metadata: false,
+          flatten_dynamics: true,
         }),
       });
 

@@ -98,6 +98,7 @@ const ALLOWED_RPC = new Set([
   'revoke_verification', 'revoke_vote', 'safe_award_xp',
   'send_silk_release_to_voting', 'send_track_to_voting', 'submit_contest_entry', 'take_voting_snapshot',
   'submit_verification_request',
+  'song_idea_quota', 'get_my_song_idea_history', 'find_song_idea', 'accept_song_idea', 'record_song_idea_generation',
   'unblock_user', 'unhide_contest_comment', 'update_last_seen',
   'update_referral_settings',
   'update_voter_ranks', 'vote_qa_ticket', 'withdraw_contest_entry',

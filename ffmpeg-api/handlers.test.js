@@ -1,6 +1,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { parseDecodedDuration, durationsMatch } = require('./duration');
+const { buildDynamicsFilter, joinAudioFilters } = require('./handlers');
+
+test('full normalization uses conservative dynamics processing before loudness normalization', () => {
+  const dynamics = buildDynamicsFilter(true);
+  assert.match(dynamics, /dynaudnorm=.*framelen=2000/);
+  assert.match(dynamics, /acompressor=.*ratio=2/);
+  assert.match(dynamics, /alimiter=.*level=false/);
+  assert.equal(buildDynamicsFilter(false), '');
+  assert.equal(joinAudioFilters(dynamics, 'loudnorm=I=-14'), `${dynamics},loudnorm=I=-14`);
+});
 
 test('parseDecodedDuration uses the last decoded FFmpeg timestamp', () => {
   const progress = [

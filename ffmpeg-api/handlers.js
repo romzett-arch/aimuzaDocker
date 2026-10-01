@@ -48,6 +48,25 @@ function normalizeDownloadCacheKey(value) {
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 }
 
+// This is intentionally conservative: it corrects accidental level waves
+// without erasing the musical contrast between sections of a song.
+function buildDynamicsFilter(enabled) {
+  if (!enabled) return '';
+
+  return [
+    // Long windows plus a modest gain limit avoid audible gain chasing.
+    'dynaudnorm=framelen=2000:gausssize=101:maxgain=1.5:targetrms=0.18:coupling=true',
+    // Gentle bus compression. Loudnorm, not makeup gain, sets final loudness.
+    'acompressor=threshold=0.25:ratio=2:attack=25:release=250:knee=3:makeup=1',
+    // Fixed look-ahead ceiling; disabling auto-level prevents a second gain stage.
+    'alimiter=limit=0.891:attack=5:release=250:level=false',
+  ].join(',');
+}
+
+function joinAudioFilters(...filters) {
+  return filters.filter(Boolean).join(',');
+}
+
 function appendMetadataArgs(args, metadata) {
   for (const [key, value] of Object.entries(metadata)) {
     if (key === 'custom') continue;
@@ -160,6 +179,7 @@ function createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR) {
     }
     const strip_metadata = body.strip_metadata !== false;
     const brand_metadata = body.brand_metadata !== false;
+    const flatten_dynamics = body.flatten_dynamics !== false;
     const metadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata) ? body.metadata : {};
     const downloadCacheKey = normalizeDownloadCacheKey(body.cache_key);
 
@@ -217,12 +237,16 @@ function createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR) {
       console.warn('[normalize] ffprobe failed, using safe MP3 defaults:', e.message || String(e));
     }
 
+    const dynamicsFilter = buildDynamicsFilter(flatten_dynamics);
     let analysis = null;
     let sourceDecodedDuration = null;
     try {
       const { stdout: progressOutput, stderr } = await execFileAsync('ffmpeg', [
         '-i', inputFile,
-        '-af', `loudnorm=I=${target_lufs}:TP=${target_true_peak}:LRA=11:print_format=json`,
+        '-af', joinAudioFilters(
+          dynamicsFilter,
+          `loudnorm=I=${target_lufs}:TP=${target_true_peak}:LRA=11:print_format=json`
+        ),
         '-progress', 'pipe:1', '-nostats',
         '-f', 'null', '-'
       ], { timeout: 120000 });
@@ -247,7 +271,10 @@ function createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR) {
     // Dynamic mode performs the compression/limiting needed to reach a loud
     // target without clipping. Supplying linear measured values here can make
     // FFmpeg fall back inconsistently and undershoot the requested loudness.
-    const filter = `loudnorm=I=${target_lufs}:TP=${target_true_peak}:LRA=11:linear=false`;
+    const filter = joinAudioFilters(
+      dynamicsFilter,
+      `loudnorm=I=${target_lufs}:TP=${target_true_peak}:LRA=11:linear=false`
+    );
     const args = ['-i', inputFile, '-af', filter];
     const audioStream = sourceProbe?.streams?.find((stream) => stream.codec_type === 'audio') || {};
     const inputBitrate = parseInt(audioStream.bit_rate || sourceProbe?.format?.bit_rate || '0', 10);
@@ -328,6 +355,7 @@ function createNormalizeHandler(UPLOAD_DIR, OUTPUT_DIR) {
           output_bitrate: targetBitrateKbps * 1000,
           peak_before: isNaN(peak_before) ? undefined : peak_before,
           peak_after: isNaN(peak_after) ? undefined : peak_after,
+          dynamics_flattened: flatten_dynamics,
           decoded_duration: sourceDecodedDuration,
           output_duration: outputDuration,
           cache_hit: false
@@ -603,6 +631,8 @@ function createConvertFormatHandler(UPLOAD_DIR, OUTPUT_DIR) {
 }
 
 module.exports = {
+  buildDynamicsFilter,
+  joinAudioFilters,
   createAnalyzeHandler,
   createNormalizeHandler,
   createProcessWavHandler,

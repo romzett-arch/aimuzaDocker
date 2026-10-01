@@ -34,6 +34,11 @@ const AUTHENTICATED_RPC = new Set([
   'get_or_create_referral_code',
   'radio_award_listen_xp',
   'register_referral',
+  'song_idea_quota',
+  'get_my_song_idea_history',
+  'find_song_idea',
+  'accept_song_idea',
+  'record_song_idea_generation',
 ]);
 
 function httpError(status, message, code) {
