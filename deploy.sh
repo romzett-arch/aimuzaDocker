@@ -59,6 +59,37 @@ assert_public_url() {
     echo "   OK: ${label}"
 }
 
+wait_for_container_health() {
+    local container="$1"
+    local timeout_seconds="${2:-120}"
+    local elapsed=0
+    local status
+    local health
+
+    while [ "$elapsed" -lt "$timeout_seconds" ]; do
+        status="$(docker inspect "$container" --format '{{.State.Status}}' 2>/dev/null || true)"
+        health="$(docker inspect "$container" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || true)"
+
+        if [ "$status" = "running" ] && { [ "$health" = "healthy" ] || [ "$health" = "none" ]; }; then
+            echo "   OK: ${container} (${health})"
+            return 0
+        fi
+
+        if [ "$status" = "exited" ] || [ "$health" = "unhealthy" ]; then
+            echo "❌ ${container}: status=${status}, health=${health}"
+            docker logs --tail 100 "$container" || true
+            return 1
+        fi
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    echo "❌ ${container} не стал healthy за ${timeout_seconds} сек."
+    docker logs --tail 100 "$container" || true
+    return 1
+}
+
 assert_content_type() {
     local url="$1"
     local expected="$2"
@@ -234,8 +265,8 @@ echo "🚀 Шаг 3: Перезапуск контейнеров после ус
 docker compose -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
 
 echo ""
-echo "⏳ Шаг 4: Ожидание healthcheck (15 сек)..."
-sleep 15
+echo "⏳ Шаг 4: Ожидание healthcheck Deno-функций (до 120 сек)..."
+wait_for_container_health "aimuza-deno" 120
 
 echo ""
 echo "📊 Шаг 5: Статус контейнеров:"
