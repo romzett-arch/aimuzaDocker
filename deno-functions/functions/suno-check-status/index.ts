@@ -128,7 +128,46 @@ serve(async (req) => {
     
     const userId = user.id;
 
-    const { taskId: rawTaskId, trackId } = await req.json();
+    const { taskId: rawTaskId, trackId, cleanupStale } = await req.json();
+
+    // The browser can be running under an impersonated session.  Do not rely
+    // on a client-side RLS update to clear abandoned draft rows: reconcile
+    // them through this authenticated function with the server client.
+    if (cleanupStale === true) {
+      const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const staleMessage = "Генерация не была запущена. Попробуйте создать трек заново.";
+      const { data: staleTracks, error: staleTracksError } = await supabaseAdmin
+        .from("tracks")
+        .update({ status: "failed", error_message: staleMessage })
+        .eq("user_id", userId)
+        .in("status", ["pending", "processing"])
+        .lt("created_at", cutoff)
+        .is("suno_id", null)
+        .select("id");
+
+      if (staleTracksError) {
+        console.error("Error reconciling stale tracks:", staleTracksError);
+        return new Response(
+          JSON.stringify({ error: "Не удалось очистить зависшие генерации" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      const trackIds = (staleTracks || []).map((track) => track.id);
+      if (trackIds.length > 0) {
+        await supabaseAdmin
+          .from("generation_logs")
+          .update({ status: "failed", error_message: staleMessage })
+          .eq("user_id", userId)
+          .in("track_id", trackIds)
+          .in("status", ["pending", "processing"]);
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, status: "reconciled", count: trackIds.length }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
     
     // Trim whitespace from taskId to prevent URL encoding issues
     const taskId = rawTaskId?.trim();
