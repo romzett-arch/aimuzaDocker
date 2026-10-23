@@ -267,6 +267,7 @@ docker compose -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
 echo ""
 echo "⏳ Шаг 4: Ожидание healthcheck Deno-функций (до 120 сек)..."
 wait_for_container_health "aimuza-deno" 120
+wait_for_container_health "aimuza-studio" 120
 
 echo ""
 echo "📊 Шаг 5: Статус контейнеров:"
@@ -292,6 +293,13 @@ if [ -f "nginx/aimuza.ru.prod.conf" ]; then
 else
     echo "   ⚠ nginx/aimuza.ru.prod.conf не найден, пропуск"
 fi
+if [ -f "nginx/app.aimuza.ru.conf" ]; then
+    cp nginx/app.aimuza.ru.conf /etc/nginx/sites-available/app.aimuza.ru
+    ln -sf /etc/nginx/sites-available/app.aimuza.ru /etc/nginx/sites-enabled/app.aimuza.ru
+    echo "   nginx/app.aimuza.ru.conf → sites-available + sites-enabled (symlink)"
+else
+    echo "   ⚠ nginx/app.aimuza.ru.conf не найден, пропуск"
+fi
 
 echo ""
 echo "🔄 Шаг 7: Перезагрузка Nginx..."
@@ -304,6 +312,7 @@ assert_public_url "https://aimuza.ru/" "Главная"
 assert_public_url "https://www.aimuza.ru/" "WWW домен"
 assert_public_url "https://aimuza.ru/health" "Health endpoint"
 assert_public_url "https://aimuza.ru/functions/v1/maintenance-status" "Maintenance status"
+assert_public_url "https://app.aimuza.ru/" "AIMUZA Studio"
 
 if [ -f "/etc/letsencrypt/live/aimuza.ru/fullchain.pem" ]; then
     if ! openssl x509 -in /etc/letsencrypt/live/aimuza.ru/fullchain.pem -noout -checkend 1209600 >/dev/null; then

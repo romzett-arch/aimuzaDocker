@@ -1,0 +1,29 @@
+# Overlay for the independent Studio client. It joins the same network as the
+# primary AIMUZA services, but has no database or storage of its own.
+services:
+  studio:
+    build:
+      context: ../apps/studio
+      dockerfile: Dockerfile
+    image: aimuza-studio:local
+    container_name: aimuza-studio
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      AIMUZA_API_URL: http://api:3000
+      AIMUZA_ANON_KEY: ${ANON_KEY}
+      AIMUZA_SITE_URL: ${AIMUZA_SITE_URL:-https://aimuza.ru}
+      # Local HTTP demonstration only. Production omits this variable and keeps
+      # the Studio session cookie Secure.
+      STUDIO_COOKIE_SECURE: "false"
+    ports:
+      - "127.0.0.1:3101:3100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/api/config').then(r=>{if(!r.ok)throw Error(String(r.status))}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aimuza-net

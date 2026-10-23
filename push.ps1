@@ -3,8 +3,8 @@
 
 $ErrorActionPreference = "Stop"
 $reg = "romzett"
-$images = @("aimuza-api", "aimuza-frontend", "aimuza-realtime", "aimuza-ffmpeg", "aimuza-radio", "aimuza-deno")
-$localNames = @("deploy-api", "deploy-frontend", "deploy-realtime", "deploy-ffmpeg-api", "deploy-radio", "deploy-deno-functions")
+$images = @("aimuza-api", "aimuza-frontend", "aimuza-realtime", "aimuza-ffmpeg", "aimuza-radio", "aimuza-deno", "aimuza-studio")
+$localNames = @("deploy-api", "deploy-frontend", "deploy-realtime", "deploy-ffmpeg-api", "deploy-radio", "deploy-deno-functions", "aimuza-studio")
 $version = (Get-Content (Join-Path $PSScriptRoot "..\package.json") | ConvertFrom-Json).version
 
 Write-Host "Push to Docker Hub: $reg"

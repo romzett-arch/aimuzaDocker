@@ -31,6 +31,7 @@ import rpcRouter from './routes/rpc.js';
 import storageRouter from './routes/storage.js';
 import emailRouter from './routes/email.js';
 import functionsRouter from './routes/functions.js';
+import studioRouter from './routes/studio.js';
 import { authMiddleware } from './middleware/auth.js';
 import { maintenanceGuard } from './middleware/maintenance.js';
 import { isStorageObjectUpload } from './security/storage-rate-limit.js';
@@ -61,6 +62,12 @@ app.use(helmet({
   },
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
+// CSP is meaningful for HTML documents, but browsers also enforce it when it
+// is attached to an <audio> response. Public MP3 files must remain playable.
+app.use('/storage/v1/object/public', (_req, res, next) => {
+  res.removeHeader('Content-Security-Policy');
+  next();
+});
 const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN || 'http://localhost').split(',').map(s => s.trim());
 app.use(cors({
   origin: ALLOWED_ORIGINS,
@@ -140,6 +147,7 @@ app.use('/auth/v1', authRouter);
 app.use('/rest/v1/rpc', rpcRouter);
 app.use('/rest/v1', restRouter);
 app.use('/storage/v1', storageRouter);
+app.use('/studio/v1', studioRouter);
 app.use('/functions/v1', emailRouter);       // Email — обрабатывается в Node.js (не Deno)
 app.use('/functions/v1', functionsRouter);    // Остальные функции — проксируются в Deno
 

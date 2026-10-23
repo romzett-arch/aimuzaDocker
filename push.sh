@@ -8,8 +8,8 @@
 set -e
 
 REGISTRY="romzett"
-IMAGES=("aimuza-api" "aimuza-frontend" "aimuza-realtime" "aimuza-ffmpeg" "aimuza-radio" "aimuza-deno")
-LOCAL_NAMES=("deploy-api" "deploy-frontend" "deploy-realtime" "deploy-ffmpeg-api" "deploy-radio" "deploy-deno-functions")
+IMAGES=("aimuza-api" "aimuza-frontend" "aimuza-realtime" "aimuza-ffmpeg" "aimuza-radio" "aimuza-deno" "aimuza-studio")
+LOCAL_NAMES=("deploy-api" "deploy-frontend" "deploy-realtime" "deploy-ffmpeg-api" "deploy-radio" "deploy-deno-functions" "aimuza-studio")
 
 echo "╔══════════════════════════════════════════╗"
 echo "║   Push to Docker Hub: $REGISTRY          ║"

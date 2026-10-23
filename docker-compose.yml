@@ -216,6 +216,24 @@ services:
     networks:
       - aimuza-net
 
+  # ── AIMUZA Studio (Next.js) ────────────────
+  studio:
+    build:
+      context: ../apps/studio
+      dockerfile: Dockerfile
+    image: aimuza-studio:latest
+    container_name: aimuza-studio
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      AIMUZA_API_URL: http://api:3000
+      AIMUZA_ANON_KEY: ${ANON_KEY:-local-anon-key}
+      AIMUZA_SITE_URL: ${AIMUZA_SITE_URL:-https://aimuza.ru}
+    networks:
+      - aimuza-net
+
   # ── Nginx (Reverse Proxy) ──────────────────
   nginx:
     image: nginx:alpine
