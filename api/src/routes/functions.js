@@ -11,6 +11,7 @@ const DENO_URL = process.env.DENO_FUNCTIONS_URL || 'http://deno-functions:8081';
 const ALLOWED_FUNCTIONS = new Set([
   'admin-change-user-password', 'admin-create-user', 'admin-delete-user', 'admin-impersonate', 'admin-recheck-track',
   'ad-targeting', 'analyze-audio',
+  'audio-separation', 'audio-separation-callback',
   'approve-distribution', 'check-plagiarism',
   'classify-audio', 'cleanup-wav', 'convert-to-wav', 'create-persona', 'db-admin',
   'deepseek-lyrics', 'distribution-check', 'download-track', 'export-database',

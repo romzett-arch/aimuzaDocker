@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { copyFirstAvailableFileToStorage } from "../suno-callback/audio-storage.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -40,6 +41,20 @@ function safeEqual(left: string, right: string): boolean {
   let mismatch = 0;
   for (let index = 0; index < left.length; index += 1) mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
   return mismatch === 0;
+}
+
+async function trimUnexpectedlyLongAudio(audioUrl: string, sourceDuration: number): Promise<string> {
+  const ffmpegUrl = Deno.env.get("FFMPEG_API_URL") || "";
+  const ffmpegSecret = Deno.env.get("FFMPEG_API_SECRET") || "";
+  if (!ffmpegUrl || !ffmpegSecret) throw new Error("Сервис коррекции длительности недоступен");
+  const baseUrl = ffmpegUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav|convert-format)\/?$/, "");
+  const response = await fetch(`${baseUrl}/trim-audio`, {
+    method: "POST", headers: { "Content-Type": "application/json", "x-api-key": ffmpegSecret },
+    body: JSON.stringify({ audio_url: audioUrl, duration_seconds: sourceDuration }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !asString(data?.output_url)) throw new Error("Не удалось скорректировать длительность результата");
+  return asString(data.output_url);
 }
 
 serve(async (req) => {
@@ -142,8 +157,15 @@ serve(async (req) => {
         }).eq("id", trackId);
         continue;
       }
-      const audioUrl = asString(item.audio_url) || asString(item.stream_audio_url);
-      if (!audioUrl) throw new Error("Replacement result has no audio URL");
+      const providerAudioUrl = asString(item.audio_url) || asString(item.stream_audio_url);
+      if (!providerAudioUrl) throw new Error("Replacement result has no audio URL");
+      const sourceDuration = Number(generationParams.source_duration_s || 0);
+      const providerDuration = Number(item.duration || 0);
+      const correctedUrl = sourceDuration > 0 && providerDuration > sourceDuration + 3
+        ? await trimUnexpectedlyLongAudio(providerAudioUrl, sourceDuration)
+        : providerAudioUrl;
+      const audioUrl = await copyFirstAvailableFileToStorage(supabase, [correctedUrl], "tracks", `audio/${trackId}.mp3`);
+      if (!audioUrl) throw new Error("Не удалось сохранить готовый трек в библиотеку");
       const itemTags = asString(item.tags) || asString(generationParams.tags);
       const taskIdMarker = providerTaskId || expectedTaskId;
       const description = [itemTags, taskIdMarker ? `[task_id: ${taskIdMarker}]` : "", `[generation_variant: ${index}]`]
@@ -161,7 +183,8 @@ serve(async (req) => {
         processing_completed_at: new Date().toISOString(),
       };
       if (asString(item.image_url)) trackUpdate.cover_url = asString(item.image_url);
-      if (Number(item.duration || 0) > 0) trackUpdate.duration = Math.round(Number(item.duration));
+      if (sourceDuration > 0) trackUpdate.duration = Math.round(sourceDuration);
+      else if (Number(item.duration || 0) > 0) trackUpdate.duration = Math.round(Number(item.duration));
       const { error: updateError } = await supabase.from("tracks").update(trackUpdate).eq("id", trackId);
       if (updateError) throw updateError;
       completedTrackIds.push(trackId);

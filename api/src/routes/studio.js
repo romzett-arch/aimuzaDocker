@@ -43,7 +43,7 @@ async function userBootstrap(userId) {
     pool.query('SELECT username, avatar_url, balance FROM public.profiles WHERE user_id = $1', [userId]),
     pool.query("SELECT count(*)::integer AS total FROM public.tracks WHERE user_id = $1", [userId]),
     pool.query("SELECT count(*)::integer AS total FROM public.silk_releases WHERE user_id = $1", [userId]),
-    pool.query("SELECT price_rub FROM public.addon_services WHERE name = 'generate_music_v6' AND is_active IS TRUE LIMIT 1"),
+    pool.query("SELECT name, price_rub FROM public.addon_services WHERE name IN ('generate_music_v6', 'vocal_separation') AND is_active IS TRUE"),
     pool.query("SELECT status, current_period_end FROM public.user_subscriptions WHERE user_id = $1 AND status IN ('active', 'canceled') AND current_period_end > now() ORDER BY current_period_end DESC LIMIT 1", [userId]),
   ]);
   const profileRow = profile.rows[0] || {};
@@ -54,7 +54,8 @@ async function userBootstrap(userId) {
     authed: true,
     balance: Number(profileRow.balance || 0),
     currency: 'RUB',
-    generationPrice: Number(service.rows[0]?.price_rub || 0),
+    generationPrice: Number(service.rows.find((row) => row.name === 'generate_music_v6')?.price_rub || 0),
+    vocalSeparationPrice: Number(service.rows.find((row) => row.name === 'vocal_separation')?.price_rub || 0),
     stats: { tracks: tracks.rows[0]?.total || 0, releases: releases.rows[0]?.total || 0 },
     subscription: subscription.rows[0] || null,
   };
@@ -118,7 +119,9 @@ router.get('/tracks', requireAuth, async (req, res, next) => {
     const result = await pool.query(
       `SELECT t.id, t.title, t.description, t.lyrics, t.status, t.audio_url, t.cover_url, t.duration,
               t.created_at, t.updated_at,
-              EXISTS (SELECT 1 FROM public.silk_releases r WHERE r.source_track_id = t.id AND r.user_id = t.user_id) AS has_release
+              EXISTS (SELECT 1 FROM public.silk_releases r WHERE r.source_track_id = t.id AND r.user_id = t.user_id) AS has_release,
+              (SELECT s.status FROM public.audio_separations s WHERE s.track_id = t.id ORDER BY s.created_at DESC LIMIT 1) AS vocal_separation_status,
+              (SELECT s.result_urls FROM public.audio_separations s WHERE s.track_id = t.id ORDER BY s.created_at DESC LIMIT 1) AS vocal_separation_results
        FROM public.tracks t
        WHERE t.user_id = $1
        ORDER BY t.created_at DESC
@@ -147,7 +150,25 @@ router.get('/tracks', requireAuth, async (req, res, next) => {
       hasRelease: track.has_release,
       hasWav: false,
       wavOwned: false,
+      vocalSeparationStatus: track.vocal_separation_status || null,
+      vocalSeparationResults: track.vocal_separation_results || null,
     })));
+  } catch (error) { next(error); }
+});
+
+// Studio only forwards the authenticated user to the same Deno operation used
+// by the main site. Billing stays entirely in audio-separation.
+router.post('/tracks/:trackId/separate-vocals', requireAuth, async (req, res, next) => {
+  try {
+    if (!validUuid(req.params.trackId)) return res.status(400).json({ error: 'Некорректный идентификатор трека' });
+    const denoUrl = process.env.DENO_FUNCTIONS_URL;
+    const authorization = req.get('authorization');
+    if (!denoUrl || !authorization) return res.status(503).json({ error: 'Сервис разделения временно недоступен' });
+    const response = await fetch(`${denoUrl.replace(/\/$/, '')}/functions/v1/audio-separation`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: authorization }, body: JSON.stringify({ track_id: req.params.trackId }),
+    });
+    const result = await response.json().catch(() => ({}));
+    return res.status(response.status).json(result);
   } catch (error) { next(error); }
 });
 

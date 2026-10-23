@@ -468,6 +468,30 @@ function createProcessWavHandler(UPLOAD_DIR, OUTPUT_DIR) {
   };
 }
 
+function createTrimAudioHandler(UPLOAD_DIR, OUTPUT_DIR) {
+  return async (req, res) => {
+    const audioUrl = req.body?.audio_url;
+    const duration = Number(req.body?.duration_seconds);
+    if (typeof audioUrl !== 'string' || !audioUrl.trim() || !Number.isFinite(duration) || duration <= 0 || duration > 600) {
+      return res.status(400).json({ error: 'Bad Request', message: 'audio_url and duration_seconds are required' });
+    }
+    let parsedUrl;
+    try { parsedUrl = new URL(audioUrl); } catch (_) { return res.status(400).json({ error: 'Bad Request', message: 'audio_url is not a valid URL' }); }
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const inputFile = path.join(UPLOAD_DIR, `trim_in_${suffix}${path.extname(parsedUrl.pathname) || '.mp3'}`);
+    const outName = `trimmed_${suffix}.mp3`;
+    const outputFile = path.join(OUTPUT_DIR, outName);
+    try { await fetchAudio(req, audioUrl, inputFile); } catch (error) { return res.status(400).json({ error: 'Bad Request', message: 'Failed to download audio: ' + (error.message || String(error)) }); }
+    return new Promise((resolve) => {
+      execFile('ffmpeg', ['-i', inputFile, '-t', String(duration), '-map_metadata', '-1', '-c:a', 'libmp3lame', '-b:a', '192k', '-y', outputFile], { timeout: 180000 }, (err, _stdout, stderr) => {
+        try { fs.unlinkSync(inputFile); } catch (_) {}
+        if (err) { try { fs.unlinkSync(outputFile); } catch (_) {}; return resolve(res.status(500).json({ error: 'Trim failed', message: stderr || err.message || String(err) })); }
+        return resolve(res.json({ output_url: `${getPublicFfmpegBaseUrl()}/output/${outName}`, duration_seconds: duration }));
+      });
+    });
+  };
+}
+
 function createCleanMetadataHandler(UPLOAD_DIR, OUTPUT_DIR) {
   return async (req, res) => {
     let body = req.body;
@@ -638,4 +662,5 @@ module.exports = {
   createProcessWavHandler,
   createCleanMetadataHandler,
   createConvertFormatHandler,
+  createTrimAudioHandler,
 };

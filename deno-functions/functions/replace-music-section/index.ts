@@ -168,6 +168,7 @@ serve(async (req) => {
       infill_start_s: infillStartS,
       infill_end_s: infillEndS,
       selected_duration_s: selectedDuration,
+      source_duration_s: trackDuration,
       prompt,
       full_lyrics: fullLyrics,
       tags,

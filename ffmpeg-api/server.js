@@ -2,7 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { requireApiKey } = require('./utils');
-const { createAnalyzeHandler, createNormalizeHandler, createProcessWavHandler, createCleanMetadataHandler, createConvertFormatHandler } = require('./handlers');
+const { createAnalyzeHandler, createNormalizeHandler, createProcessWavHandler, createCleanMetadataHandler, createConvertFormatHandler, createTrimAudioHandler } = require('./handlers');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -146,7 +146,7 @@ app.use((err, req, res, next) => {
   next(err);
 });
 app.use((req, res, next) => {
-  if (req.body && typeof req.body === 'string' && (req.path === '/analyze' || req.path === '/normalize' || req.path === '/clean-metadata' || req.path === '/process-wav' || req.path === '/convert-format')) {
+  if (req.body && typeof req.body === 'string' && (req.path === '/analyze' || req.path === '/normalize' || req.path === '/clean-metadata' || req.path === '/process-wav' || req.path === '/convert-format' || req.path === '/trim-audio')) {
     const s = req.body.trim();
     if (s.startsWith('{')) {
       try { req.body = JSON.parse(s); } catch (_) {}
@@ -169,6 +169,8 @@ app.post('/clean-metadata', createCleanMetadataHandler(UPLOAD_DIR, OUTPUT_DIR));
 
 app.use('/convert-format', requireApiKey(API_KEY));
 app.post('/convert-format', heavyJobLimiter, createConvertFormatHandler(UPLOAD_DIR, OUTPUT_DIR));
+app.use('/trim-audio', requireApiKey(API_KEY));
+app.post('/trim-audio', heavyJobLimiter, createTrimAudioHandler(UPLOAD_DIR, OUTPUT_DIR));
 
 app.use('/output', express.static(OUTPUT_DIR));
 

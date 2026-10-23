@@ -5,226 +5,69 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
+const SUNO_VOCAL_REMOVAL_URL = "https://apibox.erweima.ai/api/v1/vocal-removal/generate";
+const SERVICE_NAME = "vocal_separation";
+
+class RequestError extends Error { constructor(message: string, readonly status: number) { super(message); } }
+function json(body: Record<string, unknown>, status = 200) { return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } }); }
+function text(value: unknown) { return typeof value === "string" ? value.trim() : ""; }
+function taskIdFromDescription(description: string | null) { return description?.match(/\[task_id:\s*([^\]]+)\]/i)?.[1]?.trim() || ""; }
+async function signCallback(separationId: string, secret: string) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(separationId));
+  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
-
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  let userId = ""; let separationId = ""; let debitedAmount = 0; let admin: any;
   try {
-    // Security: Verify request comes from authenticated user or service role
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    
-    // Check if called by service role (from other edge functions) or validate user
-    const isServiceRole = authHeader === `Bearer ${supabaseServiceKey}`;
-    
-    if (!isServiceRole) {
-      // Validate user auth
-      const userClient = createClient(supabaseUrl, supabaseAnonKey, {
-        global: { headers: { Authorization: authHeader } }
-      });
-      const { data: { user }, error: userError } = await userClient.auth.getUser();
-      if (userError || !user) {
-        return new Response(
-          JSON.stringify({ error: "Unauthorized" }),
-          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    const { separation_id, type, source_url } = await req.json();
-    console.log("Audio separation request:", { separation_id, type, source_url });
-
-    if (!separation_id || !type || !source_url) {
-      return new Response(
-        JSON.stringify({ error: "Missing required fields" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // Update status to processing
-    await supabase
-      .from("audio_separations")
-      .update({ status: "processing" })
-      .eq("id", separation_id);
-
-    console.log("Updated separation status to processing");
-
-    // Start background processing using the event loop
-    // The function will continue running after the response is sent
-    (async () => {
-      await processAudioSeparation(supabase, separation_id, type, source_url);
-    })();
-
-    return new Response(
-      JSON.stringify({ success: true, message: "Processing started" }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
-  } catch (error) {
-    console.error("Audio separation error:", error);
-    return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    const authorization = req.headers.get("Authorization");
+    if (!authorization?.startsWith("Bearer ")) throw new RequestError("Необходима авторизация", 401);
+    const url = Deno.env.get("SUPABASE_URL") || "";
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    admin = createClient(url, serviceKey);
+    const { data: { user }, error: authError } = await admin.auth.getUser(authorization.slice(7));
+    if (authError || !user) throw new RequestError("Неверный токен авторизации", 401);
+    userId = user.id;
+    const body = await req.json(); const trackId = text(body?.track_id);
+    if (!trackId) throw new RequestError("Выберите готовый трек", 422);
+    const { data: track, error: trackError } = await admin.from("tracks").select("id,user_id,title,description,audio_url,suno_audio_id,status").eq("id", trackId).maybeSingle();
+    if (trackError || !track) throw new RequestError("Трек не найден", 404);
+    if (track.user_id !== userId) throw new RequestError("Нет доступа к треку", 403);
+    if (track.status !== "completed" || !track.audio_url) throw new RequestError("Разделение доступно для готового трека", 422);
+    const { data: activeJob } = await admin.from("audio_separations").select("id,status").eq("track_id", trackId).in("status", ["pending", "processing", "finalizing"]).maybeSingle();
+    if (activeJob) return json({ success: true, separation_id: activeJob.id, status: activeJob.status, reused: true }, 202);
+    const { data: debitRows, error: debitError } = await admin.rpc("debit_addon_service", {
+      p_user_id: userId, p_service_name: SERVICE_NAME, p_description: `Разделение вокала: ${track.title || "трек"}`, p_metadata: { service_name: SERVICE_NAME, track_id: trackId },
+    });
+    if (debitError) { const insufficient = /insufficient balance/i.test(debitError.message || ""); throw new RequestError(insufficient ? "Недостаточно средств на балансе" : "Услуга временно недоступна", insufficient ? 402 : 503); }
+    const debit = debitRows?.[0] || {}; debitedAmount = Number(debit.amount_debited || 0);
+    // `vocal` is the canonical legacy-compatible value.  The table predates
+    // Studio and some installations still retain its original type constraint.
+    const { data: separation, error: createError } = await admin.from("audio_separations").insert({ user_id: userId, track_id: trackId, type: "vocal", status: "processing", source_url: track.audio_url, result_urls: {}, price_rub: debitedAmount }).select("id").single();
+    if (createError || !separation?.id) throw new Error("Не удалось создать задачу разделения");
+    separationId = separation.id;
+    const apiKey = Deno.env.get("SUNO_API_KEY"); if (!apiKey) throw new Error("Suno API временно недоступен");
+    const baseUrl = (Deno.env.get("BASE_URL") || "https://aimuza.ru").replace(/\/$/, "");
+    const callbackToken = await signCallback(separationId, serviceKey);
+    const callBackUrl = `${baseUrl}/functions/v1/audio-separation-callback?separation_id=${encodeURIComponent(separationId)}&token=${encodeURIComponent(callbackToken)}`;
+    const sourceTaskId = taskIdFromDescription(track.description);
+    const providerPayload: Record<string, string> = { callBackUrl, type: "separate_vocal" };
+    if (sourceTaskId && track.suno_audio_id) { providerPayload.taskId = sourceTaskId; providerPayload.audioId = track.suno_audio_id; } else { providerPayload.audioUrl = track.audio_url; }
+    const providerResponse = await fetch(SUNO_VOCAL_REMOVAL_URL, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(providerPayload) });
+    const providerResult = await providerResponse.json().catch(() => ({}));
+    const providerTaskId = text(providerResult?.data?.taskId) || text(providerResult?.data?.task_id);
+    if (!providerResponse.ok || Number(providerResult?.code) !== 200 || !providerTaskId) throw new Error(text(providerResult?.msg) || "Suno не принял задачу разделения");
+    await admin.from("audio_separations").update({ result_urls: { provider_task_id: providerTaskId } }).eq("id", separationId);
+    return json({ success: true, separation_id: separationId, status: "processing", amount_debited: debitedAmount }, 202);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Не удалось запустить разделение вокала";
+    const status = error instanceof RequestError ? error.status : 500; console.error("audio-separation failed:", error);
+    if (admin && separationId) await admin.from("audio_separations").update({ status: "failed", error_message: message }).eq("id", separationId);
+    let refunded = false;
+    if (admin && userId && debitedAmount > 0) { const { error: refundError } = await admin.rpc("refund_addon_service", { p_user_id: userId, p_amount: debitedAmount, p_description: "Возврат за неуспешное разделение вокала", p_metadata: { service_name: SERVICE_NAME, separation_id: separationId || null } }); refunded = !refundError; }
+    return json({ error: message, refunded }, status);
   }
 });
-
-async function processAudioSeparation(
-  supabase: any,
-  separationId: string,
-  type: "vocal" | "stems",
-  sourceUrl: string
-) {
-  try {
-    console.log("Starting audio separation processing:", { separationId, type });
-
-    // Get the SUNO_API_KEY for audio separation
-    const SUNO_API_KEY = Deno.env.get("SUNO_API_KEY");
-    
-    if (!SUNO_API_KEY) {
-      throw new Error("SUNO_API_KEY not configured");
-    }
-
-    // Call the Suno API for audio separation
-    // Note: This is a placeholder for the actual Suno vocal-removal/stems API
-    // The actual endpoint and request format may vary based on Suno's API documentation
-    
-    let endpoint = "";
-    let requestBody: any = {};
-    
-    if (type === "vocal") {
-      // Vocal separation - separate vocals from instrumentals
-      endpoint = "https://apibox.erweima.ai/api/v1/suno/vocal-removal/generate";
-      requestBody = {
-        audio_url: sourceUrl,
-      };
-    } else {
-      // Stem separation - separate into individual instruments
-      endpoint = "https://apibox.erweima.ai/api/v1/suno/stem-separation/generate";
-      requestBody = {
-        audio_url: sourceUrl,
-        stems: ["drums", "bass", "guitar", "piano", "other"],
-      };
-    }
-
-    console.log("Calling separation API:", endpoint);
-
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${SUNO_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Separation API error:", response.status, errorText);
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const result = await response.json();
-    console.log("Separation API response:", result);
-
-    // Check if we got a task ID for polling
-    if (result.data?.task_id) {
-      // Poll for completion
-      const completedResult = await pollForCompletion(SUNO_API_KEY, result.data.task_id, type);
-      
-      // Update the separation record with results
-      await supabase
-        .from("audio_separations")
-        .update({
-          status: "completed",
-          result_urls: completedResult,
-        })
-        .eq("id", separationId);
-        
-      console.log("Separation completed successfully");
-    } else if (result.data?.urls || result.urls) {
-      // Direct result
-      const urls = result.data?.urls || result.urls;
-      
-      await supabase
-        .from("audio_separations")
-        .update({
-          status: "completed",
-          result_urls: urls,
-        })
-        .eq("id", separationId);
-        
-      console.log("Separation completed successfully with direct result");
-    } else {
-      throw new Error("Unexpected API response format");
-    }
-  } catch (error) {
-    console.error("Processing error:", error);
-    
-    // Update status to failed
-    await supabase
-      .from("audio_separations")
-      .update({
-        status: "failed",
-        error_message: error instanceof Error ? error.message : "Unknown error",
-      })
-      .eq("id", separationId);
-  }
-}
-
-async function pollForCompletion(
-  apiKey: string,
-  taskId: string,
-  type: "vocal" | "stems",
-  maxAttempts = 60,
-  intervalMs = 5000
-): Promise<Record<string, string>> {
-  const endpoint = type === "vocal"
-    ? `https://apibox.erweima.ai/api/v1/suno/vocal-removal/status/${taskId}`
-    : `https://apibox.erweima.ai/api/v1/suno/stem-separation/status/${taskId}`;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    console.log(`Polling attempt ${attempt + 1}/${maxAttempts}`);
-    
-    const response = await fetch(endpoint, {
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      console.error("Poll error:", response.status);
-      throw new Error(`Poll error: ${response.status}`);
-    }
-
-    const result = await response.json();
-    console.log("Poll result:", result);
-
-    if (result.data?.status === "completed" || result.status === "completed") {
-      // Return the URLs
-      return result.data?.urls || result.urls || {};
-    }
-
-    if (result.data?.status === "failed" || result.status === "failed") {
-      throw new Error(result.data?.error || result.error || "Processing failed");
-    }
-
-    // Wait before next poll
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
-  }
-
-  throw new Error("Timeout waiting for separation to complete");
-}
