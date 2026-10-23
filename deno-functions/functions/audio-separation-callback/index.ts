@@ -6,12 +6,15 @@ function record(value: unknown): Record<string, any> { return value && typeof va
 function string(value: unknown) { return typeof value === "string" ? value : ""; }
 async function sign(id: string, secret: string) { const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(id)); return Array.from(new Uint8Array(sig), b => b.toString(16).padStart(2, "0")).join(""); }
 function same(a: string, b: string) { if (a.length !== b.length) return false; let diff = 0; for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i); return diff === 0; }
-async function copyAudio(client: any, sourceUrl: string, separationId: string, kind: "vocal" | "instrumental") {
+async function copyAudio(client: any, sourceUrl: string, separationId: string, kind: "vocal" | "instrumental", publicBaseUrl: string) {
   const response = await fetch(sourceUrl); if (!response.ok) throw new Error(`Не удалось скачать ${kind === "vocal" ? "вокал" : "инструментал"}`);
   const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.length < 1024) throw new Error("Suno вернул пустой аудиофайл");
   const mime = response.headers.get("content-type")?.split(";")[0] || "audio/mpeg"; const extension = mime.includes("wav") ? "wav" : mime.includes("ogg") ? "ogg" : "mp3";
   const path = `separations/${separationId}/${kind}.${extension}`; const { error } = await client.storage.from("tracks").upload(path, bytes, { contentType: mime, upsert: true }); if (error) throw error;
-  return client.storage.from("tracks").getPublicUrl(path).data.publicUrl;
+  // SUPABASE_URL points to the internal Docker host (`http://api:3000`).
+  // Never expose that address to the browser: downloads must go through the
+  // public site origin, both locally and in production.
+  return `${publicBaseUrl.replace(/\/$/, "")}/storage/v1/object/public/tracks/${path}`;
 }
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders }); if (req.method !== "POST") return json({ code: 405, msg: "Method not allowed" }, 405);
@@ -30,7 +33,8 @@ serve(async (req) => {
       await client.from("audio_separations").update({ status: "failed", error_message: refunded ? "Не удалось обработать трек. Деньги возвращены." : "Не удалось обработать трек." }).eq("id", id); return json({ code: 200, msg: "success" });
     }
     await client.from("audio_separations").update({ status: "finalizing" }).eq("id", id).in("status", ["pending", "processing"]);
-    const [vocal, instrumental] = await Promise.all([copyAudio(client, vocalUrl, id, "vocal"), copyAudio(client, instrumentalUrl, id, "instrumental")]);
+    const publicBaseUrl = (Deno.env.get("BASE_URL") || new URL(req.url).origin).replace(/\/$/, "");
+    const [vocal, instrumental] = await Promise.all([copyAudio(client, vocalUrl, id, "vocal", publicBaseUrl), copyAudio(client, instrumentalUrl, id, "instrumental", publicBaseUrl)]);
     await client.from("audio_separations").update({ status: "completed", error_message: null, result_urls: { vocal_url: vocal, instrumental_url: instrumental, origin_url: string(info.origin_url), provider_task_id: callbackTask || knownTask }, updated_at: new Date().toISOString() }).eq("id", id);
     await client.from("notifications").insert({ user_id: separation.user_id, type: "generation_completed", title: "Вокал и инструментал готовы", message: "Обе дорожки сохранены в вашей библиотеке", target_type: "track", target_id: separation.track_id }); return json({ code: 200, msg: "success" });
   } catch (error: unknown) {
