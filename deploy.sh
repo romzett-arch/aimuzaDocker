@@ -188,9 +188,9 @@ pull_images_with_retry() {
         if docker compose -f "$COMPOSE_FILE" pull 2>&1 | tee "$log_file"; then
             rm -f "$log_file"
             return 0
+        else
+            status=${PIPESTATUS[0]}
         fi
-
-        status=${PIPESTATUS[0]}
         print_pull_failure_hint "$log_file"
 
         if [ "$attempt" -lt "$PULL_ATTEMPTS" ]; then
@@ -262,7 +262,10 @@ fi
 
 echo ""
 echo "🚀 Шаг 3: Перезапуск контейнеров после успешных миграций..."
-docker compose -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
+# Keep PostgreSQL running with its existing image, container and data volume.
+# Dependencies are already running; deployment only replaces application services.
+docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate \
+    api deno-functions gotenberg ffmpeg-api realtime radio frontend studio
 
 echo ""
 echo "⏳ Шаг 4: Ожидание healthcheck Deno-функций (до 120 сек)..."
