@@ -73,7 +73,7 @@ router.delete('/tracks', requireAuth, async (req, res, next) => {
     try {
       await client.query('BEGIN');
       const owned = await client.query(
-        "SELECT id FROM public.tracks WHERE user_id = $1 AND id = ANY($2::uuid[]) AND status IN ('completed', 'failed') FOR UPDATE",
+        "SELECT id FROM public.tracks WHERE user_id = $1 AND id = ANY($2::uuid[]) AND status NOT IN ('pending', 'processing') FOR UPDATE",
         [req.user.id, ids],
       );
       const trackIds = owned.rows.map((row) => row.id);
