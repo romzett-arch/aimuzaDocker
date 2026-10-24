@@ -11,23 +11,41 @@ const PROMPT_LIMIT = 200;
 
 type LyricsResult = { text: string; title: string };
 
+function extractLyricsResult(result: Record<string, unknown>): LyricsResult | null {
+  const data = result.data as Record<string, unknown> | undefined;
+  const response = data?.response as Record<string, unknown> | undefined;
+  const candidates = [
+    response?.data,
+    response?.sunoData,
+    data?.sunoData,
+    data?.data,
+  ];
+  const item = candidates.find(Array.isArray)?.[0] as Record<string, unknown> | undefined;
+  const text = item?.text ?? item?.lyrics ?? data?.text ?? data?.lyrics;
+  const title = item?.title ?? data?.title;
+  return typeof text === "string" && text.trim()
+    ? { text: text.trim(), title: typeof title === "string" ? title.trim() : "" }
+    : null;
+}
+
 async function pollLyricsResult(taskId: string, apiKey: string, maxAttempts = 30): Promise<LyricsResult | null> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     const response = await fetch(`${API_BASE}/api/v1/lyrics/record-info?taskId=${encodeURIComponent(taskId)}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
-    const result = await response.json();
+    const result = await response.json().catch(() => ({})) as Record<string, unknown>;
 
-    if (result.code === 200 && result.data?.status === "SUCCESS") {
-      const item = result.data.response?.data?.[0];
-      return {
-        text: item?.text || result.data.text || "",
-        title: item?.title || result.data.title || "",
-      };
+    if (!response.ok) {
+      throw new Error(typeof result.msg === "string" ? result.msg : "Не удалось получить текст от Suno");
     }
-    if (result.data?.status === "FAILED") {
-      throw new Error(result.data?.errorMessage || "Не удалось создать текст");
+
+    const data = result.data as Record<string, unknown> | undefined;
+    if (result.code === 200 && data?.status === "SUCCESS") {
+      return extractLyricsResult(result);
+    }
+    if (data?.status === "FAILED") {
+      throw new Error(typeof data.errorMessage === "string" ? data.errorMessage : "Не удалось создать текст");
     }
   }
   return null;
@@ -130,12 +148,14 @@ serve(async (req) => {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({ prompt, callBackUrl: callbackUrl }),
     });
-    const result = await response.json();
-    if (!response.ok || result.code !== 200 || !result.data?.taskId) {
-      throw new Error(result.msg || "Не удалось запустить создание текста");
+    const result = await response.json().catch(() => ({})) as Record<string, unknown>;
+    const resultData = result.data as Record<string, unknown> | undefined;
+    const taskId = resultData?.taskId ?? resultData?.task_id;
+    if (!response.ok || result.code !== 200 || typeof taskId !== "string" || !taskId) {
+      throw new Error(typeof result.msg === "string" ? result.msg : "Не удалось запустить создание текста");
     }
 
-    const lyricsResult = await pollLyricsResult(result.data.taskId, apiKey);
+    const lyricsResult = await pollLyricsResult(taskId, apiKey);
     if (!lyricsResult?.text) throw new Error("Превышено время ожидания текста");
 
     await adminClient.from("generated_lyrics").insert({
@@ -149,7 +169,7 @@ serve(async (req) => {
       await adminClient.from("generation_logs").update({
         status: "completed",
         duration_ms: Date.now() - startedAt,
-        metadata: { task_id: result.data.taskId },
+        metadata: { task_id: taskId },
       }).eq("id", generationLogId);
     }
 
