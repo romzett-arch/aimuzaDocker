@@ -349,7 +349,7 @@ export function getMusicMutationScope(table, user, startIndex = 1, operation = '
   }
   if (isMusicAdmin(user)) {
     if (table === 'silk_releases' && operation === 'delete') {
-      return { sql: `"status" IN ('draft', 'rejected', 'archived')`, params: [] };
+      return { sql: `"status" IN ('draft', 'rejected')`, params: [] };
     }
     return { sql: '', params: [] };
   }

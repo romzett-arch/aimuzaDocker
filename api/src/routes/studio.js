@@ -43,7 +43,7 @@ async function userBootstrap(userId) {
     pool.query('SELECT username, avatar_url, balance FROM public.profiles WHERE user_id = $1', [userId]),
     pool.query("SELECT count(*)::integer AS total FROM public.tracks WHERE user_id = $1", [userId]),
     pool.query("SELECT count(*)::integer AS total FROM public.silk_releases WHERE user_id = $1", [userId]),
-    pool.query("SELECT name, price_rub FROM public.addon_services WHERE name IN ('generate_music_v6', 'vocal_separation') AND is_active IS TRUE"),
+    pool.query("SELECT name, price_rub FROM public.addon_services WHERE name IN ('generate_music_v6', 'vocal_separation', 'generate_lyrics') AND is_active IS TRUE"),
     pool.query("SELECT status, current_period_end FROM public.user_subscriptions WHERE user_id = $1 AND status IN ('active', 'canceled') AND current_period_end > now() ORDER BY current_period_end DESC LIMIT 1", [userId]),
   ]);
   const profileRow = profile.rows[0] || {};
@@ -56,6 +56,7 @@ async function userBootstrap(userId) {
     currency: 'RUB',
     generationPrice: Number(service.rows.find((row) => row.name === 'generate_music_v6')?.price_rub || 0),
     vocalSeparationPrice: Number(service.rows.find((row) => row.name === 'vocal_separation')?.price_rub || 0),
+    lyricsGenerationPrice: Number(service.rows.find((row) => row.name === 'generate_lyrics')?.price_rub || 0),
     stats: { tracks: tracks.rows[0]?.total || 0, releases: releases.rows[0]?.total || 0 },
     subscription: subscription.rows[0] || null,
   };
@@ -72,18 +73,18 @@ router.delete('/tracks', requireAuth, async (req, res, next) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const owned = await client.query(
-        "SELECT id FROM public.tracks WHERE user_id = $1 AND id = ANY($2::uuid[]) AND status NOT IN ('pending', 'processing') FOR UPDATE",
+      // Exactly mirror the site: PostgreSQL owns cascading dependent rows.
+      // The previous hand-maintained list of dependent tables made a bulk
+      // delete fail as soon as a track gained a new related entity.
+      const deleted = await client.query(
+        'DELETE FROM public.tracks WHERE user_id = $1 AND id = ANY($2::uuid[]) RETURNING id',
         [req.user.id, ids],
       );
-      const trackIds = owned.rows.map((row) => row.id);
+      const trackIds = deleted.rows.map((row) => row.id);
       if (!trackIds.length) {
         await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Готовые или ошибочные треки не найдены' });
+        return res.status(404).json({ error: 'Выбранные треки не найдены' });
       }
-      await client.query('DELETE FROM public.generation_logs WHERE user_id = $1 AND track_id = ANY($2::uuid[])', [req.user.id, trackIds]);
-      await client.query('DELETE FROM public.user_prompts WHERE user_id = $1 AND track_id = ANY($2::uuid[])', [req.user.id, trackIds]);
-      await client.query('DELETE FROM public.tracks WHERE user_id = $1 AND id = ANY($2::uuid[])', [req.user.id, trackIds]);
       await client.query('COMMIT');
       res.json({ deleted: trackIds.length, skipped: ids.length - trackIds.length });
     } catch (error) {

@@ -234,7 +234,9 @@ services:
       AIMUZA_ANON_KEY: ${ANON_KEY:-local-anon-key}
       AIMUZA_SITE_URL: ${AIMUZA_SITE_URL:-https://aimuza.ru}
     ports:
-      - "3100:3100"
+      # 3100 is reserved locally for the FFmpeg API; keep Studio aligned with
+      # the app.aimuza.ru nginx upstream and the production compose mapping.
+      - "127.0.0.1:3101:3100"
     networks:
       - aimuza-net
 

@@ -90,7 +90,7 @@ const ALLOWED_RPC = new Set([
   'get_my_radio_stats', 'purchase_track_upload_pack', 'purchase_track_upload_units', 'record_track_upload',
   'record_track_play', 'record_track_like_update',
   'submit_silk_release', 'submit_track_for_moderation', 'request_silk_release_action',
-  'admin_transition_silk_release', 'admin_resolve_silk_release_request',
+  'admin_transition_silk_release', 'admin_resolve_silk_release_request', 'delete_approved_silk_release',
   'refund_addon_service', 'refund_generation_failed', 'subscribe_to_plan', 'reorder_user_tracks',
   'recalculate_feed_scores', 'record_ad_click', 'record_ad_impression',
   'record_ad_click_v2', 'record_ad_impression_v2', 'record_ad_view_duration_v2',
