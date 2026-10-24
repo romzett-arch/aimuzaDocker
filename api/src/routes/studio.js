@@ -2,6 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { pool, setJWTClaims } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { normalizeStudioGeneration as normalizeInput, studioSunoPayload } from '../services/studio-generation-input.js';
 
 const router = Router();
 
@@ -10,47 +11,24 @@ const validUuid = (value) => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]
 const fingerprint = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const generationPolls = new Map();
 
-function inputError(message) {
-  const error = new Error(message);
-  error.status = 400;
-  return error;
-}
-
-function normalizeInput(body) {
-  const mode = body?.mode === 'custom' ? 'custom' : body?.mode === 'simple' ? 'simple' : null;
-  const requestId = body?.requestId;
-  if (!validUuid(requestId)) throw inputError('Укажите корректный идентификатор запроса');
-  if (!mode) throw inputError('Выберите режим генерации');
-  const prompt = cleanText(body?.prompt, 3000);
-  const title = cleanText(body?.title, 100);
-  const lyrics = cleanText(body?.lyrics, 5000);
-  const style = cleanText(body?.style, 1000);
-  const negativeTags = cleanText(body?.negativeTags, 1000);
-  const instrumental = body?.instrumental === true;
-  const vocalGender = body?.vocalGender === 'm' || body?.vocalGender === 'f' ? body.vocalGender : undefined;
-  const duration = body?.duration == null || body.duration === '' ? undefined : Number(body.duration);
-  if (duration !== undefined && (!Number.isInteger(duration) || duration < 10 || duration > 360 || mode !== 'custom')) throw inputError('Длительность доступна в режиме «Свой текст»: от 10 до 360 секунд');
-  if (mode === 'simple' && !prompt) throw inputError('Опишите песню, которую нужно создать');
-  if (mode === 'custom') {
-    if (!style) throw inputError('Укажите стиль и аранжировку');
-    if (!instrumental && !lyrics) throw inputError('Добавьте текст песни или выберите инструментал');
-  }
-  return { requestId, mode, prompt, title, lyrics, style, negativeTags, instrumental, vocalGender, duration };
-}
-
 async function userBootstrap(userId) {
-  const [profile, tracks, releases, service, subscription] = await Promise.all([
-    pool.query('SELECT username, avatar_url, balance FROM public.profiles WHERE user_id = $1', [userId]),
+  const [profile, tracks, releases, service, subscription, tier] = await Promise.all([
+    pool.query('SELECT p.username, p.avatar_url, p.balance, u.email FROM auth.users u LEFT JOIN public.profiles p ON p.user_id = u.id WHERE u.id = $1', [userId]),
     pool.query("SELECT count(*)::integer AS total FROM public.tracks WHERE user_id = $1", [userId]),
     pool.query("SELECT count(*)::integer AS total FROM public.silk_releases WHERE user_id = $1", [userId]),
     pool.query("SELECT name, price_rub FROM public.addon_services WHERE name IN ('generate_music_v6', 'vocal_separation', 'generate_lyrics') AND is_active IS TRUE"),
     pool.query("SELECT status, current_period_end FROM public.user_subscriptions WHERE user_id = $1 AND status IN ('active', 'canceled') AND current_period_end > now() ORDER BY current_period_end DESC LIMIT 1", [userId]),
+    pool.query('SELECT public.get_user_subscription_tier($1) AS tier', [userId]),
   ]);
   const profileRow = profile.rows[0] || {};
   return {
     id: userId,
     name: profileRow.username || 'Пользователь',
-    email: null,
+    email: profileRow.email || null,
+    tariff: {
+      key: tier.rows[0]?.tier?.tier_key || 'free',
+      name: ({ free: 'Новичок', creator: 'Музыкант', pro: 'Артист', label: 'Лейбл' })[tier.rows[0]?.tier?.tier_key] || 'Новичок',
+    },
     authed: true,
     balance: Number(profileRow.balance || 0),
     currency: 'RUB',
@@ -59,6 +37,7 @@ async function userBootstrap(userId) {
     lyricsGenerationPrice: Number(service.rows.find((row) => row.name === 'generate_lyrics')?.price_rub || 0),
     stats: { tracks: tracks.rows[0]?.total || 0, releases: releases.rows[0]?.total || 0 },
     subscription: subscription.rows[0] || null,
+    canPrepareReleasePackage: ['creator', 'pro', 'label'].includes(tier.rows[0]?.tier?.tier_key),
   };
 }
 
@@ -114,9 +93,32 @@ async function pollPendingGenerations(userId, authorization) {
   }
 }
 
+const separationPolls = new Map();
+const separationPollsInFlight = new Set();
+async function pollPendingSeparations(userId, authorization) {
+  const denoUrl = process.env.DENO_FUNCTIONS_URL;
+  if (!denoUrl || !authorization) return;
+  const jobs = await pool.query(`SELECT DISTINCT s.track_id FROM public.audio_separations s
+    JOIN public.tracks t ON t.id = s.track_id AND t.user_id = s.user_id
+    WHERE s.user_id = $1 AND s.status IN ('pending', 'processing', 'finalizing')`, [userId]);
+  const now = Date.now();
+  for (const [id, time] of separationPolls) if (now - time > 300_000) separationPolls.delete(id);
+  for (const { track_id: trackId } of jobs.rows) {
+    if (separationPollsInFlight.has(trackId) || now - (separationPolls.get(trackId) || 0) < 30_000) continue;
+    separationPolls.set(trackId, now);
+    separationPollsInFlight.add(trackId);
+    // Keep the library responsive while the shared callback copies audio files.
+    void fetch(`${denoUrl.replace(/\/$/, '')}/functions/v1/audio-separation`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: authorization },
+      body: JSON.stringify({ track_id: trackId, action: 'status' }), signal: AbortSignal.timeout(110_000),
+    }).catch(() => {}).finally(() => separationPollsInFlight.delete(trackId));
+  }
+}
+
 router.get('/tracks', requireAuth, async (req, res, next) => {
   try {
     await pollPendingGenerations(req.user.id, req.get('authorization'));
+    await pollPendingSeparations(req.user.id, req.get('authorization'));
     const result = await pool.query(
       `SELECT t.id, t.title, t.description, t.lyrics, t.performer_name, t.music_author, t.lyrics_author, t.status, t.audio_url, t.cover_url, t.duration,
               t.created_at, t.updated_at,
@@ -203,7 +205,8 @@ router.get('/release-packages', requireAuth, async (req, res, next) => {
     const result = await pool.query(
       `SELECT p.id, p.track_id, p.status, p.zip_url, p.error_message, p.created_at, p.updated_at,
               p.requested_title, p.requested_performer_name,
-              t.title AS track_title, t.cover_url AS track_cover_url
+              t.title AS track_title, t.cover_url AS track_cover_url,
+              t.release_album_id, t.release_album_name
        FROM public.release_packages p
        LEFT JOIN public.tracks t ON t.id = p.track_id
        WHERE p.user_id = $1
@@ -222,8 +225,79 @@ router.get('/release-packages', requireAuth, async (req, res, next) => {
       title: row.requested_title || row.track_title || 'Релиз-пакет',
       performer: row.requested_performer_name || null,
       coverUrl: row.track_cover_url || null,
+      albumId: row.release_album_id || null,
+      albumName: row.release_album_name || null,
     })));
   } catch (error) { next(error); }
+});
+
+router.get('/release-options/:trackId', requireAuth, async (req, res, next) => {
+  if (!validUuid(req.params.trackId)) return res.status(400).json({ error: 'Некорректный идентификатор трека' });
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN READ ONLY');
+    await setJWTClaims(client, req.user);
+    const track = await client.query('SELECT id FROM public.tracks WHERE id = $1 AND user_id = $2', [req.params.trackId, req.user.id]);
+    if (!track.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Трек не найден' });
+    }
+    const { rows: [row] } = await client.query(
+      `SELECT public.get_user_subscription_tier($1) AS tier,
+              public.check_deposit_limit($1) AS quota,
+              (SELECT price FROM public.get_deposit_method_catalog() WHERE method = 'blockchain' AND available) AS base_price,
+              EXISTS (SELECT 1 FROM public.track_deposits WHERE user_id = $1 AND track_id = $2 AND method = 'blockchain' AND status = 'completed') AS deposited`,
+      [req.user.id, req.params.trackId],
+    );
+    if (row.quota?.error || row.base_price == null) throw new Error('Не удалось проверить стоимость депонирования');
+    await client.query('COMMIT');
+    res.json({
+      canPrepare: ['creator', 'pro', 'label'].includes(row.tier?.tier_key),
+      deposit: {
+        price: row.deposited || row.quota?.is_free ? 0 : Number(row.base_price),
+        alreadyDeposited: row.deposited,
+        freeRemaining: Number(row.quota?.free_remaining || 0),
+      },
+    });
+  } catch (error) {
+    if (client) await client.query('ROLLBACK');
+    next(error);
+  } finally { client?.release(); }
+});
+
+// Same persisted album fields as the main site's My Releases. No new tables.
+router.post('/release-albums', requireAuth, async (req, res, next) => {
+  const title = cleanText(req.body?.title, 100);
+  const ids = Array.isArray(req.body?.trackIds) ? [...new Set(req.body.trackIds)] : [];
+  if (!title || ids.length < 2 || ids.length > 100 || !ids.every(validUuid)) {
+    return res.status(400).json({ error: 'Укажите название альбома и выберите от 2 до 100 треков' });
+  }
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const tracks = await client.query(
+      `SELECT t.id FROM public.tracks t
+       WHERE t.user_id = $1 AND t.id = ANY($2::uuid[])
+         AND EXISTS (SELECT 1 FROM public.release_packages p WHERE p.track_id = t.id AND p.user_id = $1)
+       ORDER BY t.id FOR UPDATE`, [req.user.id, ids],
+    );
+    if (tracks.rows.length !== ids.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Часть выбранных релизов недоступна. Обновите список.' });
+    }
+    const albumId = crypto.randomUUID();
+    await client.query(
+      'UPDATE public.tracks SET release_album_id = $1, release_album_name = $2 WHERE user_id = $3 AND id = ANY($4::uuid[])',
+      [albumId, title, req.user.id, ids],
+    );
+    await client.query('COMMIT');
+    res.json({ albumId });
+  } catch (error) {
+    if (client) await client.query('ROLLBACK');
+    next(error);
+  } finally { client?.release(); }
 });
 
 router.post('/release-packages', requireAuth, async (req, res, next) => {
@@ -245,8 +319,8 @@ router.post('/release-packages', requireAuth, async (req, res, next) => {
       'SELECT public.get_user_subscription_tier($1) AS tier',
       [req.user.id],
     );
-    if (tier.rows[0]?.tier?.tier_key !== 'label') {
-      return res.status(403).json({ error: 'Релиз-пакет доступен только на тарифе Label' });
+    if (!['creator', 'pro', 'label'].includes(tier.rows[0]?.tier?.tier_key)) {
+      return res.status(403).json({ error: 'Релиз-пакет доступен на тарифе «Музыкант» и выше' });
     }
 
     const track = await pool.query(
@@ -395,6 +469,17 @@ router.post('/generations', requireAuth, async (req, res, next) => {
       return res.status(202).json({ requestId: input.requestId, status: params.dispatch_state || 'pending', taskId: params.task_id || null, tracks: prior.rows, replayed: true });
     }
 
+    if (input.songIdeaId) {
+      const acceptedIdea = await client.query(
+        'SELECT id FROM public.song_idea_discoveries WHERE user_id = $1 AND idea_id = $2 AND accepted_at IS NOT NULL FOR SHARE',
+        [req.user.id, input.songIdeaId],
+      );
+      if (!acceptedIdea.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Сначала примите идею в своей библиотеке', code: 'SONG_IDEA_NOT_ACCEPTED' });
+      }
+    }
+
     let debit;
     try {
       debit = await client.query("SELECT * FROM public.debit_for_generation_v6($1, '{}'::uuid[], $2)", [req.user.id, `Музыкальная генерация: ${input.title || input.prompt.slice(0, 60)}`]);
@@ -423,6 +508,9 @@ router.post('/generations', requireAuth, async (req, res, next) => {
          VALUES ($1,$2,$3,$4,$5,false,0)`, [req.user.id, track.id, track.title, description, input.instrumental ? null : input.lyrics || null],
       );
     }
+    if (input.songIdeaId) {
+      await client.query('SELECT public.record_song_idea_generation($1, $2::uuid[])', [input.songIdeaId, created.rows.map((track) => track.id)]);
+    }
     await client.query('COMMIT');
     client.release(); client = null;
 
@@ -430,7 +518,7 @@ router.post('/generations', requireAuth, async (req, res, next) => {
     if (!denoUrl || !authorization) throw new Error('Генератор временно недоступен');
     const run = await fetch(`${denoUrl.replace(/\/$/, '')}/functions/v1/suno-generate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: authorization },
-      body: JSON.stringify({ trackId: created.rows[0].id, trackIds: created.rows.map((track) => track.id), customMode: input.mode === 'custom', prompt: input.prompt || input.title, lyrics: input.lyrics || undefined, style: input.style, title: input.title || 'Новый трек', instrumental: input.instrumental, negativeTags: input.negativeTags || undefined, vocalGender: input.vocalGender, duration: input.duration }),
+      body: JSON.stringify(studioSunoPayload(input, created.rows)),
     });
     const result = await run.json().catch(() => null);
     const taskId = result?.taskId || result?.task_id || null;

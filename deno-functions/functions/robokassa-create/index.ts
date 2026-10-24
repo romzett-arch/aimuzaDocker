@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildHostedCheckoutUrl } from "./hosted-checkout.ts";
 
 const ALLOWED_ORIGINS = [
   "https://aimuza.ru",
@@ -177,7 +178,7 @@ serve(async (req) => {
       ? "sbp"
       : body.payment_method;
 
-    if (paymentMethod !== "bank_card" && paymentMethod !== "sbp") {
+    if (paymentMethod !== "bank_card" && paymentMethod !== "sbp" && paymentMethod !== "all") {
       return json(cors, 400, { error: "Неподдерживаемый способ оплаты" });
     }
 
@@ -245,6 +246,24 @@ serve(async (req) => {
     const signatureString =
       `${ROBOKASSA_MERCHANT_LOGIN}:${outSum}:${invId}:${receiptForSignature}:${ROBOKASSA_PASSWORD1}`;
     const signature = computeMD5(signatureString);
+
+    if (paymentMethod === "all") {
+      return json(cors, 200, {
+        success: true,
+        payment_id: payment.id,
+        payment_method: "all",
+        payment_url: buildHostedCheckoutUrl({
+          merchantLogin: ROBOKASSA_MERCHANT_LOGIN,
+          outSum,
+          invId,
+          description,
+          encodedReceipt: receiptForSignature,
+          signature,
+          isTest: ROBOKASSA_TEST_MODE,
+          email: user.email || undefined,
+        }),
+      });
+    }
 
     if (paymentMethod === "bank_card") {
       return json(cors, 200, {

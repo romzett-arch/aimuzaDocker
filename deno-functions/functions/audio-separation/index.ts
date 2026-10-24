@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { recoverSeparation } from "./recover-separation.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -36,6 +37,19 @@ serve(async (req) => {
     const { data: track, error: trackError } = await admin.from("tracks").select("id,user_id,title,description,audio_url,suno_audio_id,status").eq("id", trackId).maybeSingle();
     if (trackError || !track) throw new RequestError("Трек не найден", 404);
     if (track.user_id !== userId) throw new RequestError("Нет доступа к треку", 403);
+    // Status checks stop here, before all billing and task creation code.
+    if (body.action === 'status') {
+      const { data: job, error } = await admin.from('audio_separations').select('id,status,result_urls').eq('track_id', trackId).eq('user_id', userId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (error) throw new Error('Не удалось прочитать состояние разделения');
+      const taskId = text(job?.result_urls?.provider_task_id);
+      if (job && taskId && ['pending', 'processing', 'finalizing'].includes(job.status)) {
+        const apiKey = Deno.env.get('SUNO_API_KEY');
+        if (!apiKey) throw new Error('Сервис разделения временно недоступен');
+        const token = await signCallback(job.id, serviceKey);
+        await recoverSeparation({ taskId, apiKey, callbackUrl: `http://127.0.0.1:8081/functions/v1/audio-separation-callback?separation_id=${encodeURIComponent(job.id)}&token=${token}` });
+      }
+      return json({ success: true });
+    }
     if (track.status !== "completed" || !track.audio_url) throw new RequestError("Разделение доступно для готового трека", 422);
     const { data: activeJob } = await admin.from("audio_separations").select("id,status").eq("track_id", trackId).in("status", ["pending", "processing", "finalizing"]).maybeSingle();
     if (activeJob) return json({ success: true, separation_id: activeJob.id, status: activeJob.status, reused: true }, 202);

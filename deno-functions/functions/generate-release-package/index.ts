@@ -561,9 +561,9 @@ serve(async (req) => {
         throw new Error(`subscription_check_failed:${tierError.message}`);
       }
 
-      if ((tierData as { tier_key?: string } | null)?.tier_key !== "label") {
+      if (!["creator", "pro", "label"].includes((tierData as { tier_key?: string } | null)?.tier_key || "")) {
         return new Response(
-          JSON.stringify({ success: false, error: "release_package_requires_label_tier" }),
+          JSON.stringify({ success: false, error: "Релиз-пакет доступен на тарифе «Музыкант» и выше", code: "release_package_requires_musician_tier" }),
           { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
         );
       }
