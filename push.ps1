@@ -19,6 +19,15 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 Write-Host ""
 Write-Host "Step 2: Tag and push..."
 for ($i = 0; $i -lt $images.Length; $i++) {
+    if ($images[$i] -eq "aimuza-studio") {
+        # Docker's containerd push can stall on an existing Studio layer. Use
+        # BuildKit's registry exporter with the same Dockerfile and build arg.
+        $apkLine = Get-Content .env.server | Where-Object { $_ -match '^NEXT_PUBLIC_ANDROID_APK_URL=' } | Select-Object -First 1
+        $apkUrl = if ($apkLine) { $apkLine.Substring('NEXT_PUBLIC_ANDROID_APK_URL='.Length).Trim().Trim('"').Trim("'") } else { "" }
+        docker buildx build --platform linux/amd64 --provenance=false --push --build-arg "NEXT_PUBLIC_ANDROID_APK_URL=$apkUrl" --tag "$reg/aimuza-studio:latest" --tag "$reg/aimuza-studio:v$version" --file ../apps/studio/Dockerfile ../apps/studio
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        continue
+    }
     $local = "$($localNames[$i]):latest"
     foreach ($tag in @("latest", "v$version")) {
         $remote = "$reg/$($images[$i]):$tag"
