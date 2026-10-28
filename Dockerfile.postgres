@@ -1,0 +1,20 @@
+# Same PostgreSQL major/minor and entrypoint; replace the Go credential-switch
+# helper with Alpine's small C helper. No database extensions/data are removed.
+FROM postgres:15-alpine@sha256:54e0dd8e8cddcdbb9156c2486eed5a43eccb7214d7c6828097d41ce049fb3984 AS patched
+RUN apk add --no-cache su-exec && apk upgrade --no-cache \
+    && test "$(grep -c 'exec gosu postgres' /usr/local/bin/docker-entrypoint.sh)" = 1 \
+    && sed -i 's/exec gosu postgres/exec su-exec postgres/' /usr/local/bin/docker-entrypoint.sh \
+    && rm /usr/local/bin/gosu \
+    && test "$(su-exec postgres id -un)" = postgres
+
+# Do not distribute the obsolete Go helper in inherited lower layers either.
+# Keep the complete patched filesystem, including apk metadata and licenses.
+FROM scratch
+COPY --from=patched / /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LANG=en_US.utf8 PG_MAJOR=15 PG_VERSION=15.19 PGDATA=/var/lib/postgresql/data
+VOLUME /var/lib/postgresql/data
+EXPOSE 5432
+STOPSIGNAL SIGINT
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["postgres"]

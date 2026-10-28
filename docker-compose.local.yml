@@ -4,6 +4,13 @@
 # На сервере не использовать — там системный nginx
 
 services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: deploy-postgres:security
+  storage-permissions:
+    image: deploy-api:latest
   api:
     build: ./api
     image: deploy-api:latest
@@ -16,7 +23,6 @@ services:
       DENO_DIR: /deno-dir
     volumes:
       - ./deno-functions:/app
-      - deno_cache:/deno-dir
   frontend:
     build:
       context: ..
@@ -62,7 +68,13 @@ services:
       - "127.0.0.1:3200:3200"
       - "127.0.0.1:8000:8000"
   nginx:
-    image: nginx:alpine
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]
+    image: nginx:stable-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951
     container_name: aimuza-nginx
     restart: unless-stopped
     depends_on:

@@ -5,9 +5,29 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-if [ ! -d "migrations-pending" ]; then
-  echo "migrations-pending not found, skip"
+if [ "${1:-}" = '--check-bundle' ]; then
+  manifest='migrations-pending/pending-manifest.txt'
+  test -d migrations-pending && test -f "$manifest" || { echo 'Required migration bundle missing' >&2; exit 1; }
+  declare -A listed=()
+  while IFS= read -r name || [ -n "$name" ]; do
+    name="${name//$'\r'/}"; name="${name#$'\ufeff'}"
+    [ -z "$name" ] && continue
+    [[ "$name" =~ ^[0-9]{14}_[a-zA-Z0-9_-]+\.sql$ ]] || { echo 'Invalid manifest filename' >&2; exit 1; }
+    test -f "migrations-pending/$name" || { echo 'Manifest SQL missing' >&2; exit 1; }
+    test -z "${listed[$name]:-}" || { echo 'Duplicate migration manifest entry' >&2; exit 1; }
+    listed[$name]=1
+  done < "$manifest"
+  shopt -s nullglob
+  for file in migrations-pending/*.sql; do
+    test -n "${listed[$(basename "$file")]:-}" || { echo 'Unlisted pending SQL; refusing deploy' >&2; exit 1; }
+  done
+  echo 'Migration bundle validated'
   exit 0
+fi
+
+if [ ! -d "migrations-pending" ]; then
+  echo "Required migrations-pending directory missing" >&2
+  exit 1
 fi
 
 shopt -s nullglob
@@ -16,6 +36,7 @@ if [ "$#" -gt 0 ]; then
   for name in "$@"; do
     clean_name="${name//$'\r'/}"
     clean_name="${clean_name#$'\ufeff'}"
+    [[ "$clean_name" =~ ^[0-9]{14}_[a-zA-Z0-9_-]+\.sql$ ]] || { echo 'Invalid migration filename' >&2; exit 1; }
     files+=("migrations-pending/$clean_name")
   done
 else
@@ -48,10 +69,14 @@ for file in "${files[@]}"; do
   fi
 
   name="$(basename "$file")"
+  [[ "$name" =~ ^[0-9]{14}_[a-zA-Z0-9_-]+\.sql$ ]] || { echo 'Invalid migration filename' >&2; exit 1; }
+  if grep -Eiq '^\s*(BEGIN|COMMIT|ROLLBACK)\s*;' "$file"; then
+    echo 'Outer transaction statements are forbidden in migrations' >&2; exit 1
+  fi
   checksum="$(sha256sum "$file" | awk '{print $1}')"
 
   applied_checksum="$(docker exec -i aimuza-db psql -U aimuza -d aimuza -At -v ON_ERROR_STOP=1 \
-    -c "SELECT COALESCE(checksum, '') FROM public.schema_migration_history WHERE file_name = '$name' LIMIT 1;")"
+    -c "SELECT COALESCE(NULLIF(checksum, ''), '__missing_checksum__') FROM public.schema_migration_history WHERE file_name = '$name' LIMIT 1;")"
 
   if [ -n "$applied_checksum" ]; then
     if [ "$applied_checksum" != "$checksum" ]; then

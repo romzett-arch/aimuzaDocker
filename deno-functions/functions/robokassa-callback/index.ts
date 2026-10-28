@@ -167,8 +167,8 @@ serve(async (req) => {
 
     if (signatureValue.toLowerCase() !== expectedSignature.toLowerCase()) {
       console.error("Invalid signature", {
-        expected: expectedSignature,
-        received: signatureValue,
+        signatureValid: false,
+        
       });
       await logCallback(supabase, { invId, outSum, signatureValid: false, clientIP, result: "bad sign" });
       return new Response("bad sign", { status: 400 });

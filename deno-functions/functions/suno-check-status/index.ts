@@ -136,6 +136,18 @@ serve(async (req) => {
     if (cleanupStale === true) {
       const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
       const staleMessage = "Генерация не была запущена. Попробуйте создать трек заново.";
+
+      // Uploaded tracks never go through generation — a stuck uploaded row
+      // must be COMPLETED server-side, not failed (client used to do this;
+      // now that tracks.status is server-only, the edge function owns it).
+      await supabaseAdmin
+        .from("tracks")
+        .update({ status: "completed" })
+        .eq("user_id", userId)
+        .in("status", ["pending", "processing"])
+        .lt("created_at", cutoff)
+        .eq("source_type", "uploaded");
+
       const { data: staleTracks, error: staleTracksError } = await supabaseAdmin
         .from("tracks")
         .update({ status: "failed", error_message: staleMessage })
@@ -143,6 +155,7 @@ serve(async (req) => {
         .in("status", ["pending", "processing"])
         .lt("created_at", cutoff)
         .is("suno_id", null)
+        .or("source_type.neq.uploaded,source_type.is.null")
         .select("id");
 
       if (staleTracksError) {

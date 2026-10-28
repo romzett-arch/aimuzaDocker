@@ -1,3 +1,4 @@
+import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 function toReachableAudioUrl(url: string, ffmpegApiUrl?: string): string {
@@ -18,7 +19,7 @@ function toReachableAudioUrl(url: string, ffmpegApiUrl?: string): string {
 
 async function isUsableAudioUrl(url: string, ffmpegApiUrl?: string): Promise<boolean> {
   try {
-    const response = await fetch(toReachableAudioUrl(url, ffmpegApiUrl), { method: "HEAD" });
+    const response = await safeMediaFetch(toReachableAudioUrl(url, ffmpegApiUrl), { method: "HEAD" });
     if (!response.ok) {
       console.warn(`[convert-wav] HEAD check failed for ${url}: ${response.status}`);
       return false;
@@ -123,7 +124,7 @@ export async function copyWavToStorage(
 ): Promise<string | null> {
   try {
     console.log(`[convert-wav] Downloading WAV from: ${externalUrl}`);
-    const response = await fetch(externalUrl);
+    const response = await safeMediaFetch(externalUrl);
     if (!response.ok) {
       console.error(`[convert-wav] Download failed: ${response.status}`);
       return null;

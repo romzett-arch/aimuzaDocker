@@ -1,4 +1,4 @@
-# AIMUZA - Push images to Docker Hub
+﻿# AIMUZA - Push images to Docker Hub
 # Usage: cd deploy; .\push.ps1
 
 $ErrorActionPreference = "Stop"

@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const {annotation,playbackUri}=require('./media-policy');
 
 const PLAYLIST_PATH = '/tmp/radio_playlist.m3u';
 const PLAYLIST_TMP_PATH = '/tmp/radio_playlist.m3u.tmp';
@@ -42,18 +43,19 @@ async function generatePlaylist(pool) {
       : (() => {
           const lines = ['#EXTM3U'];
           for (const track of rows) {
-            const audioUrl = resolveAudioUrl(track.audio_url || '');
+            let audioUrl;
+            try {audioUrl=playbackUri(resolveAudioUrl(track.audio_url||''));} catch {console.warn('[Playlist] Unsafe media reference skipped');continue;}
 
             const duration = Math.round(track.duration || 180);
-            const title = (track.title || 'Unknown').replace(/"/g, "'");
-            const artist = (track.author_username || 'AI Generated').replace(/"/g, "'");
+            const title = annotation(track.title || 'Unknown',512);
+            const artist = annotation(track.author_username || 'AI Generated',256);
 
             lines.push(`#EXTINF:${duration},${artist} - ${title}`);
             lines.push(
-              `annotate:title="${title}",artist="${artist}",track_id="${track.track_id}",` +
-              `cover_url="${track.cover_url || ''}",duration="${duration}",` +
-              `chance_score="${track.chance_score}",is_boosted="${track.is_boosted || false}",` +
-              `source="${track.source || 'algorithm'}"` +
+              `annotate:title="${title}",artist="${artist}",track_id="${annotation(track.track_id)}",` +
+              `cover_url="${annotation(track.cover_url)}",duration="${duration}",` +
+              `chance_score="${Number(track.chance_score)||0}",is_boosted="${track.is_boosted===true}",` +
+              `source="${annotation(track.source || 'algorithm')}"` +
               `:${audioUrl}`
             );
           }

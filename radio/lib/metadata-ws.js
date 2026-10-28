@@ -10,13 +10,16 @@ const jwt = require('jsonwebtoken');
 class MetadataServer {
   constructor(server, options = {}) {
     this.jwtSecret = options.jwtSecret || process.env.JWT_SECRET || null;
-    this.wss = new WebSocket.Server({ server, path: '/ws' });
+    this.validateSession = options.validateSession || (async () => false);
+    this.wss = new WebSocket.Server({ server, path: '/ws', maxPayload: 16384, perMessageDeflate: false });
     this.clients = new Set();
     this.currentTrack = null;
     this.queue = [];
     this.listenersCount = 0;
 
     this.wss.on('connection', (ws, req) => {
+      if (this.clients.size >= 1000) {ws.close(1013, 'Capacity reached');return;}
+      ws.connectedAt=Date.now(); ws.lastReactionAt=Date.now();
       this.clients.add(ws);
       console.log(`[WS] Client connected — total: ${this.clients.size}`);
 
@@ -33,11 +36,14 @@ class MetadataServer {
       ws.on('pong', () => { ws.isAlive = true; });
 
       ws.on('message', (raw) => {
+        const now=Date.now();
+        if (!ws.rateStart || now-ws.rateStart>=10000) {ws.rateStart=now;ws.rateCount=0;}
+        if (++ws.rateCount>50) {ws.close(1008,'Rate limit');return;}
         try {
           const msg = JSON.parse(raw);
-          this.handleMessage(ws, msg);
+          void this.handleMessage(ws, msg).catch(()=>{ws.userId=null;ws.token=null;});
         } catch (e) {
-          console.warn('[WS] Bad message:', String(raw).slice(0, 200));
+          console.warn('[WS] Invalid message');
         }
       });
 
@@ -56,13 +62,18 @@ class MetadataServer {
     }, 30000);
   }
 
-  handleMessage(ws, msg) {
+  async handleMessage(ws, msg) {
     switch (msg.type) {
       case 'heartbeat':
         this.sendTo(ws, { type: 'heartbeat_ack' });
         break;
       case 'reaction':
-        if (this.onReaction) this.onReaction(ws, msg.data);
+        if (!ws.token || !this.jwtSecret) return;
+        try {
+          const claims=jwt.verify(ws.token,this.jwtSecret,{algorithms:['HS256']});
+          if (claims.sub!==ws.userId || !(await this.validateSession(claims))) return;
+        } catch {ws.userId=null;ws.token=null;return;}
+        if (this.onReaction) await this.onReaction(ws, msg.data || {});
         break;
       case 'auth': {
         const userId = msg.data?.user_id || null;
@@ -74,10 +85,11 @@ class MetadataServer {
         }
         if (this.jwtSecret && token) {
           try {
-            const decoded = jwt.verify(token, this.jwtSecret);
-            if (decoded.sub === userId || decoded.user_id === userId) {
+            const decoded = jwt.verify(token, this.jwtSecret, { algorithms: ['HS256'] });
+            if (decoded.sub === userId && await this.validateSession(decoded)) {
               ws.userId = userId;
               ws.token = token;
+              ws.lastReactionAt=Date.now();
             } else {
               ws.userId = null;
               ws.token = null;
@@ -89,8 +101,8 @@ class MetadataServer {
             console.warn('[WS] Auth: invalid token');
           }
         } else {
-          ws.userId = userId;
-          ws.token = token;
+          ws.userId = null;
+          ws.token = null;
         }
         break;
       }
@@ -115,6 +127,7 @@ class MetadataServer {
   }
 
   setCurrentTrack(track) {
+    this.trackStartedAt=Date.now();
     this.currentTrack = track;
     this.broadcast({ type: 'track_changed', data: track });
   }

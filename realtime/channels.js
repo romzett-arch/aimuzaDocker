@@ -1,3 +1,4 @@
+import { publicRecord } from './security.js';
 export function matchFilter(filter, record) {
   const match = filter.match(/^(\w+)=eq\.(.+)$/);
   if (!match) return true;
@@ -72,32 +73,34 @@ export function removePresence(wss, clientSubs, presenceState, topic, key, ws) {
 }
 
 export function broadcastPresenceDiff(wss, clientSubs, topic, diff) {
-  wss.clients.forEach((ws) => {
+  wss.clients.forEach(async (ws) => {
     if (ws.readyState !== 1) return;
     const subs = clientSubs.get(ws);
     if (!subs || !subs.has(topic)) return;
+    if(!ws.authorizePresence || !(await ws.authorizePresence(topic))) return;
 
     send(ws, { topic, event: 'presence_diff', payload: diff, ref: null });
   });
 }
 
-export function broadcastChange(wss, clientSubs, data) {
+export async function broadcastChange(wss, clientSubs, data, authorize = async () => false) {
   const { table, schema, type, record, old_record } = data;
   const eventType = type === 'INSERT' ? 'INSERT' : type === 'UPDATE' ? 'UPDATE' : 'DELETE';
   const columns = buildColumns(record, old_record);
 
-  wss.clients.forEach((ws) => {
+  await Promise.all([...wss.clients].map(async (ws) => {
     if (ws.readyState !== 1) return;
     const subs = clientSubs.get(ws);
     if (!subs) return;
 
-    subs.forEach((config, topic) => {
-      if (!config.pgConfigs) return;
+    for (const [topic,config] of subs) {
+      if (!config.pgConfigs) continue;
 
       for (const pgConf of config.pgConfigs) {
         if (pgConf.table && pgConf.table !== table) continue;
         if (pgConf.schema && pgConf.schema !== schema) continue;
         if (pgConf.event !== '*' && pgConf.event !== eventType) continue;
+        if (!(await authorize(ws,table,record || old_record))) continue;
         if (pgConf.filter && record) {
           if (!matchFilter(pgConf.filter, record)) continue;
         }
@@ -110,9 +113,9 @@ export function broadcastChange(wss, clientSubs, data) {
               table,
               schema,
               type: eventType,
-              columns,
-              record: record || null,
-              old_record: old_record || null,
+              columns: buildColumns(publicRecord(table,record,ws.user),old_record?.id ? {id:old_record.id}:null),
+              record: publicRecord(table,record,ws.user),
+              old_record: old_record?.id ? {id:old_record.id}:null,
               commit_timestamp: new Date().toISOString(),
             },
             ids: [pgConf.id],
@@ -121,11 +124,15 @@ export function broadcastChange(wss, clientSubs, data) {
         }));
         break;
       }
-    });
-  });
+    }
+  }));
 }
 
 export function handleJoin(wss, clientSubs, presenceState, send, ws, topic, payload, ref, subs) {
+  if (!ws.joinAuthorized || subs.size >= 50) {
+    send(ws,{topic,event:'phx_reply',payload:{status:'error',response:{reason:'Channel access denied'}},ref});
+    return;
+  }
   const config = {};
 
   if (payload?.config?.postgres_changes) {
@@ -188,9 +195,11 @@ export function handleLeave(wss, clientSubs, presenceState, send, removePresence
 }
 
 export function handlePresenceTrack(wss, clientSubs, presenceState, send, broadcastPresenceDiffFn, ws, topic, payload, ref, subs) {
+  if(!ws.user?.id || !subs.has(topic)) return;
   const config = subs.get(topic) || {};
   const key = config.presenceKey || payload?.key || 'anon';
-  const meta = payload?.payload || payload?.meta || payload || {};
+  const input = payload?.payload || payload?.meta || payload || {};
+  const meta={user_id:ws.user.id,typing:input.typing===true,typing_at:input.typing===true?Date.now():0,online_at:new Date().toISOString()};
 
   config.presenceKey = key;
   subs.set(topic, config);

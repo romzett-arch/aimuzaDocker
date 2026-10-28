@@ -32,8 +32,10 @@ function ensureDir(dir) {
 
 // A3: Path traversal protection — ensure path stays inside UPLOADS_DIR
 function safePath(bucket, filePath) {
-  const full = path.resolve(path.join(UPLOADS_DIR, bucket, filePath));
-  if (full !== UPLOADS_DIR_RESOLVED && !full.startsWith(`${UPLOADS_DIR_RESOLVED}${path.sep}`)) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(bucket)) return null;
+  const bucketRoot=path.resolve(UPLOADS_DIR,bucket);
+  const full = path.resolve(bucketRoot,filePath);
+  if (!full.startsWith(`${bucketRoot}${path.sep}`)) {
     return null; // traversal attempt
   }
   return full;
@@ -120,7 +122,8 @@ async function assertGalleryPathAccess(req, bucket, filePath, requireExistingIte
 }
 
 async function canReadGalleryObject(req, bucket, filePath) {
-  if (!parseGalleryPath(bucket, filePath)) return true;
+  if (bucket!=='gallery') return true;
+  if (!parseGalleryPath(bucket,filePath)) return false;
   if (isValidSignedStorageRequest(bucket, filePath, req.query)) return true;
 
   const result = await pool.query(
@@ -212,7 +215,7 @@ function isValidSignedStorageRequest(bucket, filePath, query) {
 
 // Multer — принимаем файлы в память (any field name)
 const upload = multer({
-  limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB for release masters
+  limits: { fileSize: 100 * 1024 * 1024, files:1, fields:10, parts:11 }, // 1GB for release masters
   storage: multer.memoryStorage(),
 });
 
@@ -280,6 +283,7 @@ router.post('/object/sign/:bucket/*', requireStorageAuth, async (req, res) => {
     const filePath = req.params[0];
     await assertSilkPathAccess(req, bucket, filePath);
     await assertGalleryPathAccess(req, bucket, filePath, true);
+    assertOwnedMediaPath(req.user,bucket,filePath);
 
     const requestedLifetime = Number(req.body?.expiresIn || 3600);
     const lifetime = Math.min(Math.max(Math.floor(requestedLifetime), 60), 3600);
@@ -418,6 +422,7 @@ router.get('/object/public/:bucket/*', async (req, res) => {
   try {
     const bucket = req.params.bucket;
     const filePath = req.params[0];
+    if (!['tracks','covers','avatars','forum-files','gallery','certificates','ad-creatives','release-packages'].includes(bucket)) return res.status(404).json({error:'Not found'});
     if (
       parseSilkPath(bucket, filePath)
       && !isValidSignedStorageRequest(bucket, filePath, req.query)
@@ -464,6 +469,9 @@ router.get('/object/public/:bucket/*', async (req, res) => {
     };
 
     const mime = mimeTypes[ext] || 'application/octet-stream';
+    if (['.html','.svg','.xml'].includes(ext)) {
+      res.set('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: https:");
+    }
     res.set('Content-Type', mime);
     res.set('Cache-Control', ext === '.html' ? 'no-store, max-age=0' : 'public, max-age=86400');
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
@@ -472,7 +480,7 @@ router.get('/object/public/:bucket/*', async (req, res) => {
     if (ext === '.html') {
       res.set(
         'Content-Security-Policy',
-        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; " +
+        "sandbox; default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; " +
         "script-src 'none'; " +
         "style-src 'self' 'unsafe-inline'; " +
         "img-src 'self' data:; " +

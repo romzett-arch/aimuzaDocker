@@ -224,11 +224,14 @@ for key in ROBOKASSA_MERCHANT_LOGIN ROBOKASSA_PASSWORD1 ROBOKASSA_PASSWORD2; do
 done
 
 echo "📥 Шаг 1: Pull свежих образов с Docker Hub..."
+test -f apply-pending-migrations.sh || { echo 'Required migration runner missing' >&2; exit 1; }
+bash ./apply-pending-migrations.sh --check-bundle
 pull_images_with_retry
 
 echo ""
 echo "🗄️ Шаг 2: Применение pending-миграций до переключения приложения..."
 if [ -f "apply-pending-migrations.sh" ]; then
+    test -f "$PENDING_MANIFEST" || { echo 'Required migration manifest missing; refusing deploy.' >&2; exit 1; }
     pending_files=()
 
     if [ -f "$PENDING_MANIFEST" ]; then
@@ -253,12 +256,20 @@ if [ -f "apply-pending-migrations.sh" ]; then
         echo "✅ Pending-миграции применены: ${#pending_files[@]}"
     else
         rm -f "$PENDING_MANIFEST"
-        rm -f "$PENDING_DIR"/*.sql 2>/dev/null || true
+        if compgen -G "$PENDING_DIR/*.sql" > /dev/null; then
+            echo 'Pending SQL exists without an explicit migration manifest; refusing deploy.' >&2
+            exit 1
+        fi
         echo "   pending-manifest пуст, новых миграций нет"
     fi
 else
-    echo "   ⚠ apply-pending-migrations.sh не найден, пропуск"
+    echo 'Required migration runner missing; refusing deploy.' >&2
+    exit 1
 fi
+
+test -f scripts/provision-gateway-role.sh || { echo 'Gateway provisioning script missing' >&2; exit 1; }
+sh scripts/provision-gateway-role.sh
+docker compose -f "$COMPOSE_FILE" run --rm --no-deps storage-permissions
 
 echo ""
 echo "🚀 Шаг 3: Перезапуск контейнеров после успешных миграций..."

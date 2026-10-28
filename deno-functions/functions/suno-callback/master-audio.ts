@@ -1,3 +1,4 @@
+import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const MASTER_TARGET_LUFS = -14;
@@ -87,7 +88,7 @@ export async function createAndStorePlaybackMaster(
         throw new Error("ffmpeg_master_duration_missing");
       }
 
-      const masterResponse = await fetch(toInternalFfmpegOutput(temporaryUrl, baseUrl));
+      const masterResponse = await safeMediaFetch(toInternalFfmpegOutput(temporaryUrl, baseUrl));
       if (!masterResponse.ok) throw new Error(`master_download_failed_${masterResponse.status}`);
       const masterBytes = new Uint8Array(await masterResponse.arrayBuffer());
       if (masterBytes.length < 10_000) throw new Error(`master_file_too_small_${masterBytes.length}`);

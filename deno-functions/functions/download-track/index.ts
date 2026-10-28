@@ -1,3 +1,4 @@
+import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -328,7 +329,7 @@ async function proxyFile(
       internalUrl = url.replace(/https?:\/\/(?:www\.)?aimuza\.ru/, 'http://nginx');
     }
     console.log("Proxy fetch:", internalUrl);
-    const fileResponse = await fetch(internalUrl);
+    const fileResponse = await safeMediaFetch(internalUrl);
     if (!fileResponse.ok) {
       throw new Error(`Failed to fetch file: ${fileResponse.status}`);
     }

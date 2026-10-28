@@ -1,5 +1,6 @@
-import { pool } from '../db.js';
-import { setJwtClaims, resetJwtClaims, sanitizeTable, parseFilters, parseSelect, parseOrder } from './rest-utils.js';
+import { gatewayPool as pool } from '../gateway-db.js';
+import { assertCoreRestAccess, coreReadColumns } from '../security/core-rest-policy.js';
+import { setJwtClaims, resetJwtClaims, sanitizeTable, parseScopedFilters, parseSelect, parseOrder } from './rest-utils.js';
 import { getForumReadColumns, getForumReadScope } from '../security/forum-rest-policy.js';
 import { getMarketplaceReadScope } from '../security/marketplace-rest-policy.js';
 import { getEventsReadScope } from '../security/events-rest-policy.js';
@@ -23,13 +24,15 @@ export async function handleHead(req, res) {
   try {
     await client.query('BEGIN');
     await setJwtClaims(client, req.user);
+    await assertCoreRestAccess(req.params.table,req.user,'read',client);
+    coreReadColumns(req.params.table,req.user,req.query,'*');
 
     const table = sanitizeTable(req.params.table);
     await assertAdminEmailAccess(client, req.params.table, req.user);
     assertEconomyReadAccess(req.params.table, req.user);
     assertSupportQaReadAccess(req.params.table, req.user);
     assertAdsReadAccess(req.params.table, req.user);
-    const { where, params } = parseFilters(req.query);
+    const { where, params } = parseScopedFilters(req.query,req.params.table,req.user);
     const scope = getForumReadScope(req.params.table, req.user, params.length + 1);
     const marketplaceScope = getMarketplaceReadScope(req.params.table, req.user, params.length + scope.params.length + 1);
     const eventsScope = getEventsReadScope(req.params.table, req.user, params.length + scope.params.length + marketplaceScope.params.length + 1);
@@ -51,7 +54,7 @@ export async function handleHead(req, res) {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[REST HEAD]', err.message);
-    res.status(err.status || 400).json({ error: err.message || 'Count query failed', code: err.code || 'REST_HEAD_ERROR' });
+    res.status(err.status || 400).json({ error: err.status ? err.message : 'Count query rejected', code: 'REST_HEAD_ERROR' });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -63,6 +66,7 @@ export async function handleGet(req, res) {
   try {
     await client.query('BEGIN');
     await setJwtClaims(client, req.user);
+    await assertCoreRestAccess(req.params.table,req.user,'read',client);
 
     const tableName = req.params.table;
     const table = sanitizeTable(tableName);
@@ -70,9 +74,9 @@ export async function handleGet(req, res) {
     assertEconomyReadAccess(tableName, req.user);
     assertSupportQaReadAccess(tableName, req.user);
     assertAdsReadAccess(tableName, req.user);
-    const parsedSelect = parseSelect(req.query.select, table);
-    const columns = getForumReadColumns(tableName, req.user, parsedSelect.columns);
-    const { where, params } = parseFilters(req.query);
+    const parsedSelect = parseSelect(req.query.select, table, req.user);
+    const columns = coreReadColumns(tableName,req.user,req.query,getForumReadColumns(tableName, req.user, parsedSelect.columns));
+    const { where, params } = parseScopedFilters(req.query,req.params.table,req.user);
     const scope = getForumReadScope(tableName, req.user, params.length + 1);
     const marketplaceScope = getMarketplaceReadScope(tableName, req.user, params.length + scope.params.length + 1);
     const eventsScope = getEventsReadScope(tableName, req.user, params.length + scope.params.length + marketplaceScope.params.length + 1);
@@ -86,7 +90,7 @@ export async function handleGet(req, res) {
     const scopedWhere = addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(addScope(where, scope.sql), marketplaceScope.sql), eventsScope.sql), economyScope.sql), supportQaScope.sql), musicScope.sql), galleryScope.sql), radioScope.sql), catalogScope.sql), usersAccessScope.sql);
     const scopedParams = [...params, ...scope.params, ...marketplaceScope.params, ...eventsScope.params, ...economyScope.params, ...supportQaScope.params, ...musicScope.params, ...galleryScope.params, ...radioScope.params, ...usersAccessScope.params];
     const order = parseOrder(req.query.order);
-    const limit = parseInt(req.query.limit) || null;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 100,1),1000);
     const offset = parseInt(req.query.offset) || 0;
 
     let sql = `SELECT ${columns} FROM ${table} ${scopedWhere} ${order}`;
@@ -119,12 +123,9 @@ export async function handleGet(req, res) {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[REST GET]', err.message, '| SQL table:', req.params.table, '| select:', req.query.select);
-    if (err.message.includes('does not exist') || err.message.includes('column')) {
-      return res.json([]);
-    }
     res.status(err.status || 400).json({
-      message: err.message,
-      error: err.message,
+      message: err.status ? err.message : 'Query rejected',
+      error: err.status ? err.message : 'Query rejected',
       code: err.code || 'REST_ERROR',
       details: null,
       hint: null,

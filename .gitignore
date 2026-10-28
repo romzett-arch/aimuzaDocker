@@ -23,6 +23,8 @@ frontend/dist/
 # Database backups/checkpoints may contain production or local user data.
 backups/*.dump
 *.dump
+*.backup
+test-login.json
 
 # Test files
 test_track/

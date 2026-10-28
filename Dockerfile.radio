@@ -1,30 +1,44 @@
-FROM node:20-bookworm-slim
+FROM node:24-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c AS prepared
+WORKDIR /app
+COPY deploy/radio/package.json deploy/radio/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts \
+    && apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 30 -q:a 9 /silence.mp3
 
-# Install Icecast2, Liquidsoap, supervisord, ffmpeg (for silence gen)
+# Official Liquidsoap release bundles newer FFmpeg without Debian's broad
+# legacy multimedia dependency graph. Keep Node/npm and silence generation in
+# the build stage; only the Node executable and locked dependencies are copied.
+FROM savonet/liquidsoap:v2.4.6@sha256:63966c36c5ea208ba56fac787e955502b348eb00c5c32cdd134ee5ec1d20de53
+USER root
+COPY --from=prepared /usr/local/bin/node /usr/local/bin/node
+
+# Icecast and process supervision; Liquidsoap comes from its official image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     icecast2 \
-    liquidsoap \
     supervisor \
-    ffmpeg \
-    wget \
-    curl \
+    ca-certificates \
+  && apt-get upgrade -y \
   && rm -rf /var/lib/apt/lists/* \
+  && groupadd --gid 1000 node && useradd --uid 1000 --gid 1000 --create-home node \
   && mkdir -p /var/log/icecast /var/log/liquidsoap /app/jingles /tmp
 
 WORKDIR /app
 
 # Copy Node.js app (context: project root, radio in deploy/)
-COPY deploy/radio/package.json ./
-RUN npm install --production
+COPY --from=prepared /app/node_modules ./node_modules
+COPY --from=prepared /silence.mp3 /usr/share/icecast2/web/silence.mp3
 
 COPY deploy/radio/ ./
 
 # Fix line endings (Windows CRLF → LF) and make executable
-RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh \
+    && chown -R node:node /app /var/log/icecast /var/log/liquidsoap
+USER node
+ENTRYPOINT []
 
 EXPOSE 3200 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-  CMD wget -qO- http://localhost:3200/health || exit 1
+  CMD node -e "fetch('http://localhost:3200/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"
 
 CMD ["/app/start.sh"]

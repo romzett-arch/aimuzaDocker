@@ -9,7 +9,7 @@ export const pool = new Pool({
   port: parseInt(process.env.DB_PORT || '5432'),
   database: process.env.DB_NAME || 'aimuza',
   user: process.env.DB_USER || 'aimuza',
-  password: process.env.DB_PASSWORD || 'aimuza_secret',
+  password: process.env.DB_PASSWORD,
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
@@ -21,6 +21,7 @@ pool.on('error', (err) => {
 });
 
 export async function testConnection() {
+  if (!process.env.DB_PASSWORD) throw new Error('DB_PASSWORD is required');
   try {
     const client = await pool.connect();
     const res = await client.query('SELECT NOW() as now');

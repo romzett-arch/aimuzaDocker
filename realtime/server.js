@@ -1,3 +1,4 @@
+import './safe-logging.js';
 /**
  * AI Planet Sound — Realtime WebSocket Server
  *
@@ -8,6 +9,7 @@
 
 import { WebSocketServer } from 'ws';
 import pg from 'pg';
+import { createRealtimeSecurity, publicRecord } from './security.js';
 import { broadcastChange } from './channels.js';
 import { createConnectionHandler } from './connections.js';
 
@@ -25,7 +27,7 @@ const DB_CONFIG = {
   port: parseInt(process.env.DB_PORT || '5432'),
   database: process.env.DB_NAME || 'aimuza',
   user: process.env.DB_USER || 'aimuza',
-  password: process.env.DB_PASSWORD || 'aimuza_secret',
+  password: process.env.DB_PASSWORD,
   client_encoding: 'UTF8',
 };
 
@@ -47,7 +49,7 @@ async function connectPg() {
         try {
           const data = JSON.parse(msg.payload);
           console.log(`[Realtime] NOTIFY ${data.type} on ${data.schema}.${data.table} → ${wss.clients.size} client(s)`);
-          broadcastChange(wss, clientSubs, data);
+          void broadcastChange(wss,clientSubs,data,security.readable).catch(()=>console.warn('[Realtime] Event denied'));
         } catch (e) {
           console.error('[Realtime] Bad NOTIFY payload:', e.message);
         }
@@ -78,9 +80,11 @@ function scheduleReconnect() {
   }, 3000);
 }
 
-const wss = new WebSocketServer({ port: WS_PORT, path: '/websocket' });
+const accessPool=new pg.Pool({...DB_CONFIG,max:5,statement_timeout:5000});
+const security=createRealtimeSecurity(accessPool,jwt,JWT_SECRET);
+const wss = new WebSocketServer({ port: WS_PORT, path: '/websocket', maxPayload:65536, perMessageDeflate:false });
 
-const handleConnection = createConnectionHandler(wss, clientSubs, presenceState, jwt, JWT_SECRET);
+const handleConnection = createConnectionHandler(wss, clientSubs, presenceState, jwt, JWT_SECRET, security);
 wss.on('connection', handleConnection);
 
 wss.on('listening', () => {

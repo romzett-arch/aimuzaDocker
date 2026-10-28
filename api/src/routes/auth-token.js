@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
-import { signToken } from '../middleware/auth.js';
+import { signToken, requireAuth } from '../middleware/auth.js';
+import { issueRefresh, consumeRefresh, freshRoles } from '../security/refresh-session.js';
 
 const DUMMY_HASH = '$2a$12$K4p9MxVPgOSR5QjKWnJL.OBkqiLbqMy0aZXGxVUP3IxtTGd1bEX6q';
 
@@ -50,13 +51,14 @@ export function registerToken(router) {
 
         await pool.query('UPDATE auth.users SET last_sign_in_at = now() WHERE id = $1', [user.id]);
 
-        const token = signToken(user);
+        const token = signToken(await freshRoles(pool,user));
+        const refresh = await issueRefresh(pool,user);
 
         return res.json({
           access_token: token,
           token_type: 'bearer',
-          expires_in: 604800,
-          refresh_token: token,
+          expires_in: 900,
+          refresh_token: refresh,
           user: {
             id: user.id,
             email: user.email,
@@ -70,29 +72,18 @@ export function registerToken(router) {
       }
 
       if (grantType === 'refresh_token') {
-        if (!req.user) {
-          return res.status(401).json({ error: 'Invalid refresh token' });
-        }
-        const result = await pool.query('SELECT id, email, created_at, raw_user_meta_data FROM auth.users WHERE id = $1', [req.user.id]);
-        if (result.rows.length === 0) {
-          return res.status(401).json({ error: 'User not found' });
-        }
-        const user = result.rows[0];
-        user.session_version = Number(user.raw_user_meta_data?.session_version ?? 0);
-        const token = signToken(user);
-        return res.json({
-          access_token: token,
-          token_type: 'bearer',
-          expires_in: 604800,
-          refresh_token: token,
-          user: {
-            id: user.id,
-            email: user.email,
-            created_at: user.created_at,
-            app_metadata: { provider: 'email' },
-            user_metadata: {},
-          },
-        });
+        const client=await pool.connect();
+        try {
+          await client.query('BEGIN');
+          const user=await consumeRefresh(client,req.body?.refresh_token);
+          if(!user) {await client.query('COMMIT');return res.status(401).json({error:'Invalid refresh token'});}
+          const current=await freshRoles(client,user);
+          const refresh=await issueRefresh(client,current);
+          const token=signToken(current);
+          await client.query('COMMIT');
+          return res.json({access_token:token,token_type:'bearer',expires_in:900,refresh_token:refresh,user:{id:user.id,email:user.email}});
+        } catch(error) {await client.query('ROLLBACK');throw error;}
+        finally {client.release();}
       }
 
       res.status(400).json({ error: 'Unsupported grant_type' });
@@ -102,7 +93,11 @@ export function registerToken(router) {
     }
   });
 
-  router.post('/logout', (req, res) => {
+  router.post('/logout', requireAuth, async (req,res) => {
+    try {
+    await pool.query(`UPDATE auth.users SET raw_user_meta_data=jsonb_set(COALESCE(raw_user_meta_data,'{}'::jsonb),'{session_version}',to_jsonb(COALESCE((raw_user_meta_data->>'session_version')::integer,0)+1)) WHERE id=$1`,[req.user.id]);
+    await pool.query('DELETE FROM public.api_refresh_sessions WHERE user_id=$1',[req.user.id]);
     res.status(204).end();
+    } catch { res.status(503).json({error:'Unable to revoke session'}); }
   });
 }

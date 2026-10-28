@@ -39,6 +39,8 @@ const USER_TRACK_PROTECTED_COLUMNS = new Set([
   'voting_ends_at', 'voting_type', 'distribution_status', 'distribution_submitted_at',
   'distribution_reviewed_at', 'distribution_rejection_reason', 'distribution_platforms',
   'processing_stage', 'processing_progress', 'master_audio_url', 'isrc_code', 'upc_code',
+  'provider_task_id', 'suno_audio_id', 'normalized_audio_url', 'original_audio_url',
+  'blockchain_hash', 'blockchain_timestamp', 'certificate_url', 'deposit_id',
 ]);
 
 const USER_RELEASE_PROTECTED_COLUMNS = new Set([

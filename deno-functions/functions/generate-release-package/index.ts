@@ -1,3 +1,4 @@
+import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import JSZip from "npm:jszip@3.10.1";
@@ -209,7 +210,7 @@ async function fetchBytes(
   ffmpegBaseUrl?: string,
   storageOrigin?: string,
 ): Promise<Uint8Array> {
-  const response = await fetch(toInternalFetchUrl(rawUrl, requestUrl, ffmpegBaseUrl, storageOrigin));
+  const response = await safeMediaFetch(toInternalFetchUrl(rawUrl, requestUrl, ffmpegBaseUrl, storageOrigin));
   if (!response.ok) {
     throw new Error(`asset_download_failed:${response.status}`);
   }

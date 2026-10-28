@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
 import { requireServiceRole, signToken } from '../middleware/auth.js';
 import { PASSWORD_POLICY_MESSAGE, validatePassword } from '../security/password.js';
+import { freshRoles, issueRefresh } from '../security/refresh-session.js';
 
 export function registerAdmin(router) {
   router.post('/admin/impersonation-session', requireServiceRole, async (req, res) => {
@@ -24,15 +25,17 @@ export function registerAdmin(router) {
       }
 
       const user = result.rows[0];
+      if(!user.email_confirmed_at) return res.status(403).json({error:'Email must be confirmed'});
       user.app_role = user.app_role || 'user';
       user.session_version = Number(user.raw_user_meta_data?.session_version ?? 0);
-      const token = signToken(user);
+      const token = signToken(await freshRoles(pool,user));
+      const refresh = await issueRefresh(pool,user);
 
       return res.json({
         access_token: token,
         token_type: 'bearer',
-        expires_in: 604800,
-        refresh_token: token,
+        expires_in: 900,
+        refresh_token: refresh,
         user: {
           id: user.id,
           email: user.email,

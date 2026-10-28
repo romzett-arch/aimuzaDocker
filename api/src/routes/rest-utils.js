@@ -1,11 +1,9 @@
-export async function setJwtClaims(client, user) {
-  if (user && user.id && user.id !== 'service-role') {
-    await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [user.id]);
-    await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [user.role || 'authenticated']);
-    if (user.email) {
-      await client.query(`SELECT set_config('request.jwt.claim.email', $1, true)`, [user.email]);
-    }
-  }
+import { coreScope, assertJoinColumns } from '../security/core-rest-policy.js';
+export async function setJwtClaims(client,user) {
+ const role = user?.role==='service_role' ? 'service_role' : user?.id ? 'authenticated' : 'anon';
+ await client.query('SET LOCAL ROLE '+role);
+ const sub=user?.id && user.id!=='service-role' ? user.id : '';
+ await client.query(`SELECT set_config('request.jwt.claim.sub',$1,true),set_config('request.jwt.claim.role',$2,true),set_config('request.jwt.claim.email',$3,true),set_config('request.jwt.claims',$4,true)`,[sub,role,user?.email||'',JSON.stringify({sub,role,email:user?.email||''})]);
 }
 
 export async function resetJwtClaims(client) {
@@ -26,7 +24,7 @@ export function sanitizeCol(col) {
 export function parseSingleFilter(col, value, params, paramIdx) {
   const filters = [];
   const sc = sanitizeCol(col);
-  if (!sc) return { filters, params, paramIdx };
+  if (!sc || typeof value !== 'string' || value.length>8192) throw Object.assign(new Error('Invalid filter'),{status:400});
 
   if (value.startsWith('not.')) {
     const inner = value.slice(4);
@@ -50,11 +48,12 @@ export function parseSingleFilter(col, value, params, paramIdx) {
       filters.push(`${sc} NOT IN (${phs.join(', ')})`);
       params.push(...vals);
     }
+    if (!filters.length) throw Object.assign(new Error('Unsupported filter'),{status:400});
     return { filters, params, paramIdx };
   }
 
   const match = value.match(/^(eq|neq|gt|gte|lt|lte|like|ilike|is|in|cs|cd|ov|fts|plfts|phfts|wfts)\.(.*)$/s);
-  if (!match) return { filters, params, paramIdx };
+  if (!match) throw Object.assign(new Error('Unsupported filter'),{status:400});
 
   const [, op, val] = match;
 
@@ -104,10 +103,12 @@ export function parseSingleFilter(col, value, params, paramIdx) {
       filters.push(`${sc} @@ to_tsquery($${paramIdx})`); params.push(val); paramIdx++; break;
   }
 
+  if (!filters.length) throw Object.assign(new Error('Unsupported filter'),{status:400});
   return { filters, params, paramIdx };
 }
 
-export function parseOrFilter(value, params, paramIdx) {
+export function parseOrFilter(value, params, paramIdx, join='OR', nesting=0) {
+  if (typeof value!=='string' || value.length>8192 || nesting>5 || !value.startsWith('(') || !value.endsWith(')')) throw Object.assign(new Error('Invalid logical filter'),{status:400});
   const inner = value.replace(/^\(|\)$/g, '');
   const conditions = [];
 
@@ -124,11 +125,14 @@ export function parseOrFilter(value, params, paramIdx) {
     }
   }
   if (current.trim()) conditions.push(current.trim());
+  if (depth!==0 || !conditions.length || conditions.length>100) throw Object.assign(new Error('Invalid logical filter'),{status:400});
 
   const orParts = [];
   for (const cond of conditions) {
+    const logical=cond.match(/^(and|or)\.(\(.*\))$/s);
+    if(logical) { const nested=parseOrFilter(logical[2],params,paramIdx,logical[1].toUpperCase(),nesting+1);orParts.push(nested.filter);params=nested.params;paramIdx=nested.paramIdx;continue; }
     const dotIdx = cond.indexOf('.');
-    if (dotIdx === -1) continue;
+    if (dotIdx === -1) throw Object.assign(new Error('Invalid logical filter'),{status:400});
     const col = cond.substring(0, dotIdx);
     const opVal = cond.substring(dotIdx + 1);
 
@@ -141,7 +145,7 @@ export function parseOrFilter(value, params, paramIdx) {
   }
 
   if (orParts.length > 0) {
-    return { filter: `(${orParts.join(' OR ')})`, params, paramIdx };
+    return { filter: `(${orParts.join(` ${join} `)})`, params, paramIdx };
   }
   return { filter: null, params, paramIdx };
 }
@@ -150,16 +154,17 @@ export function parseFilters(query) {
   const filters = [];
   let params = [];
   let paramIdx = 1;
-  const exclude = new Set(['select', 'order', 'limit', 'offset', 'on_conflict', 'columns', 'and', 'head']);
+  const exclude = new Set(['select', 'order', 'limit', 'offset', 'on_conflict', 'columns', 'head']);
+  if(Object.keys(query).length>100) throw Object.assign(new Error('Too many filters'),{status:400});
 
   for (const [key, rawValue] of Object.entries(query)) {
     if (exclude.has(key)) continue;
-    if (!rawValue) continue;
+    if (!rawValue) throw Object.assign(new Error('Empty filter'),{status:400});
 
-    if (key === 'or') {
+    if (key === 'or' || key === 'and') {
       const values = Array.isArray(rawValue) ? rawValue : [rawValue];
       for (const v of values) {
-        const result = parseOrFilter(v, params, paramIdx);
+        const result = parseOrFilter(v, params, paramIdx,key.toUpperCase());
         if (result.filter) {
           filters.push(result.filter);
           params = result.params;
@@ -185,7 +190,7 @@ export function parseFilters(query) {
   };
 }
 
-export function parseSelect(selectStr, mainTable) {
+export function parseSelect(selectStr, mainTable, user) {
   if (!selectStr || selectStr === '*') return { columns: '*', joins: [] };
 
   const parts = [];
@@ -209,24 +214,29 @@ export function parseSelect(selectStr, mainTable) {
     const simpleJoinMatch = part.match(/^(\w+)(?:!inner)?\(([^)]*)\)$/);
 
     if (joinMatch) {
-      const [, alias, fTable, fColsStr] = joinMatch;
+      const [, alias, rawTable, fColsStr] = joinMatch;
+      const fTable = rawTable === "user_id" && alias === "profiles" ? "profiles" : rawTable;
       const fCols = fColsStr.split(',').map(c => c.trim()).filter(c => /^[a-zA-Z_]\w*$/.test(c));
       if (fCols.length > 0) {
+        assertJoinColumns(fTable,fCols,user);
         const jsonParts = fCols.map(c => `'${c}', ft."${c}"`).join(', ');
-        const fkCol = `${alias}_id`;
-        columns.push(`(SELECT jsonb_build_object(${jsonParts}) FROM public."${fTable}" ft WHERE ft.id = ${mainTable}."${fkCol}" LIMIT 1) as "${alias}"`);
+        const fkCol = fTable === "profiles" ? "user_id" : `${alias}_id`;
+        const targetKey = fTable === "profiles" ? "user_id" : "id";
+        columns.push(`(SELECT jsonb_build_object(${jsonParts}) FROM public."${fTable}" ft WHERE ft."${targetKey}" = ${mainTable}."${fkCol}" LIMIT 1) as "${alias}"`);
       }
     } else if (simpleJoinMatch) {
       const [, fTable, fColsStr] = simpleJoinMatch;
       const fCols = fColsStr.split(',').map(c => c.trim()).filter(c => /^[a-zA-Z_]\w*$/.test(c));
       if (fCols.length > 0) {
+        assertJoinColumns(fTable,fCols,user);
         const jsonParts = fCols.map(c => `'${c}', ft."${c}"`).join(', ');
         const baseTable = fTable.replace(/^forum_/, '');
         const singularTable = baseTable.endsWith('ies')
           ? `${baseTable.slice(0, -3)}y`
           : (baseTable.endsWith('s') ? baseTable.slice(0, -1) : baseTable);
-        const fkCol = `${singularTable}_id`;
-        columns.push(`(SELECT jsonb_build_object(${jsonParts}) FROM public."${fTable}" ft WHERE ft.id = ${mainTable}."${fkCol}" LIMIT 1) as "${fTable}"`);
+        const fkCol = fTable==='profiles' ? 'user_id' : `${singularTable}_id`;
+        const targetKey = fTable==='profiles' ? 'user_id' : 'id';
+        columns.push(`(SELECT jsonb_build_object(${jsonParts}) FROM public."${fTable}" ft WHERE ft."${targetKey}" = ${mainTable}."${fkCol}" LIMIT 1) as "${fTable}"`);
       }
     } else if (part === '*') {
       columns.push('*');
@@ -235,7 +245,8 @@ export function parseSelect(selectStr, mainTable) {
     }
   }
 
-  return { columns: columns.length ? columns.join(', ') : '*', joins: [] };
+  if (!columns.length) throw Object.assign(new Error('Invalid selection'),{status:400});
+  return { columns: columns.join(', '), joins: [] };
 }
 
 export function parseOrder(orderStr) {
@@ -257,4 +268,10 @@ export function parseOrder(orderStr) {
     return `"${col}" ${dir}${nulls}`;
   }).filter(Boolean);
   return parts.length ? `ORDER BY ${parts.join(', ')}` : '';
+}
+
+export function parseScopedFilters(query,table,user) {
+ const parsed=parseFilters(query);
+ const scope=coreScope(table,user,parsed.params.length+1);
+ return {...parsed,where:scope.sql ? (parsed.where ? parsed.where+' AND '+scope.sql : 'WHERE '+scope.sql) : parsed.where,params:[...parsed.params,...scope.params]};
 }

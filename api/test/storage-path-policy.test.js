@@ -26,8 +26,8 @@ test('keeps special release paths delegated to the release ownership policy', ()
   assert.doesNotThrow(() => assertOwnedMediaPath(user, 'tracks', 'silk-releases/user-1/release-1/master.wav'));
 });
 
-test('allows administrators and service workers to manage generated paths', () => {
-  assert.doesNotThrow(() => assertOwnedMediaPath(
+test('only service workers may overwrite generated paths', () => {
+  assert.throws(() => assertOwnedMediaPath(
     { id: 'admin-1', role: 'authenticated', app_role: 'admin' },
     'tracks',
     'masters/track-1.mp3',

@@ -1,3 +1,4 @@
+import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const TRACKS_PUBLIC_PREFIX = "/storage/v1/object/public/tracks/";
@@ -54,7 +55,7 @@ export async function copyFileToStorage(
   try {
     console.log(`Downloading file from: ${externalUrl}`);
 
-    const response = await fetch(externalUrl);
+    const response = await safeMediaFetch(externalUrl);
     if (!response.ok) {
       console.error(`Failed to download: ${response.status} ${response.statusText}`);
       return null;

@@ -4,9 +4,23 @@
 # Все контейнеры слушают 127.0.0.1
 
 services:
+  storage-permissions:
+    image: romzett/aimuza-api:latest
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c", "chown -R 1000:1000 /media/uploads /media/ffmpeg-tmp /media/ffmpeg-output"]
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - uploads_data:/media/uploads
+      - ffmpeg_tmp:/media/ffmpeg-tmp
+      - ffmpeg_output:/media/ffmpeg-output
+    networks: [aimuza-net]
+
   # ── PostgreSQL ──────────────────────────────
   db:
-    image: postgres:15-alpine
+    image: postgres:15-alpine@sha256:54e0dd8e8cddcdbb9156c2486eed5a43eccb7214d7c6828097d41ce049fb3984
     container_name: aimuza-db
     restart: unless-stopped
     command: ["postgres", "-c", "wal_level=logical"]
@@ -16,7 +30,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./init-db:/docker-entrypoint-initdb.d
+      - ./init-db:/docker-entrypoint-initdb.d:ro
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
@@ -30,6 +44,13 @@ services:
 
   # ── API Server (Node.js) ───────────────────
   api:
+    mem_limit: 768m
+    cpus: 1
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=128m,mode=1777"]
     image: romzett/aimuza-api:latest
     container_name: aimuza-api
     restart: unless-stopped
@@ -60,6 +81,13 @@ services:
 
   # ── Deno Functions ─────────────────────────
   deno-functions:
+    mem_limit: 1024m
+    cpus: 2
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=128m,mode=1777"]
     image: romzett/aimuza-deno:latest
     container_name: aimuza-deno
     restart: unless-stopped
@@ -94,7 +122,7 @@ services:
     ports:
       - "127.0.0.1:8081:8081"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8081/"]
+      test: ["CMD", "/usr/bin/deno", "eval", "--cached-only", "if (!(await fetch('http://localhost:8081/')).ok) Deno.exit(1)"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -103,12 +131,20 @@ services:
 
   # ── PDF Service (Gotenberg) ─────────────────
   gotenberg:
-    image: gotenberg/gotenberg:8
+    mem_limit: 1024m
+    cpus: 1
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    image: gotenberg/gotenberg:8-chromium@sha256:558943677cf9092df83ff654c2645856dcb9ddf777f359243789688e74f3bcdd
     container_name: aimuza-gotenberg
     restart: unless-stopped
     command:
       - gotenberg
       - --chromium-disable-javascript=true
+      - --chromium-deny-private-ips=true
+      - --api-download-from-max-entries=0
+      - --api-download-from-deny-private-ips=true
     ports:
       - "127.0.0.1:3010:3000"
     healthcheck:
@@ -121,6 +157,13 @@ services:
 
   # ── FFmpeg API ─────────────────────────────
   ffmpeg-api:
+    mem_limit: 1024m
+    cpus: 2
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=128m,mode=1777"]
     image: romzett/aimuza-ffmpeg:latest
     container_name: aimuza-ffmpeg
     restart: unless-stopped
@@ -128,6 +171,7 @@ services:
       PORT: 3001
       HOST: 0.0.0.0
       FFMPEG_API_KEY: ${FFMPEG_API_KEY:-}
+      MEDIA_ALLOWED_ORIGINS: ${MEDIA_ALLOWED_ORIGINS:-}
       BASE_URL: ${BASE_URL:-https://aimuza.ru}
       FFMPEG_MAX_CONCURRENT_JOBS: ${FFMPEG_MAX_CONCURRENT_JOBS:-4}
       FFMPEG_MAX_QUEUED_JOBS: ${FFMPEG_MAX_QUEUED_JOBS:-512}
@@ -146,6 +190,13 @@ services:
 
   # ── Realtime WebSocket ────────────────────
   realtime:
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=128m,mode=1777"]
     image: romzett/aimuza-realtime:latest
     container_name: aimuza-realtime
     restart: unless-stopped
@@ -172,6 +223,11 @@ services:
 
   # ── Radio Service (Queue Worker) ────────────
   radio:
+    mem_limit: 1024m
+    cpus: 1
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     image: romzett/aimuza-radio:latest
     container_name: aimuza-radio
     restart: unless-stopped
@@ -201,7 +257,7 @@ services:
     volumes:
       - uploads_data:/opt/aimuza/data/uploads:ro
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3200/health"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3200/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -213,6 +269,12 @@ services:
   # Образ environment-agnostic: URL = window.location.origin
   # ANON_KEY и SENTRY_DSN инжектятся при старте через entrypoint
   frontend:
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]
     image: romzett/aimuza-frontend:latest
     container_name: aimuza-frontend
     restart: unless-stopped
@@ -231,6 +293,11 @@ services:
 
   # ── AIMUZA Studio (Next.js) ────────────────
   studio:
+    mem_limit: 768m
+    cpus: 1
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     image: romzett/aimuza-studio:latest
     container_name: aimuza-studio
     restart: unless-stopped

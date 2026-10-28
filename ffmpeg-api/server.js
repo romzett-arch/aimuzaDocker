@@ -1,3 +1,4 @@
+require('./safe-logging');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -129,14 +130,15 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use((req,res,next)=>req.path==='/health'||req.path.startsWith('/output/')?next():requireApiKey(API_KEY)(req,res,next));
 app.use(express.json({
-  limit: '10mb',
+  limit: '256kb',
   verify: (req, res, buf) => { req.rawBody = buf.length ? buf.toString('utf8') : ''; }
 }));
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400) {
     const raw = (req.rawBody || '').slice(0, 500);
-    console.error('[normalize] Invalid JSON body:', err.message, 'raw:', raw);
+    console.error('[normalize] Invalid JSON body');
     return res.status(400).json({
       error: 'Bad Request',
       message: 'Invalid JSON body',

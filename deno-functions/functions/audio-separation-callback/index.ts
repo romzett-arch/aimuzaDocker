@@ -1,3 +1,4 @@
+import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const corsHeaders = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type" };
@@ -7,7 +8,7 @@ function string(value: unknown) { return typeof value === "string" ? value : "";
 async function sign(id: string, secret: string) { const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(id)); return Array.from(new Uint8Array(sig), b => b.toString(16).padStart(2, "0")).join(""); }
 function same(a: string, b: string) { if (a.length !== b.length) return false; let diff = 0; for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i); return diff === 0; }
 async function copyAudio(client: any, sourceUrl: string, separationId: string, kind: "vocal" | "instrumental", publicBaseUrl: string) {
-  const response = await fetch(sourceUrl); if (!response.ok) throw new Error(`Не удалось скачать ${kind === "vocal" ? "вокал" : "инструментал"}`);
+  const response = await safeMediaFetch(sourceUrl); if (!response.ok) throw new Error(`Не удалось скачать ${kind === "vocal" ? "вокал" : "инструментал"}`);
   const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.length < 1024) throw new Error("Suno вернул пустой аудиофайл");
   const mime = response.headers.get("content-type")?.split(";")[0] || "audio/mpeg"; const extension = mime.includes("wav") ? "wav" : mime.includes("ogg") ? "ogg" : "mp3";
   const path = `separations/${separationId}/${kind}.${extension}`; const { error } = await client.storage.from("tracks").upload(path, bytes, { contentType: mime, upsert: true }); if (error) throw error;

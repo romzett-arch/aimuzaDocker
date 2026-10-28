@@ -1,5 +1,7 @@
+import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isServiceRequest } from "../_shared/callback-auth.ts";
 import JSZip from "npm:jszip@3.10.1";
 import { corsHeaders } from "./types.ts";
 import type { GoldPackRequest, TrackMetadata } from "./types.ts";
@@ -46,7 +48,7 @@ function toStorageFetchUrl(rawUrl: string, storageOrigin: string): string {
 }
 
 async function fetchAssetBytes(rawUrl: string, label: string, storageOrigin: string): Promise<Uint8Array> {
-  const response = await fetch(toStorageFetchUrl(rawUrl, storageOrigin));
+  const response = await safeMediaFetch(toStorageFetchUrl(rawUrl, storageOrigin));
   if (!response.ok) {
     throw new Error(`${label}: asset_download_failed (${response.status})`);
   }
@@ -152,6 +154,9 @@ function getMissingRequiredAssets(track: TrackMetadata): string[] {
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
+  }
+  if (req.method !== "POST" || !isServiceRequest(req)) {
+    return new Response(JSON.stringify({ error: "Service role required" }), { status: 403, headers: corsHeaders });
   }
 
   try {

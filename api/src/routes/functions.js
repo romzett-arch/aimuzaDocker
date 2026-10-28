@@ -50,6 +50,7 @@ router.all('/:name', async (req, res) => {
 
     const passthroughHeaders = [
       'user-agent',
+      'x-callback-secret',
       'referer',
       'x-forwarded-for',
       'x-real-ip',

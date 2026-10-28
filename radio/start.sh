@@ -1,5 +1,7 @@
 #!/bin/bash
 set -e
+: "${ICECAST_SOURCE_PASS:?ICECAST_SOURCE_PASS required}"
+: "${ICECAST_ADMIN_PASS:?ICECAST_ADMIN_PASS required}"
 
 echo "═══════════════════════════════════════════"
 echo " AIMUZA Radio Engine v3.0"
@@ -13,7 +15,6 @@ sed -i "s|ICECAST_ADMIN_PASS_PLACEHOLDER|${ICECAST_ADMIN_PASS:-admin123}|g" /app
 # Create directories
 mkdir -p /var/log/icecast /var/log/liquidsoap /tmp
 # Icecast2 needs write access to logdir (runs as icecast2:icecast after changeowner)
-chown -R icecast2:icecast /var/log/icecast 2>/dev/null || chmod -R 777 /var/log/icecast
 
 # Generate empty playlist if not exists
 if [ ! -f /tmp/radio_playlist.m3u ]; then

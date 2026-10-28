@@ -39,7 +39,10 @@ export function registerUser(router) {
 
   router.put('/user', requireAuth, async (req, res) => {
     try {
-      const { password, email, data: metaData } = req.body;
+      const { password, email } = req.body;
+      const metaData = req.body.data ? Object.fromEntries(Object.entries(req.body.data).filter(([key])=>['username','display_name','avatar_url','bio'].includes(key))) : null;
+      if (email && email.toLowerCase() !== req.user.email) return res.status(400).json({error:'Email changes require verification'});
+      if (password && metaData) return res.status(400).json({error:'Update password and profile separately'});
       const updates = [];
       const params = [];
       let idx = 1;

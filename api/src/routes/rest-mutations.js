@@ -1,5 +1,6 @@
-import { pool } from '../db.js';
-import { setJwtClaims, resetJwtClaims, sanitizeTable, parseFilters, parseSelect } from './rest-utils.js';
+import { gatewayPool as pool } from '../gateway-db.js';
+import { assertCoreRestAccess, coreReadColumns } from '../security/core-rest-policy.js';
+import { setJwtClaims, resetJwtClaims, sanitizeTable, parseScopedFilters, parseSelect } from './rest-utils.js';
 import {
   FORUM_IMMUTABLE_USER_COLUMNS,
   FORUM_PROTECTED_INSERT_COLUMNS,
@@ -110,6 +111,7 @@ export async function handlePost(req, res) {
   try {
     await client.query('BEGIN');
     await setJwtClaims(client, req.user);
+    await assertCoreRestAccess(req.params.table,req.user,req.method==='POST' ? 'insert' : req.method==='PATCH' ? 'update' : 'delete',client);
 
     const table = sanitizeTable(req.params.table);
     await assertAdminEmailAccess(client, req.params.table, req.user);
@@ -236,9 +238,9 @@ export async function handlePost(req, res) {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[REST POST]', err.message, '| table:', req.params.table, '| code:', err.code);
-    const pgMsg = err.message || 'Operation failed';
+    const pgMsg = err.status ? err.message : 'Operation rejected';
     const pgCode = err.code || 'REST_ERROR';
-    res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
+    res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: null, hint: err.hint || null });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -250,6 +252,7 @@ export async function handlePatch(req, res) {
   try {
     await client.query('BEGIN');
     await setJwtClaims(client, req.user);
+    await assertCoreRestAccess(req.params.table,req.user,req.method==='POST' ? 'insert' : req.method==='PATCH' ? 'update' : 'delete',client);
 
     const table = sanitizeTable(req.params.table);
     await assertAdminEmailAccess(client, req.params.table, req.user);
@@ -293,7 +296,7 @@ export async function handlePatch(req, res) {
       }
     }
 
-    const { where, params: filterParams } = parseFilters(req.query);
+    const { where, params: filterParams } = parseScopedFilters(req.query,req.params.table,req.user);
     const adjustedWhere = where.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + idx - 1}`);
     const scope = getForumMutationScope(req.params.table, req.user, idx + filterParams.length);
     const marketplaceScope = getMarketplaceMutationScope(
@@ -359,9 +362,9 @@ export async function handlePatch(req, res) {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[REST PATCH]', err.message, '| table:', req.params.table, '| code:', err.code);
-    const pgMsg = err.message || 'Operation failed';
+    const pgMsg = err.status ? err.message : 'Operation rejected';
     const pgCode = err.code || 'REST_ERROR';
-    res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
+    res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: null, hint: err.hint || null });
   } finally {
     await resetJwtClaims(client);
     client.release();
@@ -373,6 +376,7 @@ export async function handleDelete(req, res) {
   try {
     await client.query('BEGIN');
     await setJwtClaims(client, req.user);
+    await assertCoreRestAccess(req.params.table,req.user,req.method==='POST' ? 'insert' : req.method==='PATCH' ? 'update' : 'delete',client);
 
     const table = sanitizeTable(req.params.table);
     await assertAdminEmailAccess(client, req.params.table, req.user);
@@ -387,7 +391,7 @@ export async function handleDelete(req, res) {
     assertAdsMutationAccess(req.params.table, req.user, 'delete');
     assertRadioMutationAccess(req.params.table, req.user);
     assertUsersAccessMutation(req.params.table, req.user, 'delete');
-    const { where, params } = parseFilters(req.query);
+    const { where, params } = parseScopedFilters(req.query,req.params.table,req.user);
     if (!where) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Filters required for DELETE' });
@@ -447,9 +451,9 @@ export async function handleDelete(req, res) {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[REST DELETE]', err.message, '| table:', req.params.table, '| code:', err.code);
-    const pgMsg = err.message || 'Operation failed';
+    const pgMsg = err.status ? err.message : 'Operation rejected';
     const pgCode = err.code || 'REST_ERROR';
-    res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: err.detail || null, hint: err.hint || null });
+    res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: null, hint: err.hint || null });
   } finally {
     await resetJwtClaims(client);
     client.release();

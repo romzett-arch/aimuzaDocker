@@ -1,3 +1,4 @@
+import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 function normalizeFetchUrl(sourceUrl: string): string {
   const fallbackOrigin = Deno.env.get("SUPABASE_URL") || Deno.env.get("BASE_URL") || "http://api:3000";
   let parsed: URL;
@@ -37,7 +38,7 @@ export async function getAudioHash(audioUrl: string): Promise<string> {
       console.log(`Rewriting audio URL for container access: ${audioUrl} -> ${fetchUrl}`);
     }
 
-    const response = await fetch(fetchUrl);
+    const response = await safeMediaFetch(fetchUrl);
     const buffer = await response.arrayBuffer();
     return generateHashFromBytes(buffer);
   } catch (error) {

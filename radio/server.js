@@ -1,3 +1,4 @@
+require('./safe-logging');
 /**
  * AI Planet Radio Controller v3.0
  *
@@ -20,7 +21,7 @@ const pool = new Pool({
   port: parseInt(process.env.DB_PORT || '5432'),
   database: process.env.DB_NAME || 'aimuza',
   user: process.env.DB_USER || 'aimuza',
-  password: process.env.DB_PASSWORD || 'password',
+  password: process.env.DB_PASSWORD,
   max: 10,
   client_encoding: 'UTF8',
 });
@@ -90,8 +91,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && req.url === '/api/internal/track-changed') {
+      if (!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) {
+        res.writeHead(403);res.end('{"error":"forbidden"}');return;
+      }
       let body = '';
-      req.on('data', (chunk) => { body += chunk; });
+      req.on('data', (chunk) => { body += chunk; if (body.length>16384) req.destroy(); });
       req.on('end', async () => {
         try {
           const trackData = JSON.parse(body);
@@ -100,7 +104,7 @@ const server = http.createServer(async (req, res) => {
           res.end('{"ok":true}');
         } catch (e) {
           res.writeHead(400);
-          res.end('{"error":"' + e.message + '"}');
+            res.end('{"error":"invalid track event"}');
         }
       });
       return;
@@ -108,6 +112,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && req.url === '/api/skip') {
       const skipSecret = process.env.RADIO_SKIP_SECRET;
+      if (!skipSecret || skipSecret.length<32) {res.writeHead(503);res.end('{"error":"not configured"}');return;}
       if (skipSecret) {
         const authHeader = req.headers['x-radio-skip-secret'] || req.headers['authorization']?.replace('Bearer ', '');
         if (authHeader !== skipSecret) {
@@ -126,16 +131,25 @@ const server = http.createServer(async (req, res) => {
     res.end('{"error":"not found"}');
   } catch (err) {
     res.writeHead(500);
-    res.end('{"error":"' + err.message + '"}');
+    res.end('{"error":"request failed"}');
   }
 });
 
 const metadataWs = new MetadataServer(server, {
   jwtSecret: process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET,
+  validateSession: async claims => {
+    if (claims.role!=='authenticated' || !claims.sub) return false;
+    const {rows}=await pool.query('SELECT email_confirmed_at,raw_user_meta_data FROM auth.users WHERE id=$1',[claims.sub]);
+    return !!rows[0]?.email_confirmed_at && Number(rows[0].raw_user_meta_data?.session_version||0)===Number(claims.session_version||0);
+  },
 });
 
 metadataWs.onReaction = async (ws, data) => {
   if (!ws.userId || !metadataWs.currentTrack) return;
+  const now=Date.now();
+  const observed=Math.floor((now-Math.max(ws.lastReactionAt||now,metadataWs.trackStartedAt||now))/1000);
+  if (observed<10) return;
+  ws.lastReactionAt=now;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -143,7 +157,7 @@ metadataWs.onReaction = async (ws, data) => {
     const result = await client.query(
       'SELECT public.radio_award_listen_xp($1, $2, $3, $4, $5, $6, $7)',
       [ws.userId, metadataWs.currentTrack.track_id,
-        Math.round(data.listen_duration || 30),
+         Math.min(observed,60),
         Math.round(metadataWs.currentTrack.duration || 180),
         data.reaction || null, data.session_id || null, null]
     );

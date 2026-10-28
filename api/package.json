@@ -9,16 +9,20 @@
     "test": "node --test"
   },
   "dependencies": {
-    "express": "^4.21.0",
-    "cors": "^2.8.5",
-    "pg": "^8.13.0",
-    "jsonwebtoken": "^9.0.2",
     "bcryptjs": "^2.4.3",
-    "multer": "^1.4.5-lts.1",
-    "nodemailer": "^6.9.0",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.0",
-    "morgan": "^1.10.0",
+    "express": "^4.22.3",
+    "express-rate-limit": "^7.0.0",
     "helmet": "^8.0.0",
-    "express-rate-limit": "^7.0.0"
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.12.1",
+    "multer": "^2.5.0",
+    "nodemailer": "^10.2.1",
+    "pg": "^8.13.0"
+  },
+  "overrides": {
+    "body-parser": "^1.20.9",
+    "proxy-addr": "^2.0.8"
   }
 }

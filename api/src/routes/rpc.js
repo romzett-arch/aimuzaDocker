@@ -4,7 +4,9 @@
  * Body: { param1: val1, param2: val2 }
  */
 import { Router } from 'express';
-import { pool } from '../db.js';
+import { assertCoreRpcAccess } from '../security/core-rpc-policy.js';
+import { gatewayPool as pool } from '../gateway-db.js';
+import { setJwtClaims } from './rest-utils.js';
 import { rpcAnonLimiter, votingIpLimiter, votingUserLimiter } from '../middleware/votingRateLimit.js';
 import { assertForumRpcAccess } from '../security/forum-rpc-policy.js';
 import { assertEventsRpcAccess } from '../security/events-rpc-policy.js';
@@ -19,6 +21,7 @@ const RPC_ERROR_SQL_BLACKLIST = /\b(select|insert|update|delete|syntax|column|re
 const RPC_BUSINESS_CODE_RE = /^[a-z][a-z0-9_]+$/i;
 
 const ALLOWED_RPC = new Set([
+  'security_reserve_wav','security_fail_wav','security_claim_wav_callback','security_complete_wav',
   'accept_role_invitation', 'add_user_credits', 'admin_add_xp',   'admin_annul_vote', 'admin_approve_purchase',
   'admin_cancel_role_invitation', 'admin_create_role_invitation', 'admin_process_verification',
   'admin_reconcile_expired_blocks', 'admin_revoke_user_role', 'admin_set_user_permission',
@@ -170,6 +173,7 @@ async function handleRpc(req, res) {
     if (!ALLOWED_RPC.has(fnName)) {
       return sendRpcError(res, 403, 'Function not allowed', 'RPC_FORBIDDEN');
     }
+    assertCoreRpcAccess(fnName,req.user);
 
     if (SERVICE_ROLE_ONLY_RPC.has(fnName) && req.user?.role !== 'service_role') {
       return sendRpcError(res, 403, 'Service role required', 'SERVICE_ROLE_REQUIRED');
@@ -209,13 +213,7 @@ async function handleRpc(req, res) {
     // Parameter validation happens first so no early response can leak an open TX.
     await client.query('BEGIN');
 
-    if (req.user && req.user.id && req.user.id !== 'service-role') {
-      await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [req.user.id]);
-      await client.query(`SELECT set_config('request.jwt.claim.role', $1, true)`, [req.user.role || 'authenticated']);
-      if (req.user.email) {
-        await client.query(`SELECT set_config('request.jwt.claim.email', $1, true)`, [req.user.email]);
-      }
-    }
+    await setJwtClaims(client,req.user);
 
     let sql;
     let sqlParams;

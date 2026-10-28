@@ -4,13 +4,16 @@
 services:
   # ── PostgreSQL ──────────────────────────────
   db:
-    image: postgres:15-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: deploy-postgres:security
     container_name: aimuza-db
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_NAME:-aimuza}
       POSTGRES_USER: ${DB_USER:-aimuza}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-aimuza_secret}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./init-db:/docker-entrypoint-initdb.d
@@ -38,7 +41,7 @@ services:
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-aimuza}
       DB_USER: ${DB_USER:-aimuza}
-      DB_PASSWORD: ${DB_PASSWORD:-aimuza_secret}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
       API_PORT: 3000
       UPLOADS_DIR: /opt/aimuza/data/uploads
       DENO_FUNCTIONS_URL: http://deno-functions:8081
@@ -97,7 +100,7 @@ services:
     ports:
       - "127.0.0.1:8081:8081"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8081/"]
+      test: ["CMD", "/usr/bin/deno", "eval", "--cached-only", "if (!(await fetch('http://localhost:8081/')).ok) Deno.exit(1)"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -106,7 +109,7 @@ services:
 
   # ── PDF Service (Gotenberg) ─────────────────
   gotenberg:
-    image: gotenberg/gotenberg:8
+    image: gotenberg/gotenberg:8-chromium@sha256:558943677cf9092df83ff654c2645856dcb9ddf777f359243789688e74f3bcdd
     container_name: aimuza-gotenberg
     restart: unless-stopped
     command:
@@ -160,7 +163,7 @@ services:
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-aimuza}
       DB_USER: ${DB_USER:-aimuza}
-      DB_PASSWORD: ${DB_PASSWORD:-aimuza_secret}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
       WS_PORT: 4000
       JWT_SECRET: ${JWT_SECRET:-aimuza-jwt-secret-change-me}
     ports:

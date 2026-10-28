@@ -32,7 +32,7 @@ export function registerSignup(router) {
 
       const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
       const usernameFromBody = req.body.data?.username || req.body.options?.data?.username || normalizedEmail.split('@')[0];
-      const metadata = { username: usernameFromBody, ...(req.body.data || {}) };
+      const metadata = { username: String(usernameFromBody).slice(0,80), session_version: 0 };
 
       const result = await pool.query(
         `INSERT INTO auth.users (email, encrypted_password, email_confirmed_at, raw_user_meta_data, created_at, updated_at)
@@ -55,12 +55,8 @@ export function registerSignup(router) {
         [user.id, usernameFromBody, normalizedEmail]
       );
 
-      const token = signToken(user);
-
       res.status(200).json({
-        access_token: token,
-        token_type: 'bearer',
-        expires_in: 604800,
+        session: null,
         user: {
           id: user.id,
           email: user.email,

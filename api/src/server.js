@@ -1,3 +1,4 @@
+import './security/safe-logging.js';
 /**
  * AI Planet Sound — API Server
  * Замена Supabase PostgREST + GoTrue Auth
@@ -25,6 +26,8 @@ import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 
 import { pool, testConnection } from './db.js';
+import { testGatewayConnection } from './gateway-db.js';
+import { createUploadBudget } from './security/upload-budget.js';
 import authRouter from './routes/auth.js';
 import restRouter from './routes/rest.js';
 import rpcRouter from './routes/rpc.js';
@@ -73,7 +76,15 @@ app.use(cors({
   origin: ALLOWED_ORIGINS,
   credentials: true,
 }));
-app.use(morgan('short'));
+app.use(morgan((tokens,req,res)=>`${tokens.method(req,res)} ${req.path} ${tokens.status(req,res)} ${tokens['response-time'](req,res)} ms`));
+// Reject abusive traffic and unauthenticated uploads before buffering the body.
+app.use(rateLimit({windowMs:60000,limit:600,standardHeaders:true,legacyHeaders:false}));
+app.use(authMiddleware);
+app.use('/storage/v1/object',(req,res,next)=>{
+  if (['POST','PUT','DELETE'].includes(req.method) && !req.user?.id) return res.status(401).json({error:'Authentication required'});
+  next();
+});
+app.use('/storage/v1/object',createUploadBudget());
 
 // Raw body для storage uploads (POST/PUT, не multipart — иначе multer получит пустое тело)
 // DELETE исключён — ему нужен JSON body (массив путей для удаления)
@@ -83,17 +94,17 @@ app.use('/storage/v1/object', express.raw({
     const ct = (req.headers['content-type'] || '').toLowerCase();
     return !ct.includes('multipart');
   },
-  limit: '1024mb',
+  limit: '100mb',
 }));
 
 // Raw body для multipart → functions proxy (чтобы передать файлы в Deno as-is)
 app.use('/functions/v1', express.raw({
   type: (req) => (req.headers['content-type'] || '').toLowerCase().includes('multipart'),
-  limit: '50mb',
+  limit: '25mb',
 }));
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '256kb', strict: true }));
+app.use(express.urlencoded({ extended: false, limit: '64kb', parameterLimit:100 }));
 
 // Password brute-force protection. Successful logins do not consume the limit.
 // Separate IP and account counters prevent simple IP/email rotation bypasses.
@@ -121,7 +132,6 @@ app.use('/functions/v1/send-auth-email', rateLimit({ windowMs: 60 * 1000, max: 3
 app.use('/functions/v1/verify-email-code', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Too many verification attempts' } }));
 
 // JWT auth middleware (устанавливает req.user если токен валидный)
-app.use(authMiddleware);
 
 // REST/storage rate limiters AFTER auth — so keyGenerator can use req.user.id
 const restMutationLimiter = rateLimit({ windowMs: 60 * 1000, max: 100, message: { error: 'Rate limit exceeded' }, keyGenerator: (req) => req.user?.id || req.ip });
@@ -163,10 +173,15 @@ app.use((err, req, res, next) => {
 // Start
 async function start() {
   await testConnection();
-  app.listen(PORT, '0.0.0.0', () => {
+  await testGatewayConnection();
+  const server=app.listen(PORT, '0.0.0.0', () => {
     console.log(`[API] aimuza-api listening on :${PORT}`);
     startVotingLifecycle();
   });
+  server.requestTimeout=120000;
+  server.headersTimeout=15000;
+  server.maxConnections=1000;
+  server.maxRequestsPerSocket=100;
 }
 
 start().catch(err => {

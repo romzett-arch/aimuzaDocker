@@ -1,6 +1,6 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-import nodemailer from "npm:nodemailer@6.9.10";
+import nodemailer from "npm:nodemailer@10.2.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

@@ -43,6 +43,15 @@ async function persistAddonState(
   },
 ): Promise<string> {
   const { trackId, userId, addonServiceId, status, resultUrl } = params;
+  let wavTaskId: string | null=null;
+  try {wavTaskId=JSON.parse(resultUrl)?.wav_task_id||null;} catch {}
+  if(status==='completed') {
+    const {data:existing}=await supabase.from('track_addons').select('id').eq('track_id',trackId).eq('addon_service_id',addonServiceId).single();
+    if(!existing) throw new Error('WAV reservation missing');
+    const {data:done,error}=await supabase.rpc('security_complete_wav',{p_addon_id:existing.id,p_result_url:resultUrl});
+    if(error||!done) throw new Error('WAV settlement failed');
+    return existing.id;
+  }
 
   const { data: existingAddon, error: existingAddonError } = await supabase
     .from("track_addons")
@@ -60,6 +69,7 @@ async function persistAddonState(
       .from("track_addons")
       .update({
         user_id: userId,
+        wav_task_id: wavTaskId,
         status,
         result_url: resultUrl,
         updated_at: new Date().toISOString(),
@@ -78,6 +88,7 @@ async function persistAddonState(
     .insert({
       track_id: trackId,
       user_id: userId,
+      wav_task_id: wavTaskId,
       addon_service_id: addonServiceId,
       status,
       result_url: resultUrl,
@@ -102,7 +113,7 @@ serve(async (req) => {
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-  let refundOnError: { userId: string; trackId: string; amount: number } | null = null;
+  let reservedAddonId: string | null = null;
 
   try {
     let userId: string | null;
@@ -139,7 +150,7 @@ serve(async (req) => {
 
     const { data: track, error: trackError } = await supabase
       .from("tracks")
-      .select("id, user_id, suno_audio_id, title, description, audio_url, performer_name, label_name")
+      .select("id, user_id, suno_audio_id, provider_task_id, title, description, audio_url, performer_name, label_name")
       .eq("id", track_id)
       .single();
 
@@ -166,10 +177,7 @@ serve(async (req) => {
 
     const markAddonFailed = async (addonId?: string) => {
       if (!addonId) return;
-      await supabase.from("track_addons").update({
-        status: "failed",
-        updated_at: new Date().toISOString(),
-      }).eq("id", addonId);
+      await supabase.rpc('security_fail_wav',{p_addon_id:addonId});
     };
 
     const finalizeWavAddon = async (originalWavUrl: string, addonId?: string) => {
@@ -236,7 +244,7 @@ serve(async (req) => {
       );
     }
 
-    if (existingAddon?.status === "processing") {
+    if (["pending","processing","callback_processing"].includes(existingAddon?.status)) {
       let existingTaskId: string | null = null;
       if (existingAddon.result_url) {
         try {
@@ -266,15 +274,8 @@ serve(async (req) => {
       );
     }
 
-    let taskId: string | null = null;
-    if (track.description) {
-      const taskIdMatch = track.description.match(/\[task_id:\s*([^\]]+)\]/);
-      if (taskIdMatch) {
-        taskId = taskIdMatch[1].trim();
-      }
-    }
-
-    let audioId = audio_id || track.suno_audio_id;
+    const taskId: string | null = track.provider_task_id;
+    let audioId = track.suno_audio_id;
 
     if (!taskId) {
       throw new Error("У трека отсутствует идентификатор AIMUZA для конвертации в WAV");
@@ -308,57 +309,14 @@ serve(async (req) => {
       throw new Error("Не удалось получить идентификатор аудио AIMUZA. Перегенерируйте трек.");
     }
 
-    const price = addonService.price_rub ?? 5;
-    if (!isInternalCall && userId && price > 0) {
-      const { data: profileData, error: profileError } = await supabase
-        .from("profiles")
-        .select("balance")
-        .eq("user_id", track.user_id)
-        .single();
+    const callbackSecret = Deno.env.get("WAV_CALLBACK_SECRET");
+    if (!callbackSecret || callbackSecret.length < 32) throw new Error("WAV callback authentication is not configured");
+    const {data:reservation,error:reserveError}=await supabase.rpc('security_reserve_wav',{p_track_id:track_id,p_charge:!isInternalCall});
+    if(reserveError) throw new Error('WAV reservation failed');
+    if(!reservation?.started) return new Response(JSON.stringify({success:true,message:'WAV already reserved'}),{headers:{...corsHeaders,'Content-Type':'application/json'}});
+    reservedAddonId=reservation.addon_id;
 
-      if (profileError || !profileData) {
-        return new Response(
-          JSON.stringify({ error: "Ошибка получения баланса" }),
-          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      const currentBalance = profileData.balance ?? 0;
-      if (currentBalance < price) {
-        return new Response(
-          JSON.stringify({ error: "Недостаточно средств" }),
-          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      const newBalance = currentBalance - price;
-
-      const { error: updateError } = await supabase
-        .from("profiles")
-        .update({ balance: newBalance })
-        .eq("user_id", track.user_id)
-        .gte("balance", price);
-
-      if (updateError) {
-        return new Response(
-          JSON.stringify({ error: "Ошибка списания баланса" }),
-          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      await supabase.from("balance_transactions").insert({
-        user_id: track.user_id,
-        amount: -price,
-        type: "addon_service",
-        description: "Конвертация в WAV",
-        balance_before: currentBalance,
-        balance_after: newBalance,
-      });
-
-      refundOnError = { userId: track.user_id, trackId: track_id, amount: price };
-    }
-
-    const callbackUrl = `${Deno.env.get("BASE_URL") || "https://aimuza.ru"}/functions/v1/wav-callback`;
+    const callbackUrl = `${Deno.env.get("BASE_URL") || "https://aimuza.ru"}/functions/v1/wav-callback?secret=${encodeURIComponent(callbackSecret)}`;
 
     const response = await fetch("https://api.sunoapi.org/api/v1/wav/generate", {
       method: "POST",
@@ -425,22 +383,10 @@ serve(async (req) => {
   } catch (error: unknown) {
     console.error("Error in convert-to-wav:", error);
     const message = error instanceof Error ? error.message : "Unknown error";
-    if (refundOnError && refundOnError.amount > 0) {
-      const supabaseRefund = createClient(
-        Deno.env.get("SUPABASE_URL")!,
-        Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-      );
-      try {
-        await supabaseRefund.rpc("refund_generation_failed", {
-          p_user_id: refundOnError.userId,
-          p_amount: refundOnError.amount,
-          p_track_id: refundOnError.trackId,
-          p_description: `Возврат за ошибку конвертации в WAV: ${message}`,
-        });
-        console.log(`Refunded ${refundOnError.amount} ₽ for failed WAV conversion`);
-      } catch (refundErr) {
-        console.error("Refund failed:", refundErr);
-      }
+    if (reservedAddonId) {
+      const refundClient=createClient(supabaseUrl,supabaseServiceKey);
+      const {error:refundError}=await refundClient.rpc('security_fail_wav',{p_addon_id:reservedAddonId});
+      if(refundError) console.error('WAV refund requires retry');
     }
     return new Response(
       JSON.stringify({ error: message }),

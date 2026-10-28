@@ -4,12 +4,14 @@
  */
 
 const net = require('net');
+const {annotation,playbackUri}=require('./media-policy');
 
 const TELNET_HOST = '127.0.0.1';
 const TELNET_PORT = 1234;
 const TIMEOUT_MS = 5000;
 
 function sendCommand(command) {
+  if (/[\r\n\0]/.test(command)||command.length>16384) return Promise.reject(new Error('Invalid engine command'));
   return new Promise((resolve, reject) => {
     const client = new net.Socket();
     let data = '';
@@ -52,13 +54,14 @@ function sendCommand(command) {
 }
 
 async function pushTrack(audioUrl, metadata = {}) {
-  const escape = (s) => String(s || '').replace(/"/g, "'");
+  const escape = annotation;
+  audioUrl=playbackUri(audioUrl);
   const parts = [];
   if (metadata.title != null) parts.push(`title="${escape(metadata.title)}"`);
   if (metadata.artist != null) parts.push(`artist="${escape(metadata.artist)}"`);
-  if (metadata.track_id != null) parts.push(`track_id="${metadata.track_id}"`);
+  if (metadata.track_id != null) parts.push(`track_id="${escape(metadata.track_id)}"`);
   if (metadata.cover_url != null) parts.push(`cover_url="${escape(metadata.cover_url)}"`);
-  if (metadata.duration != null) parts.push(`duration="${metadata.duration}"`);
+  if (metadata.duration != null) parts.push(`duration="${escape(metadata.duration)}"`);
   if (metadata.source != null) parts.push(`source="${escape(metadata.source)}"`);
 
   const annotate = parts.length > 0

@@ -1,5 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { startAudioMasterWorker } from "./workers/audio-master-worker.ts";
+import { installSafeLogging } from './functions/_shared/safe-logging.ts';
+installSafeLogging();
 
 type Handler = (req: Request) => Promise<Response> | Response;
 
@@ -84,6 +86,8 @@ function resolveFunctionName(pathname: string): string | null {
 
 await loadHandlers();
 startAudioMasterWorker();
+let activeHeavyRequests=0;
+const HEAVY_FUNCTIONS=new Set(['generate-gold-pack','generate-release-package','wav-callback','convert-to-wav','download-track','track-deposit']);
 
 serve(async (req) => {
   const url = new URL(req.url);
@@ -102,14 +106,17 @@ serve(async (req) => {
   const handler = handlers.get(functionName);
   if (!handler) {
     return new Response(JSON.stringify({
-      error: `Function '${functionName}' not available`,
-      available: [...handlers.keys()].sort(),
-      loadError: failedHandlers.get(functionName) ?? null,
+      error: 'Function temporarily unavailable',
     }), {
       status: 501,
       headers: { "Content-Type": "application/json" },
     });
   }
 
+  if(HEAVY_FUNCTIONS.has(functionName)) {
+    if(activeHeavyRequests>=2) return new Response('Processing capacity reached',{status:503,headers:{'Retry-After':'10'}});
+    activeHeavyRequests++;
+    try{return await handler(req);}finally{activeHeavyRequests--;}
+  }
   return await handler(req);
 }, { port: parseInt(Deno.env.get("DENO_PORT") || "8081", 10) });

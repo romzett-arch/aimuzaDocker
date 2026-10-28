@@ -1,13 +1,13 @@
 #!/usr/bin/liquidsoap
 
-# AI Planet Radio — Liquidsoap 2.1.x Configuration
+# AI Planet Radio — Liquidsoap 2.4.x Configuration
 # FIX: бесконечный silence fallback — поток не обрывается после трека
 # FIX: безопасный JSON для track-changed (экранирование кавычек)
 # FIX: timeout для http.post
 
 # ─── Settings ──────────────────────────────────────
 
-set("init.allow_root", true)
+set("init.allow_root", false)
 set("server.telnet", true)
 set("server.telnet.bind_addr", "127.0.0.1")
 set("server.telnet.port", 1234)
@@ -58,8 +58,8 @@ radio = mksafe(radio)
 
 # ─── Metadata Notification ─────────────────────────
 
-icecast_source_pass = getenv("ICECAST_SOURCE_PASS")
-source_pass = if icecast_source_pass == "" then "changeme" else icecast_source_pass end
+# start.sh requires this value before launching any process.
+source_pass = environment.get("ICECAST_SOURCE_PASS")
 
 # Экранирование кавычек для JSON (metadata всегда string в Liquidsoap)
 def json_safe(s) =
@@ -73,10 +73,10 @@ def on_track_change(m)
   track_id = m["track_id"]
   cover_url = m["cover_url"]
   dur = m["duration"]
-  source = m["source"]
+  track_source = m["source"]
 
   # Безопасный JSON: экранируем кавычки в полях
-  data = "{ \"title\": \"" ^ json_safe(title) ^ "\", \"artist\": \"" ^ json_safe(artist) ^ "\", \"track_id\": \"" ^ json_safe(track_id) ^ "\", \"cover_url\": \"" ^ json_safe(cover_url) ^ "\", \"duration\": \"" ^ json_safe(dur) ^ "\", \"source\": \"" ^ json_safe(source) ^ "\" }"
+  data = "{ \"title\": \"" ^ json_safe(title) ^ "\", \"artist\": \"" ^ json_safe(artist) ^ "\", \"track_id\": \"" ^ json_safe(track_id) ^ "\", \"cover_url\": \"" ^ json_safe(cover_url) ^ "\", \"duration\": \"" ^ json_safe(dur) ^ "\", \"source\": \"" ^ json_safe(track_source) ^ "\" }"
 
   log("Track changed: #{title} — #{artist}")
 
@@ -89,7 +89,7 @@ def on_track_change(m)
   )
 end
 
-radio = source.on_metadata(radio, on_track_change)
+radio.on_metadata(synchronous=false, on_track_change)
 
 # ─── Output to Icecast ─────────────────────────────
 

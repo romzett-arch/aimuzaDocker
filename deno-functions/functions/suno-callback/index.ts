@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { callbackAuthorized, escapeLikeLiteral } from "../_shared/callback-auth.ts";
 import {
   getGenerationVariantIndex,
   stripTrackGenerationMetadata,
@@ -72,22 +73,8 @@ serve(async (req) => {
   }
 
   try {
-    const callbackSecret = Deno.env.get("SUNO_CALLBACK_SECRET");
-    if (callbackSecret) {
-      const url = new URL(req.url);
-      const headerToken = req.headers.get("x-callback-secret") || req.headers.get("authorization")?.replace("Bearer ", "");
-      const queryToken = url.searchParams.get("secret");
-
-      if (headerToken !== callbackSecret && queryToken !== callbackSecret) {
-        console.error("Invalid callback secret provided");
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      console.log("Callback secret verified successfully");
-    } else {
-      console.warn("SUNO_CALLBACK_SECRET not configured - callback verification skipped");
+    if (req.method !== "POST" || !callbackAuthorized(req, "SUNO_CALLBACK_SECRET")) {
+      return new Response(JSON.stringify({ error: "Unauthorized callback" }), { status: 401, headers: corsHeaders });
     }
 
     const supabaseAdmin = createClient(
@@ -96,10 +83,13 @@ serve(async (req) => {
     );
 
     const callbackData = (await req.json()) as SunoCallbackPayload;
-    console.log("Received Suno callback:", JSON.stringify(callbackData));
+    console.log("Received authenticated Suno callback");
 
     const tracks = (callbackData?.data?.data || callbackData?.data || []) as SunoTrackData[];
     const taskId = getCallbackTaskId(callbackData);
+    if (!taskId || !/^[a-zA-Z0-9_-]{1,160}$/.test(taskId)) {
+      return new Response(JSON.stringify({ error: "Invalid task id" }), { status: 400, headers: corsHeaders });
+    }
     const callbackType = callbackData?.data?.callbackType;
     const responseCode = callbackData?.code;
     const errorMessage = callbackData?.msg;
@@ -130,7 +120,7 @@ serve(async (req) => {
         .from("tracks")
         .select("id, user_id, description")
         .in("status", ["processing", "pending"])
-        .ilike("description", `%[task_id: ${taskId}]%`)
+        .ilike("description", `%[task_id: ${escapeLikeLiteral(taskId)}]%`)
         .limit(2);
 
       if (!taskTracks || taskTracks.length === 0) {
@@ -181,7 +171,7 @@ serve(async (req) => {
       const { data: taskTracks, error: taskFindError } = await supabaseAdmin
         .from("tracks")
         .select("id, title, description, lyrics, user_id, status, audio_url, master_audio_url, suno_audio_id")
-        .ilike("description", `%[task_id: ${taskId}]%`)
+        .ilike("description", `%[task_id: ${escapeLikeLiteral(taskId)}]%`)
         .order("created_at", { ascending: true })
         .limit(4);
 

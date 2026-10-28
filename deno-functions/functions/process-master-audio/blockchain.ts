@@ -1,8 +1,9 @@
+import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 export async function computeFileHash(fileUrl: string): Promise<string | null> {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000);
-    const resp = await fetch(fileUrl, { signal: controller.signal });
+    const resp = await safeMediaFetch(fileUrl, { signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (!resp.ok) {
