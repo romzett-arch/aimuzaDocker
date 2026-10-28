@@ -15,28 +15,44 @@ Write-Host "Step 1: Build images..."
 docker compose --env-file .env.server build
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-# Tag and push
+# Export directly from BuildKit. Docker Desktop's containerd docker push can
+# stall on existing layers; the registry exporter avoids that path.
 Write-Host ""
-Write-Host "Step 2: Tag and push..."
+Write-Host "Step 2: Export release images to registry..."
+$planText = docker compose --env-file .env.server -f docker-compose.yml build --print
+if ($LASTEXITCODE -ne 0) { exit 1 }
+$plan = ($planText -join "`n") | ConvertFrom-Json
+$services = @('api','frontend','realtime','ffmpeg-api','radio','deno-functions','studio')
+$plan.group.default.targets = $services
+foreach ($property in @($plan.target.PSObject.Properties.Name)) {
+    if ($services -notcontains $property) { $plan.target.PSObject.Properties.Remove($property) }
+}
 for ($i = 0; $i -lt $images.Length; $i++) {
-    if ($images[$i] -eq "aimuza-studio") {
-        # Docker's containerd push can stall on an existing Studio layer. Use
-        # BuildKit's registry exporter with the same Dockerfile and build arg.
-        $apkLine = Get-Content .env.server | Where-Object { $_ -match '^NEXT_PUBLIC_ANDROID_APK_URL=' } | Select-Object -First 1
-        $apkUrl = if ($apkLine) { $apkLine.Substring('NEXT_PUBLIC_ANDROID_APK_URL='.Length).Trim().Trim('"').Trim("'") } else { "" }
-        docker buildx build --platform linux/amd64 --provenance=false --push --build-arg "NEXT_PUBLIC_ANDROID_APK_URL=$apkUrl" --tag "$reg/aimuza-studio:latest" --tag "$reg/aimuza-studio:v$version" --file ../apps/studio/Dockerfile ../apps/studio
-        if ($LASTEXITCODE -ne 0) { exit 1 }
-        continue
-    }
-    $local = "$($localNames[$i]):latest"
-    foreach ($tag in @("latest", "v$version")) {
-        $remote = "$reg/$($images[$i]):$tag"
-        Write-Host "  $local -> $remote"
-        docker tag $local $remote
-        docker push $remote
-        if ($LASTEXITCODE -ne 0) { exit 1 }
+    $target = $plan.target.PSObject.Properties[$services[$i]].Value
+    if (!$target) { throw "Missing release build target: $($services[$i])" }
+    $target | Add-Member -NotePropertyName tags -NotePropertyValue @("$reg/$($images[$i]):latest", "$reg/$($images[$i]):v$version") -Force
+    $target | Add-Member -NotePropertyName platforms -NotePropertyValue @('linux/amd64') -Force
+    if (![IO.Path]::IsPathRooted($target.context)) {
+        $target.context = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $target.context))
     }
 }
-
-Write-Host ""
-Write-Host "All images pushed to Docker Hub!"
+$apiUrl = $plan.target.frontend.args.VITE_SUPABASE_URL
+if (!$apiUrl -or $apiUrl.TrimEnd('/') -ne 'https://aimuza.ru') { throw 'Production frontend API URL is not https://aimuza.ru' }
+$checkAssets = 'for file in /usr/share/nginx/html/assets/*.js; do case "$file" in */vendor-*) continue ;; esac; if grep -q "http://localhost" "$file"; then echo "Local API URL in application asset: $(basename "$file")" >&2; exit 1; fi; done'
+# The resolved plan may contain build credentials: never log or commit it.
+$privateDir = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\private-local'))
+New-Item -ItemType Directory -Force -Path $privateDir | Out-Null
+$planPath = Join-Path $privateDir ('.deploy-bake-' + [Guid]::NewGuid().ToString('N') + '.json')
+$checkPath = Join-Path $privateDir ('.deploy-assets-' + [Guid]::NewGuid().ToString('N') + '.sh')
+try {
+    [IO.File]::WriteAllText($planPath,($plan | ConvertTo-Json -Depth 100),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($checkPath,$checkAssets+"`n",[Text.UTF8Encoding]::new($false))
+    docker run --rm --network none --entrypoint sh --mount "type=bind,source=$checkPath,target=/check.sh,readonly" deploy-frontend:latest /check.sh
+    if ($LASTEXITCODE -ne 0) { throw 'Production frontend contains a localhost application URL' }
+    docker buildx bake --file $planPath --provenance=false --push
+    if ($LASTEXITCODE -ne 0) { throw 'BuildKit registry export failed' }
+} finally {
+    Remove-Item -LiteralPath $planPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $checkPath -Force -ErrorAction SilentlyContinue
+}
+Write-Host "All release images exported to Docker Hub!"
