@@ -32,6 +32,9 @@ for ($i = 0; $i -lt $images.Length; $i++) {
     if (!$target) { throw "Missing release build target: $($services[$i])" }
     $target | Add-Member -NotePropertyName tags -NotePropertyValue @("$reg/$($images[$i]):latest", "$reg/$($images[$i]):v$version") -Force
     $target | Add-Member -NotePropertyName platforms -NotePropertyValue @('linux/amd64') -Force
+    # Compose's --print includes type=docker. Replace it rather than also
+    # exporting back into the same content store that caused the stalled push.
+    $target | Add-Member -NotePropertyName output -NotePropertyValue @('type=registry') -Force
     if (![IO.Path]::IsPathRooted($target.context)) {
         $target.context = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $target.context))
     }
@@ -49,7 +52,7 @@ try {
     [IO.File]::WriteAllText($checkPath,$checkAssets+"`n",[Text.UTF8Encoding]::new($false))
     docker run --rm --network none --entrypoint sh --mount "type=bind,source=$checkPath,target=/check.sh,readonly" deploy-frontend:latest /check.sh
     if ($LASTEXITCODE -ne 0) { throw 'Production frontend contains a localhost application URL' }
-    docker buildx bake --file $planPath --provenance=false --push
+    docker buildx bake --file $planPath --provenance=false
     if ($LASTEXITCODE -ne 0) { throw 'BuildKit registry export failed' }
 } finally {
     Remove-Item -LiteralPath $planPath -Force -ErrorAction SilentlyContinue
