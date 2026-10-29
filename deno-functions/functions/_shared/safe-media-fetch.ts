@@ -1,5 +1,13 @@
 // Only media origins controlled by us or the configured provider are accepted.
-const ORIGINS = new Set(['https://aimuza.ru','https://app.aimuza.ru','https://cdn1.suno.ai','https://cdn2.suno.ai','https://cdn1.sunoapi.org','https://cdn.erweima.ai','https://audiopipe.suno.ai',...(Deno.env.get('MEDIA_ALLOWED_ORIGINS')||'').split(',').filter(Boolean)]);
+const ORIGINS = new Set([
+  'https://aimuza.ru', 'https://app.aimuza.ru',
+  'https://cdn1.suno.ai', 'https://cdn2.suno.ai', 'https://cdn1.sunoapi.org',
+  'https://cdn.erweima.ai', 'https://audiopipe.suno.ai',
+  // SunoAPI returns these direct audio, cover and streaming origins in V6 results.
+  'https://tempfile.aiquickdraw.com', 'https://musicfile.removeai.ai',
+  'https://audiostream.api.box',
+  ...(Deno.env.get('MEDIA_ALLOWED_ORIGINS') || '').split(',').map(origin => origin.trim()).filter(Boolean),
+]);
 function publicIp(ip: string): boolean {
   if (ip.includes(':')) return /^[23][0-9a-f]{3}:/i.test(ip);
   const [a,b]=ip.split('.').map(Number);

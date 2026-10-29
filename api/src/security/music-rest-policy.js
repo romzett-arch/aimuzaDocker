@@ -28,6 +28,12 @@ const MUSIC_TABLES = new Set([
 ]);
 
 const SILK_TABLES = new Set([...MUSIC_TABLES].filter((table) => table.startsWith('silk_')));
+export const TRACK_DELETE_PROTECTED_MESSAGE = 'Сначала отмените дистрибуцию / связь с релизом и снимите метку «В релиз»';
+
+export function markTrackDeleteError(error) {
+  if (error?.code === 'P0001' && error.message === TRACK_DELETE_PROTECTED_MESSAGE) error.status = 409;
+  return error;
+}
 
 const USER_TRACK_PROTECTED_COLUMNS = new Set([
   'id', 'user_id', 'created_at', 'status', 'moderation_status', 'moderation_reviewed_by',
@@ -40,6 +46,7 @@ const USER_TRACK_PROTECTED_COLUMNS = new Set([
   'distribution_reviewed_at', 'distribution_rejection_reason', 'distribution_platforms',
   'processing_stage', 'processing_progress', 'master_audio_url', 'isrc_code', 'upc_code',
   'provider_task_id', 'suno_audio_id', 'normalized_audio_url', 'original_audio_url',
+  'wav_url', 'wav_expires_at',
   'blockchain_hash', 'blockchain_timestamp', 'certificate_url', 'deposit_id',
 ]);
 

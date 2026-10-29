@@ -4,6 +4,11 @@
 services:
   # ── PostgreSQL ──────────────────────────────
   db:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build:
       context: .
       dockerfile: Dockerfile.postgres
@@ -29,6 +34,11 @@ services:
 
   # ── API Server (Node.js) ───────────────────
   api:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build: ./api
     container_name: aimuza-api
     restart: unless-stopped
@@ -45,8 +55,10 @@ services:
       API_PORT: 3000
       UPLOADS_DIR: /opt/aimuza/data/uploads
       DENO_FUNCTIONS_URL: http://deno-functions:8081
+      FFMPEG_OUTPUT_DIR: /opt/aimuza/data/ffmpeg-output
     volumes:
       - uploads_data:/opt/aimuza/data/uploads
+      - ffmpeg_output:/opt/aimuza/data/ffmpeg-output
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:
@@ -59,6 +71,11 @@ services:
 
   # ── Deno Functions ─────────────────────────
   deno-functions:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build:
       context: ./deno-functions
       dockerfile: Dockerfile
@@ -109,6 +126,11 @@ services:
 
   # ── PDF Service (Gotenberg) ─────────────────
   gotenberg:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     image: gotenberg/gotenberg:8-chromium@sha256:558943677cf9092df83ff654c2645856dcb9ddf777f359243789688e74f3bcdd
     container_name: aimuza-gotenberg
     restart: unless-stopped
@@ -127,6 +149,11 @@ services:
 
   # ── FFmpeg API ─────────────────────────────
   ffmpeg-api:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build: ./ffmpeg-api
     container_name: aimuza-ffmpeg
     restart: unless-stopped
@@ -152,6 +179,11 @@ services:
 
   # ── Realtime WebSocket ────────────────────
   realtime:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build: ./realtime
     container_name: aimuza-realtime
     restart: unless-stopped
@@ -178,6 +210,11 @@ services:
 
   # ── Radio Service (Queue Worker) ────────────
   radio:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build:
       context: ..
       dockerfile: deploy/Dockerfile.radio
@@ -201,6 +238,11 @@ services:
   # Образ environment-agnostic: URL = window.location.origin
   # ANON_KEY инжектится при старте через entrypoint
   frontend:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build:
       context: ..
       dockerfile: deploy/Dockerfile.frontend
@@ -221,6 +263,11 @@ services:
 
   # ── AIMUZA Studio (Next.js) ────────────────
   studio:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build:
       context: ../apps/studio
       dockerfile: Dockerfile
@@ -245,6 +292,11 @@ services:
 
   # ── Nginx (Reverse Proxy) ──────────────────
   nginx:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     image: nginx:alpine
     container_name: aimuza-nginx
     restart: unless-stopped
@@ -266,6 +318,11 @@ services:
 
   # ── Certbot (SSL) ─────────────────────────
   certbot:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     image: certbot/certbot
     container_name: aimuza-certbot
     volumes:

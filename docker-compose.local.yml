@@ -4,17 +4,43 @@
 # На сервере не использовать — там системный nginx
 
 services:
+  gotenberg:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
   db:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build:
       context: .
       dockerfile: Dockerfile.postgres
     image: deploy-postgres:security
   storage-permissions:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     image: deploy-api:latest
   api:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build: ./api
     image: deploy-api:latest
   deno-functions:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build:
       context: ./deno-functions
       dockerfile: Dockerfile
@@ -24,6 +50,11 @@ services:
     volumes:
       - ./deno-functions:/app
   frontend:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build:
       context: ..
       dockerfile: deploy/Dockerfile.frontend
@@ -32,12 +63,27 @@ services:
         VITE_SUPABASE_PUBLISHABLE_KEY: ${ANON_KEY}
     image: deploy-frontend:latest
   ffmpeg-api:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build: ./ffmpeg-api
     image: deploy-ffmpeg-api:latest
   realtime:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build: ./realtime
     image: deploy-realtime:latest
   radio:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     build:
       context: ..
       dockerfile: deploy/Dockerfile.radio
@@ -68,6 +114,11 @@ services:
       - "127.0.0.1:3200:3200"
       - "127.0.0.1:8000:8000"
   nginx:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     mem_limit: 256m
     cpus: 0.5
     pids_limit: 128
@@ -91,6 +142,13 @@ services:
       - uploads_data:/opt/aimuza/data/uploads:ro
     networks:
       - aimuza-net
+
+  studio:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
 
 volumes:
   deno_cache:

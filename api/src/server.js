@@ -35,7 +35,9 @@ import storageRouter from './routes/storage.js';
 import emailRouter from './routes/email.js';
 import functionsRouter from './routes/functions.js';
 import studioRouter from './routes/studio.js';
-import { authMiddleware } from './middleware/auth.js';
+import { authMiddleware, requireServiceRole } from './middleware/auth.js';
+import { startMediaLifecycle, runMediaLifecycle } from './services/mediaLifecycle.js';
+import { markTrackDeleteError } from './security/music-rest-policy.js';
 import { maintenanceGuard } from './middleware/maintenance.js';
 import { isStorageObjectUpload } from './security/storage-rate-limit.js';
 import { blockedUserGuard } from './middleware/blocked-user.js';
@@ -151,6 +153,10 @@ app.use(blockedUserGuard);
 
 // Healthcheck
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+app.post('/internal/media-cleanup', requireServiceRole, (_req, res) => {
+  void runMediaLifecycle(true);
+  res.status(202).json({ accepted: true, managed_by: 'media_lifecycle_worker' });
+});
 
 // Routes (порядок важен: rpc до rest, email до functions proxy)
 app.use('/auth/v1', authRouter);
@@ -162,6 +168,7 @@ app.use('/functions/v1', emailRouter);       // Email — обрабатывае
 app.use('/functions/v1', functionsRouter);    // Остальные функции — проксируются в Deno
 
 app.use((err, req, res, next) => {
+  markTrackDeleteError(err);
   console.error('[API Error]', err.message, err.stack?.split('\n')[1]);
   const status = err.status || 500;
   res.status(status).json({
@@ -177,6 +184,7 @@ async function start() {
   const server=app.listen(PORT, '0.0.0.0', () => {
     console.log(`[API] aimuza-api listening on :${PORT}`);
     startVotingLifecycle();
+    startMediaLifecycle();
   });
   server.requestTimeout=120000;
   server.headersTimeout=15000;

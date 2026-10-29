@@ -5,6 +5,11 @@
 
 services:
   nginx:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
     image: nginx:alpine
     container_name: aimuza-nginx
     restart: unless-stopped
@@ -21,3 +26,73 @@ services:
       - uploads_data:/opt/aimuza/data/uploads:ro
     networks:
       - aimuza-net
+
+  storage-permissions:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  db:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  api:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  deno-functions:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  frontend:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  ffmpeg-api:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  realtime:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  radio:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  studio:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  gotenberg:
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'

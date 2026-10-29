@@ -5,6 +5,8 @@
 
 services:
   storage-permissions:
+    logging:
+      driver: journald
     image: romzett/aimuza-api:latest
     user: "0:0"
     entrypoint: ["/bin/sh", "-c", "chown -R 1000:1000 /media/uploads /media/ffmpeg-tmp /media/ffmpeg-output"]
@@ -20,6 +22,8 @@ services:
 
   # ── PostgreSQL ──────────────────────────────
   db:
+    logging:
+      driver: journald
     image: postgres:15-alpine@sha256:54e0dd8e8cddcdbb9156c2486eed5a43eccb7214d7c6828097d41ce049fb3984
     container_name: aimuza-db
     restart: unless-stopped
@@ -44,6 +48,8 @@ services:
 
   # ── API Server (Node.js) ───────────────────
   api:
+    logging:
+      driver: journald
     mem_limit: 768m
     cpus: 1
     pids_limit: 128
@@ -67,8 +73,10 @@ services:
       API_PORT: 3000
       UPLOADS_DIR: /opt/aimuza/data/uploads
       DENO_FUNCTIONS_URL: http://deno-functions:8081
+      FFMPEG_OUTPUT_DIR: /opt/aimuza/data/ffmpeg-output
     volumes:
       - uploads_data:/opt/aimuza/data/uploads
+      - ffmpeg_output:/opt/aimuza/data/ffmpeg-output
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:
@@ -81,6 +89,8 @@ services:
 
   # ── Deno Functions ─────────────────────────
   deno-functions:
+    logging:
+      driver: journald
     mem_limit: 1024m
     cpus: 2
     pids_limit: 128
@@ -131,6 +141,8 @@ services:
 
   # ── PDF Service (Gotenberg) ─────────────────
   gotenberg:
+    logging:
+      driver: journald
     mem_limit: 1024m
     cpus: 1
     pids_limit: 256
@@ -157,6 +169,8 @@ services:
 
   # ── FFmpeg API ─────────────────────────────
   ffmpeg-api:
+    logging:
+      driver: journald
     mem_limit: 1024m
     cpus: 2
     pids_limit: 256
@@ -190,6 +204,8 @@ services:
 
   # ── Realtime WebSocket ────────────────────
   realtime:
+    logging:
+      driver: journald
     mem_limit: 256m
     cpus: 0.5
     pids_limit: 128
@@ -223,6 +239,8 @@ services:
 
   # ── Radio Service (Queue Worker) ────────────
   radio:
+    logging:
+      driver: journald
     mem_limit: 1024m
     cpus: 1
     pids_limit: 256
@@ -269,6 +287,8 @@ services:
   # Образ environment-agnostic: URL = window.location.origin
   # ANON_KEY и SENTRY_DSN инжектятся при старте через entrypoint
   frontend:
+    logging:
+      driver: journald
     mem_limit: 256m
     cpus: 0.5
     pids_limit: 128
@@ -293,6 +313,8 @@ services:
 
   # ── AIMUZA Studio (Next.js) ────────────────
   studio:
+    logging:
+      driver: journald
     mem_limit: 768m
     cpus: 1
     pids_limit: 128

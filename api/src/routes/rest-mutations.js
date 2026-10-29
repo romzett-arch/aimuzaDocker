@@ -44,6 +44,7 @@ import {
   assertMusicMutationAccess,
   filterMusicMutationColumns,
   getMusicMutationScope,
+  markTrackDeleteError,
 } from '../security/music-rest-policy.js';
 import {
   applyGalleryInsertOwnership,
@@ -451,6 +452,7 @@ export async function handleDelete(req, res) {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[REST DELETE]', err.message, '| table:', req.params.table, '| code:', err.code);
+    markTrackDeleteError(err);
     const pgMsg = err.status ? err.message : 'Operation rejected';
     const pgCode = err.code || 'REST_ERROR';
     res.status(err.status || 400).json({ message: pgMsg, error: pgMsg, code: pgCode, details: null, hint: err.hint || null });

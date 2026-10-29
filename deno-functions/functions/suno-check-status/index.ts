@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getGenerationVariantIndex } from "../_shared/track-generation-metadata.ts";
+import { failAbandonedGenerations } from "./stale-generations.ts";
 import {
   AUDIO_RECOVERY_REQUIRED_MESSAGE,
   copyFirstAvailableFileToStorage,
@@ -148,17 +149,10 @@ serve(async (req) => {
         .lt("created_at", cutoff)
         .eq("source_type", "uploaded");
 
-      const { data: staleTracks, error: staleTracksError } = await supabaseAdmin
-        .from("tracks")
-        .update({ status: "failed", error_message: staleMessage })
-        .eq("user_id", userId)
-        .in("status", ["pending", "processing"])
-        .lt("created_at", cutoff)
-        .is("suno_id", null)
-        .or("source_type.neq.uploaded,source_type.is.null")
-        .select("id");
-
-      if (staleTracksError) {
+      let trackIds: string[];
+      try {
+        trackIds = await failAbandonedGenerations(supabaseAdmin, userId, cutoff, staleMessage);
+      } catch (staleTracksError) {
         console.error("Error reconciling stale tracks:", staleTracksError);
         return new Response(
           JSON.stringify({ error: "Не удалось очистить зависшие генерации" }),
@@ -166,7 +160,6 @@ serve(async (req) => {
         );
       }
 
-      const trackIds = (staleTracks || []).map((track) => track.id);
       if (trackIds.length > 0) {
         await supabaseAdmin
           .from("generation_logs")
@@ -425,7 +418,7 @@ serve(async (req) => {
           }
 
           if (!finalAudioUrl) {
-            const { error: recoveryError } = await supabaseClient
+            const { error: recoveryError } = await supabaseAdmin
               .from("tracks")
               .update({
                 audio_url: null,

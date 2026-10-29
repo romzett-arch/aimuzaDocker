@@ -379,7 +379,13 @@ fi
 
 echo ""
 echo "🧹 Шаг 9: Очистка старых образов..."
-docker image prune -f
+docker image prune -f --filter 'until=168h'
+docker builder prune -f --filter 'until=168h' --keep-storage 1GB
+if [ ! -f scripts/configure-log-retention.sh ]; then
+    echo 'Missing log retention configuration script'
+    exit 1
+fi
+bash scripts/configure-log-retention.sh
 
 echo ""
 echo "╔══════════════════════════════════════════╗"

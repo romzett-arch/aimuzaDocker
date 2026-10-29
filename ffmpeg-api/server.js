@@ -12,7 +12,6 @@ const API_KEY = process.env.FFMPEG_API_KEY || '';
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 const OUTPUT_DIR = process.env.OUTPUT_DIR || path.join(__dirname, 'output');
 const TEMP_MAX_AGE_MS = Number(process.env.FFMPEG_TEMP_MAX_AGE_MS) || 24 * 60 * 60 * 1000;
-const DOWNLOAD_CACHE_MAX_AGE_MS = Number(process.env.FFMPEG_DOWNLOAD_CACHE_MAX_AGE_MS) || 30 * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = Number(process.env.FFMPEG_CLEANUP_INTERVAL_MS) || 6 * 60 * 60 * 1000;
 const MAX_CONCURRENT_JOBS = Math.min(Math.max(Number(process.env.FFMPEG_MAX_CONCURRENT_JOBS) || 4, 1), 32);
 const MAX_QUEUED_JOBS = Math.min(Math.max(Number(process.env.FFMPEG_MAX_QUEUED_JOBS) || 512, 1), 5000);
@@ -44,18 +43,10 @@ function pruneDirectory(dir, maxAgeMs, shouldDelete = () => true) {
 
 function cleanupFfmpegFiles() {
   const removedTemp = pruneDirectory(UPLOAD_DIR, TEMP_MAX_AGE_MS);
-  const removedTransientOutputs = pruneDirectory(
-    OUTPUT_DIR,
-    TEMP_MAX_AGE_MS,
-    (name) => name.startsWith('normalized_') || name.startsWith('.normalized_')
-  );
-  const removedDownloads = pruneDirectory(
-    OUTPUT_DIR,
-    DOWNLOAD_CACHE_MAX_AGE_MS,
-    (name) => name.startsWith('download_') || name.startsWith('.download_') || name.startsWith('distribution_') || name.startsWith('.distribution_')
-  );
-  if (removedTemp || removedTransientOutputs || removedDownloads) {
-    console.log(`[cleanup] Removed temp=${removedTemp}, transient_output=${removedTransientOutputs}, download_cache=${removedDownloads}`);
+  // Output retention belongs to the API worker, which checks live DB references.
+  const removedIncomplete = pruneDirectory(OUTPUT_DIR, TEMP_MAX_AGE_MS, name => name.startsWith('.') && name.includes('.tmp'));
+  if (removedTemp || removedIncomplete) {
+    console.log(`[cleanup] Removed temp=${removedTemp}, incomplete=${removedIncomplete}`);
   }
 }
 
@@ -135,6 +126,24 @@ app.use(express.json({
   limit: '256kb',
   verify: (req, res, buf) => { req.rawBody = buf.length ? buf.toString('utf8') : ''; }
 }));
+// Durable provenance lets the API remove derived downloads with their source track.
+app.use((req, res, next) => {
+  const send = res.json.bind(res);
+  res.json = body => {
+    if (res.statusCode < 300 && body?.output_url && req.body?.audio_url) {
+      try {
+        const name = new URL(body.output_url).pathname.split('/').pop();
+        if (/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/.test(name)) {
+          const file = path.join(OUTPUT_DIR, `.source_${name}.json`);
+          fs.writeFileSync(`${file}.tmp`, JSON.stringify({ output: name, source: req.body.audio_url }), { mode: 0o600 });
+          fs.renameSync(`${file}.tmp`, file);
+        }
+      } catch (error) { console.warn('[cleanup] Could not save output provenance:', error.code || 'invalid_output'); }
+    }
+    return send(body);
+  };
+  next();
+});
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400) {
     const raw = (req.rawBody || '').slice(0, 500);

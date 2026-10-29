@@ -30,29 +30,7 @@ export async function executeAction(
       break;
     }
     case 'delete_track': {
-      const { data: trackData } = await adminClient.from('tracks')
-        .select('audio_url, cover_url, wav_url, master_audio_url, certificate_url')
-        .eq('id', payload.track_id)
-        .eq('user_id', target_user_id)
-        .maybeSingle();
-
-      if (trackData) {
-        const STORAGE_SUFFIX = '/storage/v1/object/public/tracks/';
-        const paths: string[] = [];
-        for (const url of [trackData.audio_url, trackData.cover_url, trackData.wav_url, trackData.master_audio_url, trackData.certificate_url]) {
-          if (url) {
-            const idx = url.indexOf(STORAGE_SUFFIX);
-            if (idx !== -1) {
-              paths.push(url.slice(idx + STORAGE_SUFFIX.length));
-            }
-          }
-        }
-        if (paths.length > 0) {
-          const { error: storageErr } = await adminClient.storage.from('tracks').remove(paths);
-          if (storageErr) console.warn('[delete_track] Storage cleanup warning:', storageErr.message);
-        }
-      }
-
+      // Physical media cleanup is queued atomically by the tracks DELETE trigger.
       await adminClient.from('track_likes').delete().eq('track_id', payload.track_id);
       result = await adminClient.from('tracks')
         .delete()
