@@ -52,7 +52,8 @@ try {
     [IO.File]::WriteAllText($checkPath,$checkAssets+"`n",[Text.UTF8Encoding]::new($false))
     docker run --rm --network none --entrypoint sh --mount "type=bind,source=$checkPath,target=/check.sh,readonly" deploy-frontend:latest /check.sh
     if ($LASTEXITCODE -ne 0) { throw 'Production frontend contains a localhost application URL' }
-    docker buildx bake --file $planPath --provenance=false
+    $buildRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    docker buildx bake "--allow=fs.read=$buildRoot" --file $planPath --provenance=false
     if ($LASTEXITCODE -ne 0) { throw 'BuildKit registry export failed' }
 } finally {
     Remove-Item -LiteralPath $planPath -Force -ErrorAction SilentlyContinue
