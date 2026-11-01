@@ -410,7 +410,7 @@ export async function generatePdfCertificate(
       ) => {
         upload: (
           path: string,
-          blob: Blob,
+          bytes: Uint8Array,
           opts: Record<string, string | boolean>,
         ) => Promise<{ error: unknown }>;
       };
@@ -456,7 +456,7 @@ export async function generatePdfCertificate(
 
   const { error: htmlUploadError } = await supabase.storage
     .from("certificates")
-    .upload(certificateFileName, new Blob([htmlBytes], { type: "text/html;charset=utf-8" }), {
+    .upload(certificateFileName, htmlBytes, {
       contentType: "text/html;charset=utf-8",
       cacheControl: "0",
       upsert: true,
@@ -469,7 +469,7 @@ export async function generatePdfCertificate(
 
   const { error: pdfUploadError } = await supabase.storage
     .from("certificates")
-    .upload(pdfFileName, new Blob([pdfBytes], { type: "application/pdf" }), {
+    .upload(pdfFileName, pdfBytes, {
       contentType: "application/pdf",
       cacheControl: "31536000",
       upsert: true,

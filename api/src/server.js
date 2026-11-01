@@ -28,6 +28,7 @@ import dotenv from 'dotenv';
 import { pool, testConnection } from './db.js';
 import { testGatewayConnection } from './gateway-db.js';
 import { createUploadBudget } from './security/upload-budget.js';
+import { createReleasePackageUpload } from './security/release-package-upload.js';
 import authRouter from './routes/auth.js';
 import restRouter from './routes/rest.js';
 import rpcRouter from './routes/rpc.js';
@@ -87,6 +88,8 @@ app.use('/storage/v1/object',(req,res,next)=>{
   next();
 });
 app.use('/storage/v1/object',createUploadBudget());
+// Stream internal release ZIPs to disk before the general buffered body parser.
+app.use('/storage/v1/object',createReleasePackageUpload());
 
 // Raw body для storage uploads (POST/PUT, не multipart — иначе multer получит пустое тело)
 // DELETE исключён — ему нужен JSON body (массив путей для удаления)

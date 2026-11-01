@@ -15,6 +15,7 @@ const RELEASE_PACKAGE_FILE_NAME = "release-package-audio-v3.zip";
 const STORAGE_UPLOAD_MAX_ATTEMPTS = 12;
 const STORAGE_UPLOAD_BASE_DELAY_MS = 5_000;
 const STORAGE_UPLOAD_MAX_DELAY_MS = 45_000;
+const activePackages = new Set<string>();
 
 type ReleasePackageStatus = "processing" | "completed" | "failed";
 
@@ -227,7 +228,7 @@ async function uploadBytes(
   for (let attempt = 1; attempt <= STORAGE_UPLOAD_MAX_ATTEMPTS; attempt++) {
     const { error } = await supabase.storage
       .from(TRACKS_BUCKET)
-      .upload(fileName, new Blob([bytes], { type: contentType }), {
+      .upload(fileName, bytes, {
         upsert: true,
         contentType,
         cacheControl: "0",
@@ -291,7 +292,7 @@ async function upsertReleasePackage(
     requested_genre: updates.requested_genre ?? existing?.requested_genre ?? null,
     requested_has_lyrics: updates.requested_has_lyrics ?? existing?.requested_has_lyrics ?? null,
     requested_include_deposit: updates.requested_include_deposit ?? existing?.requested_include_deposit ?? null,
-    requested_move_to_my_releases: updates.requested_move_to_my_releases ?? existing?.requested_move_to_my_releases ?? null,
+    requested_move_to_my_releases: updates.requested_move_to_my_releases ?? existing?.requested_move_to_my_releases ?? false,
     error_message: updates.error_message ?? null,
     updated_at: now,
   };
@@ -491,6 +492,7 @@ serve(async (req) => {
   const storageOrigin = Deno.env.get("SUPABASE_URL") || Deno.env.get("BASE_URL") || DEFAULT_BASE_URL;
   let requestedTrackId: string | null = null;
   let requestedUserId: string | null = null;
+  let ownsPackageLock = false;
   let isInternalCall = false;
 
   if (!ffmpegApiUrl || !ffmpegApiSecret) {
@@ -609,6 +611,15 @@ serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
+
+    // Status polling must not launch another memory-heavy ZIP build.
+    if (activePackages.has(trackId)) {
+      return new Response(JSON.stringify({ success: true, status: "processing" }), {
+        status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    activePackages.add(trackId);
+    ownsPackageLock = true;
 
     const { data: existingPackage } = await supabase
       .from("release_packages")
@@ -784,7 +795,7 @@ serve(async (req) => {
     console.error("[generate-release-package] Error:", message);
 
     try {
-      if (requestedTrackId && requestedUserId) {
+      if (ownsPackageLock && requestedTrackId && requestedUserId) {
         const supabase = createClient(supabaseUrl, supabaseServiceKey);
         await upsertReleasePackage(supabase, requestedTrackId, requestedUserId, {
           status: "failed",
@@ -799,5 +810,7 @@ serve(async (req) => {
       JSON.stringify({ success: false, error: message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
+  } finally {
+    if (ownsPackageLock && requestedTrackId) activePackages.delete(requestedTrackId);
   }
 });

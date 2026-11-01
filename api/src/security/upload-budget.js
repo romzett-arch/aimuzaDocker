@@ -1,3 +1,4 @@
+import { isReleasePackageUpload, RELEASE_PACKAGE_UPLOAD_LIMIT } from './release-package-upload.js';
 // A process-wide bound applies before express.raw/multer allocate file buffers.
 export function createUploadBudget(maxActive=2) {
   let active=0;
@@ -9,7 +10,8 @@ export function createUploadBudget(maxActive=2) {
     if(active>=maxActive || users.has(user)) {
       res.set('Retry-After','5');return res.status(429).json({error:'Upload capacity reached'});
     }
-    if(Number(req.headers['content-length'])>100*1024*1024) return res.status(413).json({error:'File size limit exceeded'});
+    const maxBytes = isReleasePackageUpload(req) ? RELEASE_PACKAGE_UPLOAD_LIMIT : 100*1024*1024;
+    if(Number(req.headers['content-length'])>maxBytes) return res.status(413).json({error:'File size limit exceeded'});
     active++;users.add(user);let released=false;
     const release=()=>{if(!released){released=true;active--;users.delete(user);}};
     res.once('finish',release);res.once('close',release);req.once('aborted',release);

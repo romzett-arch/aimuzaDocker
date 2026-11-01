@@ -17,7 +17,7 @@ interface ProcessResult {
 }
 
 interface SupabaseClient {
-  storage: { from: (bucket: string) => { upload: (path: string, blob: Blob, opts: Record<string, string | boolean>) => Promise<{ error: unknown }> } };
+  storage: { from: (bucket: string) => { upload: (path: string, bytes: Uint8Array, opts: Record<string, string | boolean>) => Promise<{ error: unknown }> } };
 }
 
 export async function processDeposit(

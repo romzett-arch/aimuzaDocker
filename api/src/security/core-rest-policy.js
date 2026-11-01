@@ -67,5 +67,9 @@ export function assertJoinColumns(table,columns,user) {
   if (table==='profiles' || table==='profiles_public') {
     if (columns.every(c=>PUBLIC_PROFILE_COLUMNS.has(c))) return;
   } else if (['genres','genre_categories','vocal_types','artist_styles'].includes(table) && columns.every(c=>['id','name','name_ru','slug','icon','color','description','category_id'].includes(c))) return;
+  else if (table==='ai_models' && columns.every(c=>['id','name','is_hot'].includes(c))) return;
+  else if (table==='permission_categories' && columns.every(c=>['id','key'].includes(c))) return;
+  // The subquery still runs as anon/authenticated, so tracks RLS also applies.
+  else if (table==='tracks' && columns.every(c=>['id','title','cover_url','audio_url'].includes(c))) return;
   throw accessError(403,'Embedded selection is not public');
 }

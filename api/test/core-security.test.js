@@ -33,6 +33,17 @@ test('unknown and malformed filters cannot broaden a mutation',()=>{
  const parsed=parseFilters({and:'(user_id.eq.actor,or.(status.eq.ready,status.eq.pending))'});
  assert.match(parsed.where,/AND/);assert.match(parsed.where,/OR/);assert.deepEqual(parsed.params,['actor','ready','pending']);
 });
+
+test('catalog, permission and copyright embeds allow only their display fields',()=>{
+ for (const selection of [
+  'id,title,genre:genres(id,name_ru),model:ai_models(name,is_hot)',
+  'id,category:permission_categories(key)',
+  '*,track:tracks(title,cover_url,audio_url)',
+ ]) assert.doesNotThrow(()=>parseSelect(selection,'public."tracks"',user));
+ for (const [table, column] of [['ai_models','provider_options'],['permission_categories','internal_secret'],['tracks','generation_params']]) {
+  assert.throws(()=>parseSelect(`embedded:${table}(id,${column})`,'public."tracks"',user));
+ }
+});
 test('internal RPC and admin RPC are not anonymous or ordinary-user capabilities',()=>{
  for(const name of ['get_last_messages','get_unread_counts','admin_add_xp','security_complete_wav']) assert.throws(()=>assertCoreRpcAccess(name,null));
  assert.throws(()=>assertCoreRpcAccess('security_reserve_wav',user));

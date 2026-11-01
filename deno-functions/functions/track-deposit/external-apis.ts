@@ -3,7 +3,7 @@ interface StorageUploader {
     from: (bucket: string) => {
       upload: (
         path: string,
-        body: Blob,
+        body: Uint8Array,
         options: Record<string, string | boolean>,
       ) => Promise<{ error: unknown }>;
     };
@@ -63,7 +63,7 @@ export async function submitToOpenTimestamps(
     .from("certificates")
     .upload(
       proofPath,
-      new Blob([proofBytes], { type: "application/octet-stream" }),
+      proofBytes,
       {
         contentType: "application/octet-stream",
         cacheControl: "31536000",
