@@ -6,7 +6,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force && rm -rf /usr/local/lib/node_modules/npm /opt/yarn*
 
 COPY src/ src/
-RUN mkdir -p /opt/aimuza/data/uploads && chown -R node:node /opt/aimuza/data/uploads
+RUN mkdir -p /opt/aimuza/data/uploads /opt/aimuza/legal && chown -R node:node /opt/aimuza/data/uploads /opt/aimuza/legal
 USER node
 
 EXPOSE 3000

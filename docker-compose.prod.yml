@@ -1,15 +1,10 @@
-# AIMUZA — Docker Compose (Production)
-# Образы тянутся с Docker Hub (romzett/aimuza-*)
-# Системный Nginx + Let's Encrypt (уже на сервере)
-# Все контейнеры слушают 127.0.0.1
-
 services:
   storage-permissions:
     logging:
       driver: journald
     image: romzett/aimuza-api:latest
     user: "0:0"
-    entrypoint: ["/bin/sh", "-c", "chown -R 1000:1000 /media/uploads /media/ffmpeg-tmp /media/ffmpeg-output"]
+    entrypoint: ["/bin/sh", "-c", "chown -R 1000:1000 /media/uploads /media/ffmpeg-tmp /media/ffmpeg-output /media/legal"]
     read_only: true
     cap_drop: [ALL]
     cap_add: [CHOWN]
@@ -18,9 +13,8 @@ services:
       - uploads_data:/media/uploads
       - ffmpeg_tmp:/media/ffmpeg-tmp
       - ffmpeg_output:/media/ffmpeg-output
+      - legal_data:/media/legal
     networks: [aimuza-net]
-
-  # ── PostgreSQL ──────────────────────────────
   db:
     logging:
       driver: journald
@@ -45,8 +39,6 @@ services:
       start_period: 10s
     networks:
       - aimuza-net
-
-  # ── API Server (Node.js) ───────────────────
   api:
     logging:
       driver: journald
@@ -74,9 +66,13 @@ services:
       UPLOADS_DIR: /opt/aimuza/data/uploads
       DENO_FUNCTIONS_URL: http://deno-functions:8081
       FFMPEG_OUTPUT_DIR: /opt/aimuza/data/ffmpeg-output
+      LEGAL_STORAGE_DIR: /opt/aimuza/legal
+      LEGAL_CLAMAV_HOST: legal-scanner
+      GOTENBERG_URL: http://gotenberg:3000
     volumes:
       - uploads_data:/opt/aimuza/data/uploads
       - ffmpeg_output:/opt/aimuza/data/ffmpeg-output
+      - legal_data:/opt/aimuza/legal
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:
@@ -86,8 +82,6 @@ services:
       retries: 3
     networks:
       - aimuza-net
-
-  # ── Deno Functions ─────────────────────────
   deno-functions:
     logging:
       driver: journald
@@ -138,8 +132,6 @@ services:
       retries: 5
     networks:
       - aimuza-net
-
-  # ── PDF Service (Gotenberg) ─────────────────
   gotenberg:
     logging:
       driver: journald
@@ -166,8 +158,6 @@ services:
       retries: 5
     networks:
       - aimuza-net
-
-  # ── FFmpeg API ─────────────────────────────
   ffmpeg-api:
     logging:
       driver: journald
@@ -201,8 +191,6 @@ services:
       retries: 3
     networks:
       - aimuza-net
-
-  # ── Realtime WebSocket ────────────────────
   realtime:
     logging:
       driver: journald
@@ -236,8 +224,6 @@ services:
       retries: 3
     networks:
       - aimuza-net
-
-  # ── Radio Service (Queue Worker) ────────────
   radio:
     logging:
       driver: journald
@@ -282,10 +268,6 @@ services:
       start_period: 20s
     networks:
       - aimuza-net
-
-  # ── Frontend (React SPA) ───────────────────
-  # Образ environment-agnostic: URL = window.location.origin
-  # ANON_KEY и SENTRY_DSN инжектятся при старте через entrypoint
   frontend:
     logging:
       driver: journald
@@ -310,8 +292,6 @@ services:
       retries: 5
     networks:
       - aimuza-net
-
-  # ── AIMUZA Studio (Next.js) ────────────────
   studio:
     logging:
       driver: journald
@@ -339,13 +319,25 @@ services:
       retries: 5
     networks:
       - aimuza-net
-
+  legal-scanner:
+    image: clamav/clamav:stable@sha256:6d87c712e3391e13c1ba6e05dfb074d4b1ddb5a6834b23bb9da990d2a4ef042a
+    restart: unless-stopped
+    mem_limit: 1536m
+    cpus: 1
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: journald
+    volumes:
+      - legal_scan_signatures:/var/lib/clamav
+    networks: [aimuza-net]
 volumes:
+  legal_data:
+  legal_scan_signatures:
   pg_data:
   uploads_data:
   ffmpeg_tmp:
   ffmpeg_output:
-
 networks:
   aimuza-net:
     driver: bridge

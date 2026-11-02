@@ -72,6 +72,7 @@ export async function authMiddleware(req, res, next) {
       is_super_admin: currentRoles.is_super_admin,
       permissions: versionResult.rows[0]?.permissions || [],
       session_version: tokenVersion,
+      session_origin: decoded.session_origin || 'legacy',
     };
   } catch (err) {
     // Invalid token — continue as anon
@@ -105,6 +106,7 @@ export function signToken(user) {
       app_role: user.app_role || 'user',
       session_version: readSessionVersion(user),
       token_use: 'access',
+      session_origin: user.session_origin || 'direct',
     },
     JWT_SECRET,
     { expiresIn: '15m' }

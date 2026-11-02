@@ -28,6 +28,7 @@ export function registerAdmin(router) {
       if(!user.email_confirmed_at) return res.status(403).json({error:'Email must be confirmed'});
       user.app_role = user.app_role || 'user';
       user.session_version = Number(user.raw_user_meta_data?.session_version ?? 0);
+      user.session_origin = 'impersonation';
       const token = signToken(await freshRoles(pool,user));
       const refresh = await issueRefresh(pool,user);
 

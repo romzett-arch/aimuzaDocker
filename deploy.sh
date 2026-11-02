@@ -1,30 +1,19 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════
-# AIMUZA — Production Deploy
-# Запуск на сервере: cd /opt/aimuza/deploy && bash deploy.sh
-# Маршрут: Docker Hub → Сервер
-# ═══════════════════════════════════════════════
-
 set -eo pipefail
-
 COMPOSE_FILE="docker-compose.prod.yml"
 PENDING_DIR="migrations-pending"
 PENDING_MANIFEST="$PENDING_DIR/pending-manifest.txt"
 PULL_ATTEMPTS="${PULL_ATTEMPTS:-4}"
 PULL_DELAY_SECONDS="${PULL_DELAY_SECONDS:-5}"
-
 require_env_key() {
     local key="$1"
     local value
-
     value="$(grep -E "^${key}=" ".env" | tail -n 1 | cut -d= -f2- || true)"
     value="${value%$'\r'}"
-
     if [ -z "$value" ]; then
         echo "❌ ${key} отсутствует или пустой в .env"
         exit 1
     fi
-
     case "$value" in
         CHANGE_ME*|change_me*|REPLACE_ME*|replace_me*)
             echo "❌ ${key} содержит placeholder в .env"
@@ -32,100 +21,80 @@ require_env_key() {
             ;;
     esac
 }
-
 require_container_env() {
     local container="$1"
     local key="$2"
     local value
-
     value="$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E "^${key}=" | tail -n 1 | cut -d= -f2- || true)"
     value="${value%$'\r'}"
-
     if [ -z "$value" ]; then
         echo "❌ ${container}: ${key} пустой внутри контейнера"
         exit 1
     fi
 }
-
 assert_public_url() {
     local url="$1"
     local label="$2"
-
     if ! curl -fsS "$url" >/dev/null; then
         echo "❌ ${label} недоступен: $url"
         exit 1
     fi
-
     echo "   OK: ${label}"
 }
-
 wait_for_container_health() {
     local container="$1"
     local timeout_seconds="${2:-120}"
     local elapsed=0
     local status
     local health
-
     while [ "$elapsed" -lt "$timeout_seconds" ]; do
         status="$(docker inspect "$container" --format '{{.State.Status}}' 2>/dev/null || true)"
         health="$(docker inspect "$container" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || true)"
-
         if [ "$status" = "running" ] && { [ "$health" = "healthy" ] || [ "$health" = "none" ]; }; then
             echo "   OK: ${container} (${health})"
             return 0
         fi
-
         if [ "$status" = "exited" ] || [ "$health" = "unhealthy" ]; then
             echo "❌ ${container}: status=${status}, health=${health}"
             docker logs --tail 100 "$container" || true
             return 1
         fi
-
         sleep 5
         elapsed=$((elapsed + 5))
     done
-
     echo "❌ ${container} не стал healthy за ${timeout_seconds} сек."
     docker logs --tail 100 "$container" || true
     return 1
 }
-
 assert_content_type() {
     local url="$1"
     local expected="$2"
     local label="$3"
     local headers
-
     headers="$(curl -fsSI "$url" | tr -d '\r')"
     if ! printf '%s\n' "$headers" | grep -iq "^Content-Type: ${expected}"; then
         echo "❌ ${label}: ожидался Content-Type ${expected}, получено:"
         printf '%s\n' "$headers"
         exit 1
     fi
-
     echo "   OK: ${label} (${expected})"
 }
-
 assert_html_contains() {
     local url="$1"
     local needle="$2"
     local label="$3"
-
     if ! curl -fsS "$url" | grep -F "$needle" >/dev/null; then
         echo "❌ ${label}: HTML не содержит ожидаемую ссылку ${needle}"
         exit 1
     fi
-
     echo "   OK: ${label}"
 }
-
 get_latest_certificate_artifacts() {
     local deposits_table
     deposits_table="$(docker exec aimuza-db psql -U aimuza -d aimuza -t -A -c "SELECT to_regclass('public.track_deposits');" | tr -d '\r[:space:]')"
     if [ -z "$deposits_table" ]; then
         return 0
     fi
-
     docker exec aimuza-db psql -U aimuza -d aimuza -t -A -F '|' -c \
         "SELECT COALESCE(registry_url, ''),
                 COALESCE(certificate_url, ''),
@@ -138,42 +107,33 @@ get_latest_certificate_artifacts() {
          ORDER BY completed_at DESC NULLS LAST, created_at DESC
          LIMIT 1;" | tr -d '\r'
 }
-
 resolve_host() {
     local host="$1"
-
     if command -v getent >/dev/null 2>&1 && getent ahosts "$host" >/dev/null 2>&1; then
         return 0
     fi
-
     if command -v nslookup >/dev/null 2>&1 && nslookup "$host" >/dev/null 2>&1; then
         return 0
     fi
-
     return 1
 }
-
 print_pull_failure_hint() {
     local log_file="$1"
-
     if grep -qiE 'lookup .*docker\.io|Temporary failure in name resolution|server misbehaving|no such host|i/o timeout' "$log_file"; then
         echo "⚠ Похоже на проблему DNS при обращении к Docker Hub."
         echo "  Сервер не смог зарезолвить registry-1.docker.io/auth.docker.io."
         echo "  После обновления deploy-скрипта pull будет повторён автоматически."
     fi
 }
-
 pull_images_with_retry() {
     local log_file
     local attempt
     local delay
     local status
     local host
-
     log_file="$(mktemp /tmp/aimuza-docker-pull.XXXXXX.log)"
     delay="$PULL_DELAY_SECONDS"
     status=1
-
     for host in registry-1.docker.io auth.docker.io; do
         if resolve_host "$host"; then
             echo "   DNS OK: $host"
@@ -181,10 +141,8 @@ pull_images_with_retry() {
             echo "   DNS WARN: $host пока не резолвится"
         fi
     done
-
     for ((attempt=1; attempt<=PULL_ATTEMPTS; attempt++)); do
         echo "   Pull attempt ${attempt}/${PULL_ATTEMPTS}..."
-
         if docker compose -f "$COMPOSE_FILE" pull 2>&1 | tee "$log_file"; then
             rm -f "$log_file"
             return 0
@@ -192,67 +150,53 @@ pull_images_with_retry() {
             status=${PIPESTATUS[0]}
         fi
         print_pull_failure_hint "$log_file"
-
         if [ "$attempt" -lt "$PULL_ATTEMPTS" ]; then
             echo "   Pull failed, retry in ${delay}s..."
             sleep "$delay"
             delay=$((delay * 2))
         fi
     done
-
     echo "❌ Не удалось скачать образы после ${PULL_ATTEMPTS} попыток."
     print_pull_failure_hint "$log_file"
     rm -f "$log_file"
     return "$status"
 }
-
 echo "╔══════════════════════════════════════════╗"
 echo "║   AIMUZA — Production Deploy    ║"
 echo "╚══════════════════════════════════════════╝"
-
 cd "$(dirname "$0")"
-
-# Проверяем .env
 if [ ! -f ".env" ]; then
     echo "❌ Файл .env не найден!"
     echo "   cp .env.production .env && nano .env"
     exit 1
 fi
-
 for key in ROBOKASSA_MERCHANT_LOGIN ROBOKASSA_PASSWORD1 ROBOKASSA_PASSWORD2; do
     require_env_key "$key"
 done
-
 echo "📥 Шаг 1: Pull свежих образов с Docker Hub..."
 test -f apply-pending-migrations.sh || { echo 'Required migration runner missing' >&2; exit 1; }
 bash ./apply-pending-migrations.sh --check-bundle
 pull_images_with_retry
-
 echo ""
 echo "🗄️ Шаг 2: Применение pending-миграций до переключения приложения..."
 if [ -f "apply-pending-migrations.sh" ]; then
     test -f "$PENDING_MANIFEST" || { echo 'Required migration manifest missing; refusing deploy.' >&2; exit 1; }
     pending_files=()
-
     if [ -f "$PENDING_MANIFEST" ]; then
         while IFS= read -r line || [ -n "$line" ]; do
             clean_line="${line//$'\r'/}"
             clean_line="${clean_line#$'\ufeff'}"
-
             if [ -n "$clean_line" ]; then
                 pending_files+=("$clean_line")
             fi
         done < "$PENDING_MANIFEST"
     fi
-
     if [ ${#pending_files[@]} -gt 0 ]; then
         bash ./apply-pending-migrations.sh "${pending_files[@]}"
         rm -f "$PENDING_MANIFEST"
-
         for migration in "${pending_files[@]}"; do
             rm -f "$PENDING_DIR/$migration"
         done
-
         echo "✅ Pending-миграции применены: ${#pending_files[@]}"
     else
         rm -f "$PENDING_MANIFEST"
@@ -266,38 +210,31 @@ else
     echo 'Required migration runner missing; refusing deploy.' >&2
     exit 1
 fi
-
 test -f scripts/provision-gateway-role.sh || { echo 'Gateway provisioning script missing' >&2; exit 1; }
 sh scripts/provision-gateway-role.sh
 docker compose -f "$COMPOSE_FILE" run --rm --no-deps storage-permissions
-
 echo ""
 echo "🚀 Шаг 3: Перезапуск контейнеров после успешных миграций..."
-# Keep PostgreSQL running with its existing image, container and data volume.
-# Dependencies are already running; deployment only replaces application services.
 docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate \
-    api deno-functions gotenberg ffmpeg-api realtime radio frontend studio
-
+    api deno-functions gotenberg ffmpeg-api realtime radio frontend studio legal-scanner
 echo ""
 echo "⏳ Шаг 4: Ожидание healthcheck Deno-функций (до 120 сек)..."
 wait_for_container_health "aimuza-deno" 120
 wait_for_container_health "aimuza-studio" 120
-
+legal_scanner_id="$(docker compose -f "$COMPOSE_FILE" ps -q legal-scanner)"
+test -n "$legal_scanner_id" || { echo 'Legal scanner container missing'; exit 1; }
+wait_for_container_health "$legal_scanner_id" 300
 echo ""
 echo "📊 Шаг 5: Статус контейнеров:"
 docker compose -f "$COMPOSE_FILE" ps
-
 if [ "$(docker inspect aimuza-deno --format '{{.State.Status}}')" != "running" ]; then
     echo "❌ aimuza-deno не запущен после деплоя"
     exit 1
 fi
-
 for key in ROBOKASSA_MERCHANT_LOGIN ROBOKASSA_PASSWORD1 ROBOKASSA_PASSWORD2; do
     require_container_env "aimuza-deno" "$key"
 done
-
 echo "✅ aimuza-deno пересоздан с актуальным env"
-
 echo ""
 echo "📄 Шаг 6: Синхронизация nginx config..."
 if [ -f "nginx/aimuza.ru.prod.conf" ]; then
@@ -314,12 +251,10 @@ if [ -f "nginx/app.aimuza.ru.conf" ]; then
 else
     echo "   ⚠ nginx/app.aimuza.ru.conf не найден, пропуск"
 fi
-
 echo ""
 echo "🔄 Шаг 7: Перезагрузка Nginx..."
 nginx -t && nginx -s reload
 echo "✅ Nginx перезагружен"
-
 echo ""
 echo "🧪 Шаг 8: Post-deploy smoke..."
 assert_public_url "https://aimuza.ru/" "Главная"
@@ -327,7 +262,6 @@ assert_public_url "https://www.aimuza.ru/" "WWW домен"
 assert_public_url "https://aimuza.ru/health" "Health endpoint"
 assert_public_url "https://aimuza.ru/functions/v1/maintenance-status" "Maintenance status"
 assert_public_url "https://app.aimuza.ru/" "AIMUZA Studio"
-
 if [ -f "/etc/letsencrypt/live/aimuza.ru/fullchain.pem" ]; then
     if ! openssl x509 -in /etc/letsencrypt/live/aimuza.ru/fullchain.pem -noout -checkend 1209600 >/dev/null; then
         echo "❌ SSL-сертификат истекает меньше чем через 14 дней"
@@ -335,37 +269,29 @@ if [ -f "/etc/letsencrypt/live/aimuza.ru/fullchain.pem" ]; then
     fi
     echo "   OK: SSL-сертификат действителен более 14 дней"
 fi
-
 if [ "$(docker inspect aimuza-gotenberg --format '{{.State.Status}}')" != "running" ]; then
     echo "❌ aimuza-gotenberg не запущен после деплоя"
     exit 1
 fi
-
 curl -fsS http://127.0.0.1:3010/health >/dev/null
 echo "   OK: Gotenberg health"
-
 latest_artifacts="$(get_latest_certificate_artifacts)"
 if [ -n "$latest_artifacts" ]; then
     IFS='|' read -r registry_url html_url pdf_url proof_url proof_path <<< "$latest_artifacts"
-
     if [ -n "$registry_url" ]; then
         assert_public_url "$registry_url" "Registry URL"
     fi
-
     if [ -n "$html_url" ] && [ -n "$registry_url" ]; then
         assert_html_contains "$html_url" "$registry_url" "HTML сертификат"
     elif [ -n "$html_url" ]; then
         assert_public_url "$html_url" "HTML сертификат"
     fi
-
     if [ -n "$pdf_url" ]; then
         assert_content_type "$pdf_url" "application/pdf" "PDF сертификат"
     fi
-
     if [ -n "$proof_url" ]; then
         assert_public_url "$proof_url" "Proof URL"
     fi
-
     if [ -n "$proof_path" ]; then
         if ! docker exec aimuza-api sh -lc "test -s \"/opt/aimuza/data/uploads/certificates/$proof_path\""; then
             echo "❌ Proof-файл отсутствует или пустой: $proof_path"
@@ -376,7 +302,6 @@ if [ -n "$latest_artifacts" ]; then
 else
     echo "   ⚠ Нет завершённых депонирований для smoke-проверки сертификатов"
 fi
-
 echo ""
 echo "🧹 Шаг 9: Очистка старых образов..."
 docker image prune -f --filter 'until=168h'
@@ -386,7 +311,6 @@ if [ ! -f scripts/configure-log-retention.sh ]; then
     exit 1
 fi
 bash scripts/configure-log-retention.sh
-
 echo ""
 echo "╔══════════════════════════════════════════╗"
 echo "║         ✅ Деплой завершён!              ║"
