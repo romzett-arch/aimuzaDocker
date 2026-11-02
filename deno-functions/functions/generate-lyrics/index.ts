@@ -1,55 +1,15 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+import { recoverLyricsJob } from "../_shared/lyrics-results.ts";
+
 const API_BASE = "https://api.sunoapi.org";
 const PROMPT_LIMIT = 200;
-
-type LyricsResult = { text: string; title: string };
-
-function extractLyricsResult(result: Record<string, unknown>): LyricsResult | null {
-  const data = result.data as Record<string, unknown> | undefined;
-  const response = data?.response as Record<string, unknown> | undefined;
-  const candidates = [
-    response?.data,
-    response?.sunoData,
-    data?.sunoData,
-    data?.data,
-  ];
-  const item = candidates.find(Array.isArray)?.[0] as Record<string, unknown> | undefined;
-  const text = item?.text ?? item?.lyrics ?? data?.text ?? data?.lyrics;
-  const title = item?.title ?? data?.title;
-  return typeof text === "string" && text.trim()
-    ? { text: text.trim(), title: typeof title === "string" ? title.trim() : "" }
-    : null;
-}
-
-async function pollLyricsResult(taskId: string, apiKey: string, maxAttempts = 30): Promise<LyricsResult | null> {
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    const response = await fetch(`${API_BASE}/api/v1/lyrics/record-info?taskId=${encodeURIComponent(taskId)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    const result = await response.json().catch(() => ({})) as Record<string, unknown>;
-
-    if (!response.ok) {
-      throw new Error(typeof result.msg === "string" ? result.msg : "Не удалось получить текст от Suno");
-    }
-
-    const data = result.data as Record<string, unknown> | undefined;
-    if (result.code === 200 && data?.status === "SUCCESS") {
-      return extractLyricsResult(result);
-    }
-    if (data?.status === "FAILED") {
-      throw new Error(typeof data.errorMessage === "string" ? data.errorMessage : "Не удалось создать текст");
-    }
-  }
-  return null;
-}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -59,7 +19,9 @@ serve(async (req) => {
   let userId: string | null = null;
   let debitedAmount = 0;
   let generationLogId: string | null = null;
-  let adminClient: ReturnType<typeof createClient> | null = null;
+  let jobCreated = false;
+  let dispatched = false;
+  let adminClient: SupabaseClient<any> | null = null;
 
   try {
     const authHeader = req.headers.get("Authorization");
@@ -142,44 +104,71 @@ serve(async (req) => {
     const apiKey = Deno.env.get("SUNO_API_KEY");
     if (!apiKey) throw new Error("Музыкальный AI временно недоступен");
 
-    const callbackUrl = `${supabaseUrl}/functions/v1/lyrics-callback`;
+    const callbackToken = crypto.randomUUID();
+    const { error: jobError } = await adminClient.from("lyrics_generation_jobs").insert({
+      id: requestId, user_id: userId, prompt, callback_token: callbackToken, generation_log_id: generationLogId,
+    });
+    if (jobError) throw jobError;
+    jobCreated = true;
+    const callbackBase = new URL(Deno.env.get("LYRICS_CALLBACK_URL") || "/functions/v1/lyrics-callback", Deno.env.get("SUNO_CALLBACK_URL") || "https://aimuza.ru");
+    callbackBase.search = "";
+    callbackBase.searchParams.set("job", requestId);
+    callbackBase.searchParams.set("token", callbackToken);
+    const callbackUrl = callbackBase.toString();
+    // Once dispatch begins a transport error is ambiguous. Keep the durable job:
+    // the authenticated callback can still deliver the result after a disconnect.
+    dispatched = true;
     const response = await fetch(`${API_BASE}/api/v1/lyrics`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({ prompt, callBackUrl: callbackUrl }),
+      signal: AbortSignal.timeout(20000),
     });
     const result = await response.json().catch(() => ({})) as Record<string, unknown>;
     const resultData = result.data as Record<string, unknown> | undefined;
     const taskId = resultData?.taskId ?? resultData?.task_id;
     if (!response.ok || result.code !== 200 || typeof taskId !== "string" || !taskId) {
+      dispatched = false;
       throw new Error(typeof result.msg === "string" ? result.msg : "Не удалось запустить создание текста");
     }
 
-    const lyricsResult = await pollLyricsResult(taskId, apiKey);
-    if (!lyricsResult?.text) throw new Error("Превышено время ожидания текста");
+    const { error: taskError } = await adminClient.from("lyrics_generation_jobs")
+      .update({ provider_task_id: taskId }).eq("id", requestId);
+    if (taskError) throw taskError;
 
-    await adminClient.from("generated_lyrics").insert({
-      user_id: userId,
-      prompt,
-      lyrics: lyricsResult.text,
-      title: lyricsResult.title || null,
-    });
-
-    if (generationLogId) {
-      await adminClient.from("generation_logs").update({
-        status: "completed",
-        duration_ms: Date.now() - startedAt,
-        metadata: { task_id: taskId },
-      }).eq("id", generationLogId);
+    for (let attempt = 0; attempt < 20 && Date.now() - startedAt < 40000; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      try {
+        const saved = await recoverLyricsJob(adminClient, { id: requestId, provider_task_id: taskId }, apiKey);
+        if (saved.length) return new Response(JSON.stringify({ success: true, id: saved[0].id, lyrics: saved[0].lyrics, title: saved[0].title, saved: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (pollError) {
+        const { data: jobState } = await adminClient.from("lyrics_generation_jobs").select("status,error_message").eq("id", requestId).maybeSingle();
+        if (jobState?.status === 'failed') return new Response(JSON.stringify({ error: jobState.error_message || 'Не удалось создать текст' }), {
+          status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+        console.error("Lyrics polling will be retried by recovery worker", pollError);
+        break;
+      }
     }
-
-    return new Response(JSON.stringify({ success: true, lyrics: lyricsResult.text, title: lyricsResult.title }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ pending: true, jobId: requestId, message: 'Текст создаётся и появится в «Мои тексты» автоматически' }), {
+      status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Не удалось создать текст";
     console.error("generate-lyrics failed:", error);
 
+    if (dispatched) {
+      return new Response(JSON.stringify({ pending: true, jobId: requestId, message: 'Результат будет сохранён в «Мои тексты» автоматически' }), {
+        status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (jobCreated && adminClient) {
+      const { error: failError } = await adminClient.rpc("fail_lyrics_job", { p_job_id: requestId, p_error: message });
+      if (failError) console.error("Lyrics failure settlement needs recovery", failError);
+      return new Response(JSON.stringify({ error: message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
     let refundSucceeded = false;
     if (adminClient && userId && debitedAmount > 0) {
       const { error: refundError } = await adminClient.rpc("refund_addon_service", {

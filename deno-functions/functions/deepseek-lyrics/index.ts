@@ -80,6 +80,7 @@ serve(async (req) => {
 
   let supabase: ReturnType<typeof createClient> | null = null;
   let currentUserId: string | null = null;
+  let persistenceFailed = false;
   let currentBody: RequestBody | null = null;
   let currentMode: string | null = null;
   let previousBalanceForRefund: number | null = null;
@@ -209,7 +210,7 @@ serve(async (req) => {
       }
       console.log("IMPROVE PASS 2 done, length:", improvedText.length);
 
-      await supabase.from("generated_lyrics").insert({
+      const { error: saveError } = await supabase.from("generated_lyrics").insert({
         user_id, prompt: `[IMPROVE-2PASS] ${style || ""}`, lyrics: improvedText, title: null,
       });
 
@@ -395,11 +396,12 @@ serve(async (req) => {
     }
 
     const isB9Mode = ["suggest_tags", "build_style", "analyze_style", "analyze_prompt", "auto_tag_all"].includes(mode);
-    if (mode !== "create_prompt" && mode !== "markup" && !isB9Mode) {
+    if (mode !== "create_prompt" && !isB9Mode) {
       await supabase.from("generated_lyrics").insert({
         user_id, prompt: mode === "improve" ? `[IMPROVE] ${style || ""}` : `[GENERATE] ${theme || style || ""}`,
         lyrics: generatedContent, title: null,
       });
+      if (saveError) { persistenceFailed = true; throw new Error("Не удалось сохранить текст. Повторите позже."); }
     }
 
     if (mode === "create_prompt") {
@@ -484,6 +486,8 @@ serve(async (req) => {
         console.error("deepseek-lyrics refund failed:", refundError);
       }
     }
+
+    if (persistenceFailed) return new Response(JSON.stringify({ error: message }), { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
     if (currentBody && currentMode === "create_prompt") {
       return new Response(

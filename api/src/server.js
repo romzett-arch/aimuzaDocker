@@ -19,6 +19,7 @@ import './security/safe-logging.js';
  *   POST   /functions/v1/:name   — вызов Edge Function (проксирование в Deno)
  */
 import express from 'express';
+import { startLyricsRecovery } from './services/lyrics-recovery.js';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
@@ -188,6 +189,7 @@ async function start() {
     console.log(`[API] aimuza-api listening on :${PORT}`);
     startVotingLifecycle();
     startMediaLifecycle();
+    startLyricsRecovery();
   });
   server.requestTimeout=120000;
   server.headersTimeout=15000;

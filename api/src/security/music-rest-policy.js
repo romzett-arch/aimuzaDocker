@@ -36,6 +36,7 @@ export function markTrackDeleteError(error) {
 }
 
 const USER_TRACK_PROTECTED_COLUMNS = new Set([
+  'generated_lyrics_id',
   'id', 'user_id', 'created_at', 'status', 'moderation_status', 'moderation_reviewed_by',
   'moderation_reviewed_at', 'moderation_notes', 'moderation_rejection_reason',
   'audio_url', 'cover_url', 'source_type', 'content_sha256',

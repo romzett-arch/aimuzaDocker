@@ -33,6 +33,7 @@ export function registerSignup(router) {
       const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
       const usernameFromBody = req.body.data?.username || req.body.options?.data?.username || normalizedEmail.split('@')[0];
       const metadata = { username: String(usernameFromBody).slice(0,80), session_version: 0 };
+      if (req.body.data?.studio_consents === true) metadata.studio_consents = { terms: '2026-11-02', privacy: '2026-11-02', accepted_at: new Date().toISOString() };
 
       const result = await pool.query(
         `INSERT INTO auth.users (email, encrypted_password, email_confirmed_at, raw_user_meta_data, created_at, updated_at)

@@ -1,3 +1,4 @@
+import { saveMusicLyrics } from "../_shared/music-lyrics.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getGenerationVariantIndex } from "../_shared/track-generation-metadata.ts";
@@ -217,6 +218,7 @@ serve(async (req) => {
     if (statusData.code === 200 && statusData.data) {
       const records = statusData.data.response?.sunoData || statusData.data.data || [];
       const taskStatus = statusData.data.status;
+      await saveMusicLyrics(supabaseAdmin, taskId, records);
       
       console.log(`Task status: ${taskStatus}, Records: ${records.length}`);
       

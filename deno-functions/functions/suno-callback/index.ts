@@ -1,3 +1,4 @@
+import { saveMusicLyrics } from "../_shared/music-lyrics.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { callbackAuthorized, escapeLikeLiteral } from "../_shared/callback-auth.ts";
@@ -95,6 +96,8 @@ serve(async (req) => {
     const errorMessage = callbackData?.msg;
 
     console.log(`Callback type: ${callbackType}, Task ID: ${taskId}, Code: ${responseCode}, Tracks count: ${tracks.length}`);
+
+    await saveMusicLyrics(supabaseAdmin, taskId, tracks || []);
 
     const isError =
       responseCode !== 200 ||
