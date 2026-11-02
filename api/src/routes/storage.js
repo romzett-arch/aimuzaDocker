@@ -15,6 +15,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { pool } from '../db.js';
 import { assertOwnedMediaPath } from '../security/storage-path-policy.js';
+import { assertMediaSigningAccess } from '../security/storage-sign-policy.js';
 
 const router = Router();
 
@@ -283,7 +284,7 @@ router.post('/object/sign/:bucket/*', requireStorageAuth, async (req, res) => {
     const filePath = req.params[0];
     await assertSilkPathAccess(req, bucket, filePath);
     await assertGalleryPathAccess(req, bucket, filePath, true);
-    assertOwnedMediaPath(req.user,bucket,filePath);
+    await assertMediaSigningAccess(req.user, bucket, filePath, pool);
 
     const requestedLifetime = Number(req.body?.expiresIn || 3600);
     const lifetime = Math.min(Math.max(Math.floor(requestedLifetime), 60), 3600);

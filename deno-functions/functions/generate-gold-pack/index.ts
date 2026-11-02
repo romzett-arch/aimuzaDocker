@@ -406,7 +406,7 @@ serve(async (req) => {
         await supabase.from("notifications").insert({
           user_id: userData.user_id,
           type: "system",
-          title: "📦 Золотой пакет SILK готов!",
+          title: "📦 Золотой пакет АИМУЗА готов!",
           message: `Ваш трек "${track.title}" готов к дистрибуции. ZIP-пакет, XML, PDF-сертификат и мастер доступны для скачивания.`,
           target_type: "track",
           target_id: trackId,

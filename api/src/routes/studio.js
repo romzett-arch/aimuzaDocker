@@ -122,6 +122,7 @@ router.get('/tracks', requireAuth, async (req, res, next) => {
     const result = await pool.query(
       `SELECT t.id, t.title, t.description, t.lyrics, t.performer_name, t.music_author, t.lyrics_author, t.status, t.audio_url, t.cover_url, t.duration,
               t.created_at, t.updated_at,
+              EXISTS (SELECT 1 FROM public.user_listened_tracks l WHERE l.track_id = t.id AND l.user_id = $1) AS listened,
               EXISTS (SELECT 1 FROM public.silk_releases r WHERE r.source_track_id = t.id AND r.user_id = t.user_id) AS has_release,
               (SELECT s.status FROM public.audio_separations s WHERE s.track_id = t.id ORDER BY s.created_at DESC LIMIT 1) AS vocal_separation_status,
               (SELECT s.result_urls FROM public.audio_separations s WHERE s.track_id = t.id ORDER BY s.created_at DESC LIMIT 1) AS vocal_separation_results
@@ -154,11 +155,29 @@ router.get('/tracks', requireAuth, async (req, res, next) => {
       createdAt: track.created_at,
       updatedAt: track.updated_at,
       hasRelease: track.has_release,
+      listened: track.listened,
       hasWav: false,
       wavOwned: false,
       vocalSeparationStatus: track.vocal_separation_status || null,
       vocalSeparationResults: track.vocal_separation_results || null,
     })));
+  } catch (error) { next(error); }
+});
+
+router.post('/tracks/:trackId/listened', requireAuth, async (req, res, next) => {
+  try {
+    if (!validUuid(req.params.trackId)) return res.status(400).json({ error: 'Некорректный идентификатор трека' });
+    const result = await pool.query(
+      `INSERT INTO public.user_listened_tracks(user_id, track_id)
+       SELECT $1, id FROM public.tracks WHERE id=$2 AND user_id=$1 AND status='completed'
+       ON CONFLICT (user_id, track_id) DO NOTHING RETURNING track_id`,
+      [req.user.id, req.params.trackId],
+    );
+    if (!result.rowCount) {
+      const owned = await pool.query("SELECT 1 FROM public.tracks WHERE id=$1 AND user_id=$2 AND status='completed'", [req.params.trackId, req.user.id]);
+      if (!owned.rowCount) return res.status(404).json({ error: 'Трек не найден' });
+    }
+    res.json({ listened: true });
   } catch (error) { next(error); }
 });
 
@@ -206,9 +225,16 @@ router.get('/release-packages', requireAuth, async (req, res, next) => {
       `SELECT p.id, p.track_id, p.status, p.zip_url, p.error_message, p.created_at, p.updated_at,
               p.requested_title, p.requested_performer_name,
               t.title AS track_title, t.cover_url AS track_cover_url,
-              t.release_album_id, t.release_album_name
+              t.release_album_id, t.release_album_name,
+              r.id AS release_id, r.status AS release_status, r.isrc_code, r.upc_code,
+              r.submitted_at, r.sending_started_at, r.sent_to_silk_at, r.live_at, r.admin_note
        FROM public.release_packages p
        LEFT JOIN public.tracks t ON t.id = p.track_id
+       LEFT JOIN LATERAL (
+         SELECT * FROM public.silk_releases r
+         WHERE r.source_track_id=p.track_id AND r.user_id=p.user_id AND r.source_kind='generated'
+         ORDER BY (r.status <> 'archived') DESC, r.updated_at DESC LIMIT 1
+       ) r ON TRUE
        WHERE p.user_id = $1
        ORDER BY p.updated_at DESC
        LIMIT 100`,
@@ -227,8 +253,38 @@ router.get('/release-packages', requireAuth, async (req, res, next) => {
       coverUrl: row.track_cover_url || null,
       albumId: row.release_album_id || null,
       albumName: row.release_album_name || null,
+      releaseId: row.release_id || null,
+      releaseStatus: row.release_status || null,
+      isrc: row.isrc_code || null,
+      upc: row.upc_code || null,
+      submittedAt: row.submitted_at || null,
+      sentAt: row.sent_to_silk_at || null,
+      liveAt: row.live_at || null,
+      adminNote: row.admin_note || null,
     })));
   } catch (error) { next(error); }
+});
+
+router.post('/release-packages/:trackId/submit', requireAuth, async (req, res, next) => {
+  if (!validUuid(req.params.trackId)) return res.status(400).json({ error: 'Некорректный идентификатор трека' });
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await setJWTClaims(client, req.user);
+    // Move into My Releases and submit atomically. The shared SQL command owns
+    // package validation, duplicate prevention, queue creation and notifications.
+    await client.query(`UPDATE public.tracks SET is_in_my_releases=TRUE,
+      moved_to_my_releases_at=coalesce(moved_to_my_releases_at, now())
+      WHERE id=$1 AND user_id=$2`, [req.params.trackId, req.user.id]);
+    const result = await client.query('SELECT * FROM public.submit_generated_track_release($1)', [req.params.trackId]);
+    await client.query('COMMIT');
+    res.json(result.rows[0]);
+  } catch (error) {
+    if (client) await client.query('ROLLBACK');
+    if (error.code === 'P0001') return res.status(400).json({ error: error.message });
+    next(error);
+  } finally { client?.release(); }
 });
 
 router.get('/release-options/:trackId', requireAuth, async (req, res, next) => {

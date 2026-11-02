@@ -690,19 +690,11 @@ serve(async (req) => {
       metadata,
       cache_key: await sha256Hex(JSON.stringify({ version: 3, trackId, masterUrl, metadata, format: "wav" })),
     });
-    const flacResult = await callFfmpegJson(ffmpegBaseUrl, ffmpegApiSecret, "convert-format", {
-      audio_url: masterInputUrl,
-      format: "flac",
-      metadata,
-      cache_key: await sha256Hex(JSON.stringify({ version: 3, trackId, masterUrl, metadata, format: "flac" })),
-    });
     const wavUrl = String(wavResult.output_url || "");
-    const flacUrl = String(flacResult.output_url || "");
-    if (!wavUrl || !flacUrl) throw new Error("release_package_distribution_audio_missing");
+    if (!wavUrl) throw new Error("release_package_distribution_audio_missing");
 
     const mp3Bytes = await fetchBytes(mp3Url, req.url, ffmpegBaseUrl, storageOrigin);
     const wavBytes = await fetchBytes(wavUrl, req.url, ffmpegBaseUrl, storageOrigin);
-    const flacBytes = await fetchBytes(flacUrl, req.url, ffmpegBaseUrl, storageOrigin);
 
     const promptText = track.description || null;
     const lyricsText = track.lyrics || null;
@@ -739,7 +731,6 @@ serve(async (req) => {
     const zip = new JSZip();
     zip.file(`${safeBaseName}.mp3`, mp3Bytes);
     zip.file(`${safeBaseName}.wav`, wavBytes);
-    zip.file(`${safeBaseName}.flac`, flacBytes);
     zip.file("genre.txt", genreBytes);
     zip.file("release-info.txt", releaseInfoBytes);
 
@@ -781,7 +772,6 @@ serve(async (req) => {
         zip_url: zipUrl,
         mp3_url: mp3Url,
         wav_url: wavUrl,
-        flac_url: flacUrl,
         cover_url: resolvePublicUrl(track.cover_url, req.url),
         genre_txt_url: genreTxtUrl,
         certificate_url: deposit?.certificate_url ?? null,
