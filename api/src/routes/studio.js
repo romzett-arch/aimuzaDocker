@@ -25,6 +25,7 @@ async function userBootstrap(userId) {
     id: userId,
     name: profileRow.username || 'Пользователь',
     email: profileRow.email || null,
+    avatarUrl: profileRow.avatar_url || null,
     tariff: {
       key: tier.rows[0]?.tier?.tier_key || 'free',
       name: ({ free: 'Новичок', creator: 'Музыкант', pro: 'Артист', label: 'Лейбл' })[tier.rows[0]?.tier?.tier_key] || 'Новичок',
