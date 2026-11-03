@@ -28,6 +28,20 @@ test('public profile queries and embeds cannot select finance or authentication 
  assert.throws(()=>assertJoinColumns('profiles',['balance'],user));
  assert.throws(()=>parseSelect('secrets:email_verifications(code)','public."tracks"',user));
 });
+
+test('suggested creators can select and order by the public follower counter',()=>{
+ const query={select:'user_id,username,avatar_url,followers_count',order:'followers_count.desc.nullslast',limit:'6'};
+ for(const actor of [null,user]) {
+  const {columns}=parseSelect(query.select,'public."profiles"',actor);
+  assert.doesNotThrow(()=>coreReadColumns('profiles',actor,query,columns));
+  assert.match(coreReadColumns('profiles',actor,{},'*'),/"followers_count"/);
+  assert.doesNotThrow(()=>assertJoinColumns('profiles',['user_id','username','followers_count'],actor));
+  for(const name of ['email','balance','session_version']) {
+   assert.throws(()=>coreReadColumns('profiles',actor,{order:`${name}.desc`},'"user_id"'));
+   assert.throws(()=>coreReadColumns('profiles',actor,{},`"${name}"`));
+  }
+ }
+});
 test('unknown and malformed filters cannot broaden a mutation',()=>{
  for(const query of [{id:'unsupported.value'},{id:'not.unknown.x'},{and:'(id.eq.actor,bad)'},{or:'(bad)'},{id:'is.invalid'}]) assert.throws(()=>parseFilters(query));
  const parsed=parseFilters({and:'(user_id.eq.actor,or.(status.eq.ready,status.eq.pending))'});

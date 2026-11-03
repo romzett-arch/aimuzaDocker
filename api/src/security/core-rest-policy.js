@@ -8,7 +8,7 @@ const STAFF = new Set(['api_keys','ai_provider_settings','email_templates','erro
 export const PUBLIC_SETTING_KEYS = ['generation_price','max_lyrics_length','max_prompt_length','min_topup_amount','max_topup_amount','commission_percent','deposit_price','site_name','site_description','maintenance_enabled','cover_generation_price','platform_commission_percent','label_commission_percent','subscriber_discount_percent','forum_voting_category_id','price_per_image'];
 const PUBLIC_SERVICE_COLUMNS=new Set(['id','name','name_ru','description','description_ru','price_rub','price_aipci','is_active','sort_order','category','icon','created_at','updated_at']);
 const PRIVATE_MESSAGE_TABLES = new Set(['messages','conversations','conversation_participants','message_reactions']);
-const PUBLIC_PROFILE_COLUMNS = new Set(['id','user_id','username','display_name','avatar_url','bio','created_at','role','is_verified','verification_type']);
+const PUBLIC_PROFILE_COLUMNS = new Set(['id','user_id','username','display_name','avatar_url','bio','created_at','role','is_verified','verification_type','followers_count']);
 export function isCoreAdmin(user) { return user?.role === 'service_role' || ['admin','super_admin','superadmin'].includes(user?.app_role); }
 export function accessError(status=403, message='Access denied') {
   return Object.assign(new Error(message), {status,code:'REST_ACCESS_DENIED'});

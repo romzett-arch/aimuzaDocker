@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
-import { signToken, requireAuth } from '../middleware/auth.js';
+import { signToken } from '../middleware/auth.js';
 import { issueRefresh, consumeRefresh, freshRoles } from '../security/refresh-session.js';
 
 const DUMMY_HASH = '$2a$12$K4p9MxVPgOSR5QjKWnJL.OBkqiLbqMy0aZXGxVUP3IxtTGd1bEX6q';
@@ -93,7 +93,11 @@ export function registerToken(router) {
     }
   });
 
-  router.post('/logout', requireAuth, async (req,res) => {
+  router.post('/logout', async (req,res) => {
+    // An already revoked/expired login has nothing left to revoke. Let the SDK
+    // clear its local session without another Unauthorized response.
+    if (!req.user?.id || req.user.role === 'anon') return res.status(204).end();
+    if (req.user.role === 'service_role') return res.status(403).json({error:'User session required'});
     try {
     await pool.query(`UPDATE auth.users SET raw_user_meta_data=jsonb_set(COALESCE(raw_user_meta_data,'{}'::jsonb),'{session_version}',to_jsonb(COALESCE((raw_user_meta_data->>'session_version')::integer,0)+1)) WHERE id=$1`,[req.user.id]);
     await pool.query('DELETE FROM public.api_refresh_sessions WHERE user_id=$1',[req.user.id]);
