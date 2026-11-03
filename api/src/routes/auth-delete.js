@@ -37,6 +37,10 @@ export function registerAccountDeletion(router) {
         slug=$3,show_online_status=false,show_profile_stats=false,is_blocked=true,blocked_reason='account_deleted'
         WHERE user_id=$1`, [req.user.id, `deleted_${req.user.id.replaceAll('-', '')}`, `deleted-${req.user.id}`]);
       await client.query('DELETE FROM public.api_refresh_sessions WHERE user_id=$1', [req.user.id]);
+      await client.query('DELETE FROM auth.vkid_identities WHERE user_id=$1', [req.user.id]);
+      await client.query('DELETE FROM auth.yandex_identities WHERE user_id=$1', [req.user.id]);
+      await client.query('DELETE FROM auth.yandex_flows WHERE link_user_id=$1', [req.user.id]);
+      await client.query('DELETE FROM auth.vkid_flows WHERE link_user_id=$1', [req.user.id]);
       await client.query('DELETE FROM public.email_verifications WHERE user_id=$1 OR email=$2', [req.user.id, user.email]);
       await client.query(`UPDATE public.user_subscriptions SET auto_renew=false,
         status=CASE WHEN status='active' THEN 'canceled' ELSE status END,

@@ -33,6 +33,13 @@ services:
         max-size: 20m
         max-file: '3'
     image: deploy-api:latest
+    environment:
+      VKID_SITE_ORIGIN: http://localhost
+      VKID_STUDIO_ORIGIN: http://localhost:3101
+      VKID_REDIRECT_URI: http://localhost/auth/v1/vkid/callback
+      YANDEX_SITE_ORIGIN: http://localhost
+      YANDEX_STUDIO_ORIGIN: http://localhost:3101
+      YANDEX_REDIRECT_URI: http://localhost/auth/v1/yandex/callback
   api:
     logging:
       driver: local

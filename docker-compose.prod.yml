@@ -63,6 +63,10 @@ services:
       DB_USER: ${DB_USER:-aimuza}
       DB_PASSWORD: ${DB_PASSWORD}
       API_PORT: 3000
+      VKID_ENABLED: "${VKID_ENABLED:-true}"
+      VKID_WEB_CLIENT_ID: "54873671"
+      YANDEX_ENABLED: "${YANDEX_ENABLED:-true}"
+      YANDEX_CLIENT_ID: "e0e64eae06f84e5dabb798f9e757f648"
       UPLOADS_DIR: /opt/aimuza/data/uploads
       DENO_FUNCTIONS_URL: http://deno-functions:8081
       FFMPEG_OUTPUT_DIR: /opt/aimuza/data/ffmpeg-output
