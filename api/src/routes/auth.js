@@ -8,12 +8,14 @@ import { registerAccountDeletion } from './auth-delete.js';
 import { registerVkId } from './auth-vkid.js';
 import { registerYandexId } from './auth-yandex.js';
 import { registerProfileOnboarding } from './auth-profile-onboarding.js';
+import { registerPassword } from './auth-password.js';
 
 const router = Router();
 
 registerSignup(router);
 registerToken(router);
 registerUser(router);
+registerPassword(router);
 registerRecovery(router);
 registerAdmin(router);
 registerAccountDeletion(router);
