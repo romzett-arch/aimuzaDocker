@@ -17,6 +17,7 @@ export function workspace(router) {
   }));
   router.get('/cases/:id',route(async(c,req)=>{
     const m=await member(c,req.user),row=await caseAccess(c,m,req.params.id);
+    if(row.party_id) row.party_name=(await c.query('SELECT name FROM legal.parties WHERE id=$1 AND organization_id=$2',[row.party_id,ORG])).rows[0]?.name||null;
     await audit(c,req.user,'case.viewed','case',row.id,row.id);
     return row;
   }));
@@ -28,9 +29,15 @@ export function workspace(router) {
     const status=choice(b.status||row.status,['open','in_progress','closed','archived']);
     if(['closed','archived'].includes(row.status)&&!['closed','archived'].includes(status)) text(b.reason,1000,true);
     if(b.responsible_id) await targetMember(c,b.responsible_id,id);
-    const updated=(await c.query(`UPDATE legal.cases SET title=$2,description=$3,status=$4,responsible_id=$5,revision=revision+1 WHERE id=$1 RETURNING *`,
-      [id,b.title===undefined?row.title:text(b.title,300,true),b.description===undefined?row.description:text(b.description,10000),status,b.responsible_id?uuid(b.responsible_id):row.responsible_id])).rows[0];
-    await audit(c,req.user,'case.updated','case',id,id,{status,reason:text(b.reason,1000)});
+    let party_id=row.party_id;
+    if(b.party_id!==undefined&&b.party_id!==null) {
+      party_id=uuid(b.party_id);
+      const p=await c.query('SELECT id FROM legal.parties WHERE id=$1 AND organization_id=$2',[party_id,ORG]);
+      if(!p.rowCount) throw fail(400,'Контрагент не найден');
+    } else if(b.party_id===null) party_id=null;
+    const updated=(await c.query(`UPDATE legal.cases SET title=$2,description=$3,status=$4,responsible_id=$5,party_id=$6,revision=revision+1 WHERE id=$1 RETURNING *`,
+      [id,b.title===undefined?row.title:text(b.title,300,true),b.description===undefined?row.description:text(b.description,10000),status,b.responsible_id?uuid(b.responsible_id):row.responsible_id,party_id])).rows[0];
+    await audit(c,req.user,'case.updated','case',id,id,{status,party_id:updated.party_id,reason:text(b.reason,1000)});
     return updated;
   }));
   router.get('/parties',route(async(c,req)=>{

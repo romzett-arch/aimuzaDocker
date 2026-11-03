@@ -7,6 +7,7 @@ import { registerAdmin } from './auth-admin.js';
 import { registerAccountDeletion } from './auth-delete.js';
 import { registerVkId } from './auth-vkid.js';
 import { registerYandexId } from './auth-yandex.js';
+import { registerProfileOnboarding } from './auth-profile-onboarding.js';
 
 const router = Router();
 
@@ -18,5 +19,6 @@ registerAdmin(router);
 registerAccountDeletion(router);
 registerVkId(router);
 registerYandexId(router);
+registerProfileOnboarding(router);
 
 export default router;

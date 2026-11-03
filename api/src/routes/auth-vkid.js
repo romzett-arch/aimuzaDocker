@@ -32,7 +32,7 @@ export async function resolveVkUser(client, flow) {
   // Matching email is not proof of ownership of an existing AIMUZA account.
   if ((await client.query('SELECT id FROM auth.users WHERE lower(email)=$1', [profile.email])).rowCount) fail('VKID_LINK_REQUIRED');
   const password = await bcrypt.hash(secret(), 12);
-  const metadata = { provider: 'vkid', session_version: 0, username: 'vk_' + secret().slice(0, 24),
+  const metadata = { provider: 'vkid', session_version: 0, nickname_required: true, username: 'vk_' + secret().slice(0, 24),
     registration_consents: { source: 'vkid', schema: 'vkid-2026-11-03', license_agreement: true, audit_policy: true, personal_data: true, accepted_at: new Date().toISOString() },
     studio_consents: { terms: '2026-11-02', privacy: '2026-11-02', accepted_at: new Date().toISOString() } };
   const user = (await client.query(`INSERT INTO auth.users(email,encrypted_password,email_confirmed_at,raw_user_meta_data,created_at,updated_at)
