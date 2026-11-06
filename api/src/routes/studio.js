@@ -2,6 +2,7 @@ import { raw, Router } from 'express';
 import crypto from 'crypto';
 import { pool, setJWTClaims } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { needsNickname } from '../security/profile-onboarding.js';
 import { normalizeStudioGeneration as normalizeInput, studioSunoPayload } from '../services/studio-generation-input.js';
 import { issueAudioReference, readAudioReference } from '../services/studio-audio-reference.js';
 
@@ -14,7 +15,7 @@ const generationPolls = new Map();
 
 async function userBootstrap(userId) {
   const [profile, tracks, releases, service, subscription, tier] = await Promise.all([
-    pool.query('SELECT p.username, p.avatar_url, p.balance, u.email FROM auth.users u LEFT JOIN public.profiles p ON p.user_id = u.id WHERE u.id = $1', [userId]),
+    pool.query('SELECT p.user_id AS profile_id, p.username, p.avatar_url, p.balance, u.email, u.raw_user_meta_data FROM auth.users u LEFT JOIN public.profiles p ON p.user_id = u.id WHERE u.id = $1', [userId]),
     pool.query("SELECT count(*)::integer AS total FROM public.tracks WHERE user_id = $1", [userId]),
     pool.query("SELECT count(*)::integer AS total FROM public.silk_releases WHERE user_id = $1", [userId]),
     pool.query("SELECT name, price_rub FROM public.addon_services WHERE name IN ('generate_music_v6', 'vocal_separation', 'generate_lyrics') AND is_active IS TRUE"),
@@ -32,6 +33,7 @@ async function userBootstrap(userId) {
       name: ({ free: 'Новичок', creator: 'Музыкант', pro: 'Артист', label: 'Лейбл' })[tier.rows[0]?.tier?.tier_key] || 'Новичок',
     },
     authed: true,
+    nicknameRequired: profileRow.profile_id ? needsNickname(profileRow.raw_user_meta_data || {}, profileRow.username) : undefined,
     balance: Number(profileRow.balance || 0),
     currency: 'RUB',
     generationPrice: Number(service.rows.find((row) => row.name === 'generate_music_v6')?.price_rub || 0),
