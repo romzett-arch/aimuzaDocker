@@ -14,7 +14,7 @@ try {
   const created = await resolveVkUser(client, flow);
   assert.ok(created.email_confirmed_at); checks++;
   const before = (await client.query('SELECT balance FROM public.profiles WHERE user_id=$1', [created.id])).rows[0].balance;
-  const again = await resolveVkUser(client, flow);
+  const again = await resolveVkUser(client, { ...flow, consent: false });
   assert.equal(again.id, created.id); checks++;
   assert.equal((await client.query('SELECT balance FROM public.profiles WHERE user_id=$1', [created.id])).rows[0].balance, before); checks++;
   await assert.rejects(resolveVkUser(client, { consent: true, profile: { ...profile, subject: subject + '1' } }), /VKID_LINK_REQUIRED/); checks++;

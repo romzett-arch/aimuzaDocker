@@ -23,17 +23,22 @@ export function normalizeStudioGeneration(body) {
   const tempo = body?.tempo == null || body.tempo === '' || body.tempo === 0 ? undefined : Number(body.tempo);
   if (tempo !== undefined && (!Number.isInteger(tempo) || tempo < 1 || tempo > 240 || mode !== 'custom')) throw inputError('Темп должен быть целым числом от 1 до 240 BPM в режиме «Свой текст»');
   const songIdeaId = body?.songIdeaId || undefined;
+  const personaId = body?.personaId || undefined;
+  const audioReference = body?.audioReference || undefined;
+  if (personaId !== undefined && (mode !== 'custom' || !validUuid(personaId))) throw inputError('Выберите персону в режиме «Свой текст»');
+  if (audioReference !== undefined && (typeof audioReference !== 'string' || audioReference.length > 8192)) throw inputError('Прикрепите аудиореференс заново');
   if (songIdeaId !== undefined && !validUuid(songIdeaId)) throw inputError('Некорректная идея для песни');
   if (duration !== undefined && (!Number.isInteger(duration) || duration < 10 || duration > 360 || mode !== 'custom')) throw inputError('Длительность доступна в режиме «Свой текст»: от 10 до 360 секунд');
   if (mode === 'simple' && !prompt) throw inputError('Опишите песню, которую нужно создать');
+  if (mode === 'simple' && audioReference && prompt.length > 500) throw inputError('С аудиореференсом описание должно содержать не более 500 символов');
   if (mode === 'custom') {
     if (!style) throw inputError('Укажите стиль и аранжировку');
     if (!instrumental && !lyrics) throw inputError('Добавьте текст песни или выберите инструментал');
   }
-  return { requestId, mode, prompt, title, lyrics, style, negativeTags, instrumental, vocalGender, duration, tempo, songIdeaId };
+  return { requestId, mode, prompt, title, lyrics, style, negativeTags, instrumental, vocalGender, duration, tempo, songIdeaId, personaId, audioReference };
 }
 
-export function studioSunoPayload(input, tracks) {
+export function studioSunoPayload(input, tracks, { personaId, audioReferenceUrl } = {}) {
   return {
     trackId: tracks[0].id, trackIds: tracks.map((track) => track.id),
     customMode: input.mode === 'custom', prompt: input.prompt || input.title,
@@ -42,5 +47,8 @@ export function studioSunoPayload(input, tracks) {
     title: input.title || 'Новый трек', instrumental: input.instrumental,
     negativeTags: input.negativeTags || undefined, vocalGender: input.vocalGender,
     duration: input.duration,
+    personaId,
+    personaModel: personaId ? 'style_persona' : undefined,
+    audioReferenceUrl,
   };
 }

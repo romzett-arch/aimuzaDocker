@@ -55,15 +55,16 @@ export function registerYandexId(router, database = pool) {
       const config = configuration();
       if (!config.enabled) return res.status(503).json({ error: 'YANDEX_DISABLED' });
       const { destination, binding, link, consent, consentVersion } = req.body;
+      const loginOnly = req.body.loginOnly === true;
       if (!['site','studio','android'].includes(destination) || !/^[a-f0-9]{64}$/.test(binding || '')) fail('YANDEX_INVALID_REQUEST');
       if (link && (!req.user?.id || req.user.id === 'service-role')) return res.status(401).json({ error: 'YANDEX_AUTH_REQUIRED' });
-      if (!link && (consent !== true || consentVersion !== 'yandex-2026-11-03')) return res.status(422).json({ error: 'YANDEX_CONSENT_REQUIRED' });
+      if (!link && !loginOnly && (consent !== true || consentVersion !== 'yandex-2026-11-03')) return res.status(422).json({ error: 'YANDEX_CONSENT_REQUIRED' });
       const expectedOrigin = destination === 'site' ? config.site : config.studio;
       if (req.headers.origin && req.headers.origin !== expectedOrigin) fail('YANDEX_INVALID_ORIGIN');
       const state = secret(), verifier = secret();
       await database.query('DELETE FROM auth.yandex_flows WHERE expires_at<now()');
       await database.query(`INSERT INTO auth.yandex_flows(state_hash,binding_hash,verifier,destination,link_user_id,link_version,consent)
-        VALUES($1,$2,$3,$4,$5,$6,$7)`, [digest(state), binding, verifier, destination, link ? req.user.id : null, link ? req.user.session_version : null, consent === true]);
+        VALUES($1,$2,$3,$4,$5,$6,$7)`, [digest(state), binding, verifier, destination, link ? req.user.id : null, link ? req.user.session_version : null, !loginOnly && consent === true]);
       res.json({ url: authorizeUrl(config, state, verifier) });
     } catch { res.status(400).json({ error: 'YANDEX_START_FAILED' }); }
   });

@@ -1,8 +1,9 @@
-import { Router } from 'express';
+import { raw, Router } from 'express';
 import crypto from 'crypto';
 import { pool, setJWTClaims } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { normalizeStudioGeneration as normalizeInput, studioSunoPayload } from '../services/studio-generation-input.js';
+import { issueAudioReference, readAudioReference } from '../services/studio-audio-reference.js';
 
 const router = Router();
 
@@ -125,6 +126,38 @@ router.get('/lyrics', requireAuth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+function studioTrackDto(track) {
+  return {
+    id: track.id,
+    title: track.title || 'Новый трек',
+    prompt: track.description || '',
+    lyrics: track.lyrics || null,
+    styleTags: '[]',
+    instrumental: track.instrumental ?? false,
+    status: track.status === 'pending' ? 'queued' : track.status,
+    stage: track.status === 'completed' ? 'Готово' : track.status === 'failed' ? 'Ошибка' : 'Генерация',
+    progress: track.status === 'completed' ? 100 : track.status === 'processing' ? 55 : 10,
+    audioUrl: track.audio_url || null,
+    coverUrl: track.cover_url || null,
+    duration: Number(track.duration || 0),
+    performerName: track.performer_name || null,
+    musicAuthor: track.music_author || null,
+    lyricsAuthor: track.lyrics_author || null,
+    waveform: null,
+    liked: false,
+    plays: 0,
+    featured: false,
+    createdAt: track.created_at,
+    updatedAt: track.updated_at,
+    hasRelease: track.has_release,
+    listened: track.listened,
+    hasWav: false,
+    wavOwned: false,
+    vocalSeparationStatus: track.vocal_separation_status || null,
+    vocalSeparationResults: track.vocal_separation_results || null,
+  };
+}
+
 router.get('/tracks', requireAuth, async (req, res, next) => {
   try {
     await pollPendingGenerations(req.user.id, req.get('authorization'));
@@ -142,35 +175,7 @@ router.get('/tracks', requireAuth, async (req, res, next) => {
        LIMIT 100`,
       [req.user.id],
     );
-    res.json(result.rows.map((track) => ({
-      id: track.id,
-      title: track.title || 'Новый трек',
-      prompt: track.description || '',
-      lyrics: track.lyrics || null,
-      styleTags: '[]',
-      instrumental: track.instrumental,
-      status: track.status === 'pending' ? 'queued' : track.status,
-      stage: track.status === 'completed' ? 'Готово' : track.status === 'failed' ? 'Ошибка' : 'Генерация',
-      progress: track.status === 'completed' ? 100 : track.status === 'processing' ? 55 : 10,
-      audioUrl: track.audio_url || null,
-      coverUrl: track.cover_url || null,
-      duration: Number(track.duration || 0),
-      performerName: track.performer_name || null,
-      musicAuthor: track.music_author || null,
-      lyricsAuthor: track.lyrics_author || null,
-      waveform: null,
-      liked: false,
-      plays: 0,
-      featured: false,
-      createdAt: track.created_at,
-      updatedAt: track.updated_at,
-      hasRelease: track.has_release,
-      listened: track.listened,
-      hasWav: false,
-      wavOwned: false,
-      vocalSeparationStatus: track.vocal_separation_status || null,
-      vocalSeparationResults: track.vocal_separation_results || null,
-    })));
+    res.json(result.rows.map(studioTrackDto));
   } catch (error) { next(error); }
 });
 
@@ -235,11 +240,12 @@ router.get('/release-packages', requireAuth, async (req, res, next) => {
       `SELECT p.id, p.track_id, p.status, p.zip_url, p.error_message, p.created_at, p.updated_at,
               p.requested_title, p.requested_performer_name,
               t.title AS track_title, t.cover_url AS track_cover_url,
+              CASE WHEN t.status = 'completed' AND NULLIF(t.audio_url, '') IS NOT NULL THEN to_jsonb(t) END AS playable_track,
               t.release_album_id, t.release_album_name,
               r.id AS release_id, r.status AS release_status, r.isrc_code, r.upc_code,
               r.submitted_at, r.sending_started_at, r.sent_to_silk_at, r.live_at, r.admin_note
        FROM public.release_packages p
-       LEFT JOIN public.tracks t ON t.id = p.track_id
+       LEFT JOIN public.tracks t ON t.id = p.track_id AND t.user_id = p.user_id
        LEFT JOIN LATERAL (
          SELECT * FROM public.silk_releases r
          WHERE r.source_track_id=p.track_id AND r.user_id=p.user_id AND r.source_kind='generated'
@@ -261,6 +267,7 @@ router.get('/release-packages', requireAuth, async (req, res, next) => {
       title: row.requested_title || row.track_title || 'Релиз-пакет',
       performer: row.requested_performer_name || null,
       coverUrl: row.track_cover_url || null,
+      track: row.playable_track ? studioTrackDto(row.playable_track) : null,
       albumId: row.release_album_id || null,
       albumName: row.release_album_name || null,
       releaseId: row.release_id || null,
@@ -495,6 +502,39 @@ router.post('/releases/drafts', requireAuth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+router.get('/personas', requireAuth, async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name FROM public.personas WHERE user_id = $1 AND status = 'ready'
+       AND NULLIF(suno_persona_id, '') IS NOT NULL ORDER BY created_at DESC`, [req.user.id],
+    );
+    res.json(result.rows);
+  } catch (error) { next(error); }
+});
+
+router.post('/audio-reference', requireAuth, raw({ type: 'multipart/form-data', limit: '25mb' }), async (req, res, next) => {
+  try {
+    const contentType = req.get('content-type') || '';
+    const multipart = contentType.startsWith('multipart/form-data;');
+    const audioUrl = cleanText(req.body?.audioUrl, 4096);
+    if (!(multipart ? Buffer.isBuffer(req.body) : contentType.startsWith('application/json') && audioUrl)) {
+      return res.status(400).json({ error: 'Добавьте файл MP3, WAV или ссылку на аудио' });
+    }
+    const denoUrl = process.env.DENO_FUNCTIONS_URL;
+    if (!denoUrl) return res.status(503).json({ error: 'Загрузка аудио временно недоступна' });
+    const response = await fetch(denoUrl.replace(/\/$/, '') + '/upload-audio-reference', {
+      method: 'POST', headers: { 'Content-Type': contentType, Authorization: req.get('authorization') },
+      body: multipart ? req.body : JSON.stringify({ audioUrl }),
+      signal: AbortSignal.timeout(110_000),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) return res.status(response.status).json({ error: data?.error || 'Не удалось загрузить аудио' });
+    const reference = issueAudioReference(req.user.id, data?.uploadUrl);
+    if (!reference && !data?.localhostMode) return res.status(502).json({ error: 'Не получена ссылка на загруженное аудио' });
+    res.set('Cache-Control', 'no-store').json({ reference, fileName: data?.fileName, localhostMode: data?.localhostMode === true });
+  } catch (error) { next(error); }
+});
+
 router.get('/generations/:requestId', requireAuth, async (req, res, next) => {
   try {
     if (!validUuid(req.params.requestId)) return res.status(400).json({ error: 'Некорректный идентификатор запроса' });
@@ -535,6 +575,25 @@ router.post('/generations', requireAuth, async (req, res, next) => {
       return res.status(202).json({ requestId: input.requestId, status: params.dispatch_state || 'pending', taskId: params.task_id || null, tracks: prior.rows, replayed: true });
     }
 
+    const audioReferenceUrl = input.audioReference ? readAudioReference(req.user.id, input.audioReference) : undefined;
+    if (input.audioReference && !audioReferenceUrl) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Аудиореференс недоступен. Прикрепите аудио заново' });
+    }
+    let providerPersonaId;
+    if (input.personaId) {
+      const persona = await client.query(
+        `SELECT suno_persona_id FROM public.personas WHERE id = $1 AND user_id = $2
+         AND status = 'ready' AND NULLIF(suno_persona_id, '') IS NOT NULL FOR SHARE`,
+        [input.personaId, req.user.id],
+      );
+      providerPersonaId = persona.rows[0]?.suno_persona_id;
+      if (!providerPersonaId) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Персона недоступна. Выберите её заново' });
+      }
+    }
+
     if (input.songIdeaId) {
       const acceptedIdea = await client.query(
         'SELECT id FROM public.song_idea_discoveries WHERE user_id = $1 AND idea_id = $2 AND accepted_at IS NOT NULL FOR SHARE',
@@ -557,17 +616,17 @@ router.post('/generations', requireAuth, async (req, res, next) => {
     const billing = debit.rows[0];
     const description = input.mode === 'custom' ? input.lyrics || input.style : input.prompt;
     const created = await client.query(
-      `INSERT INTO public.tracks (user_id, title, description, lyrics, status, is_public)
-       VALUES ($1,$2,$3,$4,'pending',false),($1,$2,$3,$4,'pending',false)
+      `INSERT INTO public.tracks (user_id, title, description, lyrics, status, is_public, audio_reference_url)
+       VALUES ($1,$2,$3,$4,'pending',false,$5),($1,$2,$3,$4,'pending',false,$5)
        RETURNING id, title, status, audio_url, cover_url, duration`,
-      [req.user.id, input.title || 'Новый трек', description, input.instrumental ? null : input.lyrics || null],
+      [req.user.id, input.title || 'Новый трек', description, input.instrumental ? null : input.lyrics || null, audioReferenceUrl ?? null],
     );
-    const generationParams = { ...input, studio_payload_hash: payloadHash, dispatch_state: 'dispatching' };
+    const generationParams = { ...input, audioReference: undefined, audio_reference_url: audioReferenceUrl, studio_payload_hash: payloadHash, dispatch_state: 'dispatching' };
     for (const track of created.rows) {
       await client.query(
         `INSERT INTO public.generation_logs (user_id, track_id, request_id, service_id, service_name, provider, provider_operation, provider_model, cost_rub, sale_price_rub, discount_rub, base_cost_credits, generation_params, status)
-         VALUES ($1,$2,$3,$4,'generate_music_v6','sunoapi','generate','V6',$5,$6,$7,$8,$9,'pending')`,
-        [req.user.id, track.id, input.requestId, billing.generation_service_id, Math.ceil(Number(billing.amount_debited) / 2), Math.ceil(Number(billing.generation_sale_price_rub) / 2), Math.ceil(Number(billing.discount_amount) / 2), Number(billing.generation_base_cost_credits || 0) / 2, generationParams],
+         VALUES ($1,$2,$3,$4,'generate_music_v6','sunoapi',$10,'V6',$5,$6,$7,$8,$9,'pending')`,
+        [req.user.id, track.id, input.requestId, billing.generation_service_id, Math.ceil(Number(billing.amount_debited) / 2), Math.ceil(Number(billing.generation_sale_price_rub) / 2), Math.ceil(Number(billing.discount_amount) / 2), Number(billing.generation_base_cost_credits || 0) / 2, generationParams, audioReferenceUrl ? 'upload_cover' : 'generate'],
       );
       await client.query(
         `INSERT INTO public.user_prompts (user_id, track_id, title, description, lyrics, is_public, price)
@@ -584,7 +643,7 @@ router.post('/generations', requireAuth, async (req, res, next) => {
     if (!denoUrl || !authorization) throw new Error('Генератор временно недоступен');
     const run = await fetch(`${denoUrl.replace(/\/$/, '')}/functions/v1/suno-generate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: authorization },
-      body: JSON.stringify(studioSunoPayload(input, created.rows)),
+      body: JSON.stringify(studioSunoPayload(input, created.rows, { personaId: providerPersonaId, audioReferenceUrl })),
     });
     const result = await run.json().catch(() => null);
     const taskId = result?.taskId || result?.task_id || null;

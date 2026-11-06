@@ -14,7 +14,7 @@ try {
   const created = await resolveYandexUser(client, flow);
   assert.ok(created.email_confirmed_at); checks++;
   const before = (await client.query('SELECT balance FROM public.profiles WHERE user_id=$1', [created.id])).rows[0].balance;
-  const again = await resolveYandexUser(client, flow);
+  const again = await resolveYandexUser(client, { ...flow, consent: false });
   assert.equal(again.id, created.id); checks++;
   assert.equal((await client.query('SELECT balance FROM public.profiles WHERE user_id=$1', [created.id])).rows[0].balance, before); checks++;
   await assert.rejects(resolveYandexUser(client, { consent: true, profile: { ...profile, subject: subject + '1' } }), /YANDEX_LINK_REQUIRED/); checks++;

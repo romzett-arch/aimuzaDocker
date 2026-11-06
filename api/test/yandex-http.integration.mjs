@@ -38,6 +38,10 @@ try {
     assert.equal(r.status, 422); checks++;
     assert.equal((await r.json()).error, 'YANDEX_CONSENT_REQUIRED'); checks++;
   }
+  r = await post('/yandex/start', { binding: digest(binding), destination: 'studio', loginOnly: true, consent: true, consentVersion: 'yandex-2026-11-03' });
+  assert.equal(r.status, 200); checks++;
+  const loginStateHash = digest(new URL((await r.json()).url).searchParams.get('state'));
+  assert.equal((await connection.query('SELECT consent FROM auth.yandex_flows WHERE state_hash=$1', [loginStateHash])).rows[0].consent, false); checks++;
   r = await post('/yandex/start', { binding: digest(binding), destination: 'site', consent: true, consentVersion: 'yandex-2026-11-03' });
   assert.equal(r.status, 200); checks++;
   const authorize = new URL((await r.json()).url);
