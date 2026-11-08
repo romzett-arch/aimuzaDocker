@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { needsNickname } from '../security/profile-onboarding.js';
 import { normalizeStudioGeneration as normalizeInput, studioSunoPayload } from '../services/studio-generation-input.js';
 import { issueAudioReference, readAudioReference } from '../services/studio-audio-reference.js';
+import { createStudioTracksRouter } from '../services/studio-tracks.js';
 
 const router = Router();
 
@@ -128,58 +129,8 @@ router.get('/lyrics', requireAuth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-function studioTrackDto(track) {
-  return {
-    id: track.id,
-    title: track.title || 'Новый трек',
-    prompt: track.description || '',
-    lyrics: track.lyrics || null,
-    styleTags: '[]',
-    instrumental: track.instrumental ?? false,
-    status: track.status === 'pending' ? 'queued' : track.status,
-    stage: track.status === 'completed' ? 'Готово' : track.status === 'failed' ? 'Ошибка' : 'Генерация',
-    progress: track.status === 'completed' ? 100 : track.status === 'processing' ? 55 : 10,
-    audioUrl: track.audio_url || null,
-    coverUrl: track.cover_url || null,
-    duration: Number(track.duration || 0),
-    performerName: track.performer_name || null,
-    musicAuthor: track.music_author || null,
-    lyricsAuthor: track.lyrics_author || null,
-    waveform: null,
-    liked: false,
-    plays: 0,
-    featured: false,
-    createdAt: track.created_at,
-    updatedAt: track.updated_at,
-    hasRelease: track.has_release,
-    listened: track.listened,
-    hasWav: false,
-    wavOwned: false,
-    vocalSeparationStatus: track.vocal_separation_status || null,
-    vocalSeparationResults: track.vocal_separation_results || null,
-  };
-}
-
-router.get('/tracks', requireAuth, async (req, res, next) => {
-  try {
-    await pollPendingGenerations(req.user.id, req.get('authorization'));
-    await pollPendingSeparations(req.user.id, req.get('authorization'));
-    const result = await pool.query(
-      `SELECT COALESCE((SELECT (g.generation_params->>'instrumental')::boolean FROM public.generation_logs g WHERE g.track_id=t.id ORDER BY g.created_at DESC LIMIT 1),false) AS instrumental, t.id, t.title, t.description, t.lyrics, t.performer_name, t.music_author, t.lyrics_author, t.status, t.audio_url, t.cover_url, t.duration,
-              t.created_at, t.updated_at,
-              EXISTS (SELECT 1 FROM public.user_listened_tracks l WHERE l.track_id = t.id AND l.user_id = $1) AS listened,
-              EXISTS (SELECT 1 FROM public.silk_releases r WHERE r.source_track_id = t.id AND r.user_id = t.user_id) AS has_release,
-              (SELECT s.status FROM public.audio_separations s WHERE s.track_id = t.id ORDER BY s.created_at DESC LIMIT 1) AS vocal_separation_status,
-              (SELECT s.result_urls FROM public.audio_separations s WHERE s.track_id = t.id ORDER BY s.created_at DESC LIMIT 1) AS vocal_separation_results
-       FROM public.tracks t
-       WHERE t.user_id = $1 AND COALESCE(t.is_in_my_releases, FALSE) = FALSE
-       ORDER BY t.created_at DESC
-       LIMIT 100`,
-      [req.user.id],
-    );
-    res.json(result.rows.map(studioTrackDto));
-  } catch (error) { next(error); }
-});
+// Библиотека треков (GET /tracks) живёт в services/studio-tracks.js.
+router.use(createStudioTracksRouter({ pollPendingGenerations, pollPendingSeparations }));
 
 router.post('/tracks/:trackId/listened', requireAuth, async (req, res, next) => {
   try {
