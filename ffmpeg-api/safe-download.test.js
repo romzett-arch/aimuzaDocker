@@ -9,3 +9,8 @@ test('DNS validation rejects all local and mapped address families',()=>{
  for(const ip of ['0.0.0.0','127.0.0.1','10.1.2.3','172.31.0.1','192.168.1.1','169.254.169.254','100.64.0.1','224.0.0.1','::1','::ffff:127.0.0.1','fe80::1','fc00::1']) assert.equal(publicAddress(ip),false,ip);
  assert.equal(publicAddress('8.8.8.8'),true);assert.equal(publicAddress('2606:4700:4700::1111'),true);
 });
+test('accepts the exact HTTPS origin used by the WAV provider', () => {
+  assert.equal(classifyUrl('https://tempfile.aiquickdraw.com/export.wav').internal, false);
+  assert.throws(() => classifyUrl('http://tempfile.aiquickdraw.com/export.wav'));
+  assert.throws(() => classifyUrl('https://tempfile.aiquickdraw.com.attacker.example/export.wav'));
+});

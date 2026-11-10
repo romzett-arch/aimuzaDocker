@@ -15,7 +15,13 @@ function publicAddress(address) {
   // Global-unicast IPv6 only; mapped IPv4 and all local ranges are excluded.
   return net.isIP(address)===6 && /^[23][0-9a-f]{3}:/i.test(address);
 }
-const origins = new Set(['https://aimuza.ru','https://app.aimuza.ru','https://cdn1.suno.ai','https://cdn2.suno.ai','https://cdn1.sunoapi.org','https://cdn.erweima.ai','https://audiopipe.suno.ai',...(process.env.MEDIA_ALLOWED_ORIGINS||'').split(',').filter(Boolean)]);
+const origins = new Set([
+  'https://aimuza.ru', 'https://app.aimuza.ru',
+  'https://cdn1.suno.ai', 'https://cdn2.suno.ai', 'https://cdn1.sunoapi.org',
+  'https://cdn.erweima.ai', 'https://audiopipe.suno.ai',
+  'https://tempfile.aiquickdraw.com',
+  ...(process.env.MEDIA_ALLOWED_ORIGINS||'').split(',').filter(Boolean),
+]);
 function classifyUrl(raw) {
   const url=new URL(raw);
   if (url.username || url.password || url.hash) throw new Error('Invalid media URL');
