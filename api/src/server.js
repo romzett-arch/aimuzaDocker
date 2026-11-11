@@ -35,6 +35,8 @@ import restRouter from './routes/rest.js';
 import rpcRouter from './routes/rpc.js';
 import storageRouter from './routes/storage.js';
 import emailRouter from './routes/email.js';
+import imageGenerationRouter from './routes/image-generation.js';
+import { startImageRecovery } from './services/image-generation.js';
 import functionsRouter from './routes/functions.js';
 import studioRouter from './routes/studio.js';
 import legalRouter from './routes/legal.js';
@@ -172,6 +174,7 @@ app.use('/storage/v1', storageRouter);
 app.use('/studio/v1', studioRouter);
 app.use('/api/legal', legalRouter);
 app.use('/functions/v1', emailRouter);       // Email — обрабатывается в Node.js (не Deno)
+app.use('/functions/v1', imageGenerationRouter);
 app.use('/functions/v1', functionsRouter);    // Остальные функции — проксируются в Deno
 
 app.use((err, req, res, next) => {
@@ -193,6 +196,7 @@ async function start() {
     startVotingLifecycle();
     startMediaLifecycle();
     startLyricsRecovery();
+    startImageRecovery();
     startLegalWorker();
   });
   server.requestTimeout=120000;
