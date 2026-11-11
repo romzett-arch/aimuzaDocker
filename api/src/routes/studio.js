@@ -5,7 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { needsNickname } from '../security/profile-onboarding.js';
 import { normalizeStudioGeneration as normalizeInput, studioSunoPayload } from '../services/studio-generation-input.js';
 import { issueAudioReference, readAudioReference } from '../services/studio-audio-reference.js';
-import { createStudioTracksRouter } from '../services/studio-tracks.js';
+import { createStudioTracksRouter, studioTrackDto } from '../services/studio-tracks.js';
 
 const router = Router();
 

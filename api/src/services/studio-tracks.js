@@ -23,7 +23,7 @@ function reuseSettingsDto(params) {
   };
 }
 
-function studioTrackDto(track) {
+export function studioTrackDto(track) {
   const params = track.generation_params;
   return {
     id: track.id,
