@@ -10,11 +10,42 @@ export async function imageHistory(userId) {
   )).rows;
 }
 
+export async function imageGallery(userId, cursor) {
+  const limit = 12;
+  const { rows } = await pool.query(
+    `SELECT ${metadata} FROM public.image_generation_jobs
+     WHERE user_id=$1 AND status='completed' AND image IS NOT NULL
+       AND ($2::uuid IS NULL OR (created_at,id) < (
+         SELECT created_at,id FROM public.image_generation_jobs WHERE user_id=$1 AND id=$2
+       ))
+     ORDER BY created_at DESC,id DESC LIMIT $3`, [userId, cursor, limit + 1],
+  );
+  const items = rows.slice(0, limit);
+  return { items, nextCursor: rows.length > limit ? items.at(-1).id : null };
+}
+
 export async function getGeneratedImage(userId, id) {
   return (await pool.query(
-    'SELECT image, mime_type FROM public.image_generation_jobs WHERE user_id=$1 AND id=$2 AND status=\'completed\'',
+    'SELECT image, mime_type, resolution FROM public.image_generation_jobs WHERE user_id=$1 AND id=$2 AND status=\'completed\'',
     [userId, id],
   )).rows[0];
+}
+
+export async function getImageJob(userId, id) {
+  return (await pool.query(
+    `SELECT ${metadata} FROM public.image_generation_jobs WHERE user_id=$1 AND id=$2`, [userId, id],
+  )).rows[0];
+}
+
+export async function savePreparedCover(userId, id, image, resolution) {
+  const result = await pool.query(
+    `INSERT INTO public.image_generation_jobs
+       (user_id,id,prompt,aspect_ratio,resolution,status,image,mime_type)
+     VALUES ($1,$2,'Подготовленная обложка','1:1',$3,'completed',$4,'image/jpeg')
+     ON CONFLICT (user_id,id) DO NOTHING RETURNING ${metadata}`,
+    [userId, id, resolution, image],
+  );
+  return result.rows[0] ?? getImageJob(userId, id);
 }
 
 export async function reserveImage(userId, input) {

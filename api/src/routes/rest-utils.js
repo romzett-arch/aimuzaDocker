@@ -218,7 +218,7 @@ export function parseSelect(selectStr, mainTable, user) {
       const fTable = rawTable === "user_id" && alias === "profiles" ? "profiles" : rawTable;
       const fCols = fColsStr.split(',').map(c => c.trim()).filter(c => /^[a-zA-Z_]\w*$/.test(c));
       if (fCols.length > 0) {
-        assertJoinColumns(fTable,fCols,user);
+        assertJoinColumns(fTable,fCols,user,mainTable);
         const jsonParts = fCols.map(c => `'${c}', ft."${c}"`).join(', ');
         const fkCol = fTable === "profiles" ? "user_id" : `${alias}_id`;
         const targetKey = fTable === "profiles" ? "user_id" : "id";
@@ -228,7 +228,7 @@ export function parseSelect(selectStr, mainTable, user) {
       const [, fTable, fColsStr] = simpleJoinMatch;
       const fCols = fColsStr.split(',').map(c => c.trim()).filter(c => /^[a-zA-Z_]\w*$/.test(c));
       if (fCols.length > 0) {
-        assertJoinColumns(fTable,fCols,user);
+        assertJoinColumns(fTable,fCols,user,mainTable);
         const jsonParts = fCols.map(c => `'${c}', ft."${c}"`).join(', ');
         const baseTable = fTable.replace(/^forum_/, '');
         const singularTable = baseTable.endsWith('ies')

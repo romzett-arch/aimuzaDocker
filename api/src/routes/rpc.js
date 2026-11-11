@@ -59,7 +59,7 @@ const ALLOWED_RPC = new Set([
   'generate_share_token', 'get_ad_for_slot', 'get_public_ad_settings', 'request_ad_for_slot', 'get_boosted_tracks', 'get_track_boost_state', 'get_my_active_track_boosts',
   'get_active_announcements', 'get_catalog_visible_author_ids', 'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
   'get_feed_tracks_with_profiles', 'get_hero_stats', 'get_last_messages',
-  'get_marketplace_items', 'get_my_sanction_status', 'get_my_weighted_vote', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
+  'get_marketplace_items', 'get_my_marketplace_commission', 'get_my_sanction_status', 'get_my_weighted_vote', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
   'get_my_referral_stats', 'get_referral_overview', 'get_public_progression_config',
   'get_qa_leaderboard', 'get_qa_ticket_comment_counts', 'get_radio_listeners', 'get_radio_smart_queue',
   'get_l2e_admin_stats', 'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',

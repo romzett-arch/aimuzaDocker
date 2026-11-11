@@ -62,7 +62,7 @@ export function coreReadColumns(table,user,query,columns) {
   for (const name of columns.matchAll(/"([a-zA-Z_][a-zA-Z0-9_]*)"/g)) if (!PUBLIC_PROFILE_COLUMNS.has(name[1])) throw accessError();
   return columns;
 }
-export function assertJoinColumns(table,columns,user) {
+export function assertJoinColumns(table,columns,user,sourceTable) {
   if (user?.role==='service_role') return;
   if (table==='profiles' || table==='profiles_public') {
     if (columns.every(c=>PUBLIC_PROFILE_COLUMNS.has(c))) return;
@@ -70,6 +70,11 @@ export function assertJoinColumns(table,columns,user) {
   else if (table==='ai_models' && columns.every(c=>['id','name','is_hot'].includes(c))) return;
   else if (table==='permission_categories' && columns.every(c=>['id','key'].includes(c))) return;
   // The subquery still runs as anon/authenticated, so tracks RLS also applies.
-  else if (table==='tracks' && columns.every(c=>['id','title','cover_url','audio_url'].includes(c))) return;
+  else if (table==='tracks') {
+    const allowed = ['id','title','cover_url','audio_url'];
+    if (user?.id && sourceTable === 'public."lyrics_items"') allowed.push('duration', 'user_id');
+    if (user?.id && sourceTable === 'public."user_prompts"') allowed.push('status');
+    if (columns.every(c=>allowed.includes(c))) return;
+  }
   throw accessError(403,'Embedded selection is not public');
 }
