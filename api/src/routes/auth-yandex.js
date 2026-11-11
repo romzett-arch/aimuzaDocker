@@ -35,6 +35,7 @@ export async function resolveYandexUser(client, flow) {
   const metadata = { provider: 'yandex', session_version: 0, nickname_required: true, username: 'ya_' + secret().slice(0, 24),
     registration_consents: { source: 'yandex', schema: 'yandex-2026-11-03', license_agreement: true, audit_policy: true, personal_data: true, accepted_at: new Date().toISOString() },
     studio_consents: { terms: '2026-11-02', privacy: '2026-11-02', accepted_at: new Date().toISOString() } };
+  if (flow.referral_code) metadata.signup_referral_code = flow.referral_code;
   const user = (await client.query(`INSERT INTO auth.users(email,encrypted_password,email_confirmed_at,raw_user_meta_data,created_at,updated_at)
     VALUES($1,$2,now(),$3,now(),now()) RETURNING *`, [profile.email, password, metadata])).rows[0];
   const username = 'ya_' + user.id.replaceAll('-', '');
@@ -61,10 +62,12 @@ export function registerYandexId(router, database = pool) {
       if (!link && !loginOnly && (consent !== true || consentVersion !== 'yandex-2026-11-03')) return res.status(422).json({ error: 'YANDEX_CONSENT_REQUIRED' });
       const expectedOrigin = destination === 'site' ? config.site : config.studio;
       if (req.headers.origin && req.headers.origin !== expectedOrigin) fail('YANDEX_INVALID_ORIGIN');
+      const candidate = req.body.referralCode;
+      const referralCode = destination === 'site' && !link && !loginOnly && typeof candidate === 'string' && /^[a-z0-9_-]{3,20}$/i.test(candidate) ? candidate.toLowerCase() : null;
       const state = secret(), verifier = secret();
       await database.query('DELETE FROM auth.yandex_flows WHERE expires_at<now()');
-      await database.query(`INSERT INTO auth.yandex_flows(state_hash,binding_hash,verifier,destination,link_user_id,link_version,consent)
-        VALUES($1,$2,$3,$4,$5,$6,$7)`, [digest(state), binding, verifier, destination, link ? req.user.id : null, link ? req.user.session_version : null, !loginOnly && consent === true]);
+      await database.query(`INSERT INTO auth.yandex_flows(state_hash,binding_hash,verifier,destination,link_user_id,link_version,consent,referral_code)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, [digest(state), binding, verifier, destination, link ? req.user.id : null, link ? req.user.session_version : null, !loginOnly && consent === true, referralCode]);
       res.json({ url: authorizeUrl(config, state, verifier) });
     } catch { res.status(400).json({ error: 'YANDEX_START_FAILED' }); }
   });
@@ -80,8 +83,8 @@ export function registerYandexId(router, database = pool) {
       if (req.query.error) fail('YANDEX_CANCELLED');
       const profile = await providerProfile(configuration(), flow, req.query);
       const ticket = secret();
-      await client.query(`INSERT INTO auth.yandex_flows(state_hash,binding_hash,verifier,destination,link_user_id,link_version,consent,profile,ticket_hash,expires_at)
-        VALUES($1,$2,'',$3,$4,$5,$6,$7,$8,now()+interval '90 seconds')`, [flow.state_hash, flow.binding_hash, flow.destination, flow.link_user_id, flow.link_version, flow.consent, profile, digest(ticket)]);
+      await client.query(`INSERT INTO auth.yandex_flows(state_hash,binding_hash,verifier,destination,link_user_id,link_version,consent,profile,ticket_hash,expires_at,referral_code)
+        VALUES($1,$2,'',$3,$4,$5,$6,$7,$8,now()+interval '90 seconds',$9)`, [flow.state_hash, flow.binding_hash, flow.destination, flow.link_user_id, flow.link_version, flow.consent, profile, digest(ticket), flow.referral_code]);
       res.redirect(303, finishUrl(configuration(), flow.destination, ticket));
     } catch (error) {
       const config = configuration();

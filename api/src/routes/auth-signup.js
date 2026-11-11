@@ -6,7 +6,7 @@ import { PASSWORD_POLICY_MESSAGE, validatePassword } from '../security/password.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const BCRYPT_ROUNDS = 12;
 
-export function registerSignup(router) {
+export function registerSignup(router, database = pool) {
   router.post('/signup', async (req, res) => {
     try {
       const { email, password } = req.body;
@@ -23,7 +23,7 @@ export function registerSignup(router) {
         return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
       }
 
-      const existing = await pool.query('SELECT id FROM auth.users WHERE email = $1', [normalizedEmail]);
+      const existing = await database.query('SELECT id FROM auth.users WHERE email = $1', [normalizedEmail]);
       if (existing.rows.length > 0) {
         return res.status(200).json({
           message: 'If this email is not registered, a confirmation will be sent.',
@@ -33,9 +33,13 @@ export function registerSignup(router) {
       const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
       const usernameFromBody = req.body.data?.username || req.body.options?.data?.username || normalizedEmail.split('@')[0];
       const metadata = { username: String(usernameFromBody).slice(0,80), session_version: 0 };
+      const referralCode = req.body.data?.signup_referral_code ?? req.body.options?.data?.signup_referral_code;
+      if (typeof referralCode === 'string' && /^[a-z0-9_-]{3,20}$/i.test(referralCode)) {
+        metadata.signup_referral_code = referralCode.toLowerCase();
+      }
       if (req.body.data?.studio_consents === true) metadata.studio_consents = { terms: '2026-11-02', privacy: '2026-11-02', accepted_at: new Date().toISOString() };
 
-      const result = await pool.query(
+      const result = await database.query(
         `INSERT INTO auth.users (email, encrypted_password, email_confirmed_at, raw_user_meta_data, created_at, updated_at)
          VALUES ($1, $2, NULL, $3::jsonb, now(), now())
          RETURNING id, email, created_at`,
@@ -46,7 +50,7 @@ export function registerSignup(router) {
       user.raw_user_meta_data = metadata;
       user.session_version = 0;
 
-      await pool.query(
+      await database.query(
         `INSERT INTO public.profiles (user_id, username, display_name, email, balance, created_at, updated_at)
          VALUES ($1, $2, $2, $3, 100, now(), now())
          ON CONFLICT (user_id) DO UPDATE SET
