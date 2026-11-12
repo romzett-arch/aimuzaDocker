@@ -7,7 +7,7 @@ function toReachableAudioUrl(url: string, ffmpegApiUrl?: string): string {
   try {
     const target = new URL(url);
     if (target.pathname.startsWith("/api/ffmpeg/")) {
-      const baseUrl = ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "").replace(/\/$/, "");
+      const baseUrl = ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav|convert-format)\/?$/, "").replace(/\/$/, "");
       return `${baseUrl}${target.pathname.replace(/^\/api\/ffmpeg/, "")}${target.search}`;
     }
   } catch {
@@ -44,8 +44,18 @@ async function isUsableAudioUrl(url: string, ffmpegApiUrl?: string): Promise<boo
   }
 }
 
-export async function processWavViaFfmpeg(
-  rawWavUrl: string,
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Конвертирует мастер-MP3 трека в WAV 24-bit 44.1kHz через ffmpeg-api `/convert-format`.
+ * Возвращает публичный URL результата (с кэшем на стороне ffmpeg-api) либо null.
+ */
+export async function convertMp3ToWavViaFfmpeg(
+  sourceUrl: string,
+  trackId: string,
   trackTitle: string,
   artistName: string,
   publisherName: string,
@@ -55,28 +65,33 @@ export async function processWavViaFfmpeg(
   ffmpegPublicUrl?: string,
 ): Promise<string | null> {
   try {
-    const baseUrl = ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav)\/?$/, "");
-    console.log(`[convert-wav] Processing WAV via ffmpeg-api: ${baseUrl}/process-wav`);
+    const baseUrl = ffmpegApiUrl.replace(/\/(clean-metadata|analyze|normalize|process-wav|convert-format)\/?$/, "");
+    const metadata = {
+      title: trackTitle || "",
+      artist: artistName || "AIMuza Artist",
+      album: "AIMuza WAV Export",
+      publisher: publisherName || "AIMuza",
+      copyright: `© ${new Date().getFullYear()} ${artistName || "AIMuza Artist"} via ${publisherName || "AIMuza"}`,
+      comment: `Generated with AIMuza - aimuza.ru | Cabinet ID: ${cabinetId}`,
+      TXXX_AIMUZA_CABINET_ID: cabinetId || "",
+      TXXX_AIMUZA_PUBLISHER: publisherName || "AIMuza",
+    };
+    const cacheKey = await sha256Hex(
+      JSON.stringify({ version: 1, kind: "convert-wav-addon", trackId, sourceUrl, metadata, format: "wav" }),
+    );
+    console.log(`[convert-wav] Converting master to WAV via ffmpeg-api: ${baseUrl}/convert-format`);
 
-    const resp = await fetch(`${baseUrl}/process-wav`, {
+    const resp = await fetch(`${baseUrl}/convert-format`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-api-key": ffmpegApiSecret,
       },
       body: JSON.stringify({
-        audio_url: rawWavUrl,
-        target_lufs: -10,
-        metadata: {
-          title: trackTitle || "",
-          artist: artistName || "AIMuza Artist",
-          album: "AIMuza WAV Export",
-          publisher: publisherName || "AIMuza",
-          copyright: `© ${new Date().getFullYear()} ${artistName || "AIMuza Artist"} via ${publisherName || "AIMuza"}`,
-          comment: `Generated with AIMuza - aimuza.ru | Cabinet ID: ${cabinetId}`,
-          TXXX_AIMUZA_CABINET_ID: cabinetId || "",
-          TXXX_AIMUZA_PUBLISHER: publisherName || "AIMuza",
-        },
+        audio_url: sourceUrl,
+        format: "wav",
+        metadata,
+        cache_key: cacheKey,
       }),
     });
 
@@ -88,12 +103,12 @@ export async function processWavViaFfmpeg(
 
     const result = await resp.json();
     let outputUrl = result.output_url;
-    console.log(`[convert-wav] ffmpeg-api processed OK: ${outputUrl}, LUFS ${result.original_lufs} → ${result.normalized_lufs}`);
+    console.log(`[convert-wav] ffmpeg-api converted OK: ${outputUrl}, cache_hit: ${result.cache_hit}`);
 
     if (outputUrl && outputUrl.includes("/output/")) {
       const filename = outputUrl.split("/output/").pop();
       if (filename) {
-        const publicBase = ffmpegPublicUrl || baseUrl;
+        const publicBase = (ffmpegPublicUrl || baseUrl).replace(/\/$/, "");
         outputUrl = `${publicBase}/output/${filename}`;
         console.log(`[convert-wav] Public URL: ${outputUrl}`);
       }
@@ -112,7 +127,7 @@ export async function processWavViaFfmpeg(
 
     return outputUrl;
   } catch (err) {
-    console.error(`[convert-wav] ffmpeg processing error:`, err);
+    console.error(`[convert-wav] ffmpeg conversion error:`, err);
     return null;
   }
 }
@@ -120,11 +135,15 @@ export async function processWavViaFfmpeg(
 export async function copyWavToStorage(
   supabaseAdmin: SupabaseClient,
   externalUrl: string,
-  trackId: string
+  trackId: string,
+  ffmpegApiUrl?: string
 ): Promise<string | null> {
   try {
-    console.log(`[convert-wav] Downloading WAV from: ${externalUrl}`);
-    const response = await safeMediaFetch(externalUrl);
+    // Качаем через внутренний адрес ffmpeg-api: публичный /api/ffmpeg/... origin
+    // может быть запрещён safeMediaFetch (например, http://localhost на локалке).
+    const fetchUrl = toReachableAudioUrl(externalUrl, ffmpegApiUrl);
+    console.log(`[convert-wav] Downloading WAV from: ${fetchUrl}`);
+    const response = await safeMediaFetch(fetchUrl);
     if (!response.ok) {
       console.error(`[convert-wav] Download failed: ${response.status}`);
       return null;
