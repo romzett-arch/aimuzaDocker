@@ -4,6 +4,15 @@
     "https://deno.land/std@0.190.0/http/server.ts": "./shared/serve-shim.ts",
     "https://esm.sh/@supabase/supabase-js@2": "https://esm.sh/@supabase/supabase-js@2.90.1",
     "https://esm.sh/@supabase/supabase-js@2.39.3": "https://esm.sh/@supabase/supabase-js@2.90.1",
-    "https://esm.sh/@supabase/supabase-js@2.49.1": "https://esm.sh/@supabase/supabase-js@2.90.1"
+    "https://esm.sh/@supabase/supabase-js@2.49.1": "https://esm.sh/@supabase/supabase-js@2.90.1",
+    "https://esm.sh/@supabase/supabase-js@2.90.1": "./shared/vendor/supabase-js.mjs",
+    "https://esm.sh/@supabase/auth-js@2.90.1/denonext/auth-js.mjs": "./shared/vendor/auth-js.mjs",
+    "https://esm.sh/@supabase/functions-js@2.90.1/denonext/functions-js.mjs": "./shared/vendor/functions-js.mjs",
+    "https://esm.sh/@supabase/postgrest-js@2.90.1/denonext/postgrest-js.mjs": "./shared/vendor/postgrest-js.mjs",
+    "https://esm.sh/@supabase/realtime-js@2.90.1/denonext/realtime-js.mjs": "./shared/vendor/realtime-js.mjs",
+    "https://esm.sh/@supabase/storage-js@2.90.1/denonext/storage-js.mjs": "./shared/vendor/storage-js.mjs",
+    "https://esm.sh/tslib@2.8.1/denonext/tslib.mjs": "./shared/vendor/tslib.mjs",
+    "https://esm.sh/iceberg-js@^0.8.1?target=denonext": "./shared/vendor/iceberg-js.mjs",
+    "https://esm.sh/@supabase/supabase-js@2.90.1/denonext/supabase-js.mjs": "./shared/vendor/supabase-js.mjs"
   }
 }

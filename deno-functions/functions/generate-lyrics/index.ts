@@ -9,6 +9,7 @@ const corsHeaders = {
 import { recoverLyricsJob } from "../_shared/lyrics-results.ts";
 
 const API_BASE = "https://api.sunoapi.org";
+// Лимит описания: провайдер Suno принимает максимум 200 символов.
 const PROMPT_LIMIT = 200;
 
 serve(async (req) => {
