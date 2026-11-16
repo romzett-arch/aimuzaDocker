@@ -13,6 +13,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { publicCacheControl } from '../services/storage-cache-policy.js';
 import { pool } from '../db.js';
 import { assertOwnedMediaPath } from '../security/storage-path-policy.js';
 import { assertMediaSigningAccess } from '../security/storage-sign-policy.js';
@@ -474,7 +475,7 @@ router.get('/object/public/:bucket/*', async (req, res) => {
       res.set('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: https:");
     }
     res.set('Content-Type', mime);
-    res.set('Cache-Control', ext === '.html' ? 'no-store, max-age=0' : 'public, max-age=86400');
+    res.set('Cache-Control', publicCacheControl(bucket, filePath, ext));
     res.set('Cross-Origin-Resource-Policy', 'cross-origin');
     res.set('Access-Control-Allow-Origin', '*');
     res.set('X-Content-Type-Options', 'nosniff');
