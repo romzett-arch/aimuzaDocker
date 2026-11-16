@@ -60,6 +60,63 @@ router.post('/release-package-cover', requireServiceRole, async (req, res, next)
   } catch (error) { next(error); }
 });
 
+// ─── RouterAI: баланс провайдера генерации картинок (только админы) ──────────
+// Ключ провайдера живёт в env API-сервера, поэтому баланс админка получает
+// этим эндпоинтом. Кэш на 60 секунд — админка не бьёт провайдера каждым
+// открытием вкладки. Site URL отдаётся для ссылки в настройках.
+const routerAiCache = { data: null, at: 0 };
+
+async function fetchRouterJson(path, apiKey) {
+  const response = await fetch(`https://routerai.ru/${path}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    redirect: 'error',
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`RouterAI HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+router.get('/routerai-credits', requireAuth, async (req, res, next) => {
+  try {
+    const role = String(req.user?.app_role || '').toLowerCase();
+    const isAdmin = req.user?.role === 'service_role' || role === 'admin' || role === 'super_admin' || role === 'superadmin';
+    if (!isAdmin) return res.status(403).json({ error: 'Forbidden', code: 'ADMIN_REQUIRED' });
+
+    const payload = {
+      available: true,
+      site_url: 'https://routerai.ru',
+      model: 'bytedance-seed/seedream-5-0-flash',
+    };
+    const now = Date.now();
+    if (routerAiCache.data && now - routerAiCache.at < 60_000) {
+      return res.json({ ...payload, ...routerAiCache.data });
+    }
+    const apiKey = process.env.ROUTERAI_IMAGE_API_KEY?.trim();
+    if (!apiKey) return res.json({ ...payload, available: false });
+    try {
+      const [creditsRes, keyRes] = await Promise.all([
+        fetchRouterJson('api/v1/credits', apiKey),
+        fetchRouterJson('api/v1/key', apiKey),
+      ]);
+      const data = {
+        credits: Number(creditsRes?.data?.credits) || null,
+        usage_monthly: Number(keyRes?.data?.usage_monthly) || null,
+        key_name: keyRes?.data?.name || null,
+        checked_at: new Date().toISOString(),
+      };
+      routerAiCache.data = data;
+      routerAiCache.at = now;
+      return res.json({ ...payload, ...data });
+    } catch (error) {
+      console.warn('[routerai credits]', error.message);
+      return res.json({ ...payload, available: false, error: 'PROVIDER_UNAVAILABLE' });
+    }
+  } catch (error) { next(error); }
+});
+
 async function requestImage({ prompt, ratio, resolution, reference }, apiKey) {
   const response = await fetch('https://routerai.ru/api/v1/images', {
     method: 'POST',
