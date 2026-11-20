@@ -35,15 +35,17 @@ test("queues generation and sends a finished file to the same private chat", {ti
   const save=store.saveJob;
   store.saveJob=job=>save(job,0);
   const actions=[];
+  const sends=[];
   const delivered=Promise.withResolvers();
   const stop=startChatWorkers({
     store,
+    siteUrl:"https://aimuza.test",
     handle:async ()=>{},
     api:async (action,event,body)=>{
       actions.push(action);
       assert.equal(event.userId,25);
       assert.equal(body.ownerId,"owner");
-      if (action==="status") return {pending:false,items:[{id:"file",title:"Готовый трек"}]};
+      if (action==="status") return {pending:false,items:[{id:"file",title:"Готовый трек",audioUrl:"http://localhost/storage/v1/object/public/tracks/audio/file.mp3"}]};
       if (action==="media") return new Blob(["mp3"],{type:"audio/mpeg"});
       return {};
     },
@@ -54,6 +56,7 @@ test("queues generation and sends a finished file to the same private chat", {ti
         return {type:"audio",payload:{token:"test-token"}};
       },
       send:async (event,body)=>{
+        sends.push(body);
         delivered.resolve({chatId:event.chatId,body});
       },
     },
@@ -65,6 +68,13 @@ test("queues generation and sends a finished file to the same private chat", {ti
   assert.deepEqual(actions,["start","status","profile","media","profile"]);
   assert.equal(result.chatId,40);
   assert.equal(result.body.attachments[0].type,"audio");
+  const info=sends.find(message=>message.text.startsWith("🌍"));
+  assert.ok(info,"info message delivered");
+  const buttons=info.attachments[0].payload.buttons.flat();
+  const download=buttons.find(button=>button.type==="link"&&button.text.startsWith("⬇️"));
+  assert.equal(download.text,"⬇️ Скачать MP3");
+  assert.equal(download.url,"https://aimuza.test/storage/v1/object/public/tracks/audio/file.mp3");
+  assert.ok(buttons.some(button=>button.text==="🔕 Не напоминать"));
   assert.equal(store.nextJob(),undefined);
 });
 
@@ -161,6 +171,30 @@ test("starts in MAX, generates all formats and switches to a linked account", as
   await send("Только в MAX");
   await send("Баланс");
   assert.match(sent.at(-1).text,/50 ₽/);
+});
+
+test("mutes the post-track info and re-enables it from the profile", async t=>{
+  const store=createChatStore(":memory:");
+  t.after(store.close);
+  const sent=[];
+  const handle=createChatHandler({
+    store,siteUrl:"https://aimuza.test",
+    max:{send:async (_event,body)=>sent.push(body)},
+    api:async (action,_event)=>{
+      if (action==="profile") return {ownerId:"max",balance:50,mode:"max",siteLinked:false,music:28,image:5,lyrics:3};
+      assert.fail(`Unexpected action: ${action}`);
+    },
+  });
+  const send=(text,key=text)=>handle({key,userId:25,chatId:40,text});
+  await send("🔕 Не напоминать");
+  assert.match(sent.at(-1).text,/Профиль/);
+  assert.equal(store.setting(25).siteInfoMuted,true);
+  await send("Профиль");
+  assert.ok(sent.at(-1).attachments[0].payload.buttons.flat().some(button=>button.text==="🔔 Напоминать про сайт"));
+  await send("🔔 Напоминать про сайт");
+  assert.equal(store.setting(25).siteInfoMuted,false);
+  await send("Профиль");
+  assert.ok(!sent.at(-1).attachments[0].payload.buttons.flat().some(button=>button.text==="🔔 Напоминать про сайт"));
 });
 
 test("delivers generated lyrics as a message to their owner", {timeout:8000}, async t=>{

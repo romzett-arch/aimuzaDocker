@@ -76,7 +76,7 @@ async function start(account, { kind, id, prompt, price, lyricsId }) {
 
 async function musicStatus(account, id) {
   const load = () => pool.query(
-    `SELECT t.id,t.title,t.status,t.audio_url IS NOT NULL AS ready,l.generation_params->>'task_id' AS task
+    `SELECT t.id,t.title,t.status,t.audio_url,t.audio_url IS NOT NULL AS ready,l.generation_params->>'task_id' AS task
      FROM public.generation_logs l JOIN public.tracks t ON t.id=l.track_id
      WHERE l.user_id=$1 AND t.user_id=$1 AND l.request_id=$2 ORDER BY l.created_at,t.id`, [account.id,id],
   );
@@ -88,7 +88,7 @@ async function musicStatus(account, id) {
   }
   return {
     pending: rows.some(item => ['pending','processing'].includes(item.status)),
-    items: rows.filter(item => item.status==='completed' && item.ready).map(({id,title}) => ({id,title})),
+    items: rows.filter(item => item.status==='completed' && item.ready).map(({id,title,audio_url}) => ({id,title,audioUrl:audio_url})),
   };
 }
 
@@ -107,9 +107,10 @@ async function works(account, { kind, page = 0 }) {
     }));
   } else {
     const query = kind === 'music'
-      ? "SELECT id,title,status,audio_url IS NOT NULL AND status='completed' AS ready FROM public.tracks WHERE user_id=$1"
-      : "SELECT id,title,'completed' AS status,true AS ready FROM public.generated_lyrics WHERE user_id=$1 AND NULLIF(lyrics,'') IS NOT NULL";
-    entries = (await pool.query(`${query} ORDER BY created_at DESC,id DESC LIMIT 6 OFFSET $2`, [account.id, offset])).rows;
+      ? "SELECT id,title,status,audio_url IS NOT NULL AND status='completed' AS ready,audio_url FROM public.tracks WHERE user_id=$1"
+      : "SELECT id,title,'completed' AS status,true AS ready,NULL::text AS audio_url FROM public.generated_lyrics WHERE user_id=$1 AND NULLIF(lyrics,'') IS NOT NULL";
+    entries = (await pool.query(`${query} ORDER BY created_at DESC,id DESC LIMIT 6 OFFSET $2`, [account.id, offset])).rows
+      .map(({audio_url, ...item}) => ({...item, audioUrl: item.ready ? audio_url : undefined}));
   }
   return { items: entries.slice(0, 5), more: entries.length > 5 };
 }

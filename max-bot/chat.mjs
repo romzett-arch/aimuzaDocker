@@ -60,14 +60,17 @@ export function createChatHandler({ store, api, max, siteUrl }) {
 
     async function profileMenu() {
       const profile = await call("profile");
+      const muted = store.setting(event.userId).siteInfoMuted === true;
       const hint = profile.mode === "site"
         ? "Библиотека и баланс общие с сайтом aimuza.ru."
         : profile.siteLinked
           ? "Можно переключиться на аккаунт сайта — там общие библиотека и баланс с aimuza.ru."
           : "Привяжи аккаунт сайта, чтобы пользоваться общими работами и балансом на aimuza.ru.";
-      const choices = profile.mode === "site" ? [["Только в MAX"]]
-        : [[profile.siteLinked ? "Аккаунт сайта" : labels.link]];
-      return md(`# 👤 Профиль\n\nВыбран «${profileLabel(profile.mode)}» · баланс ${rubles(profile.balance)}.\n\n${hint}`, [
+      const choices = [
+        ...(profile.mode === "site" ? [["Только в MAX"]] : [[profile.siteLinked ? "Аккаунт сайта" : labels.link]]),
+        ...(muted ? [[labels.unmuteInfo]] : []),
+      ];
+      return md(`# 👤 Профиль\n\nВыбран «${profileLabel(profile.mode)}» · баланс ${rubles(profile.balance)}.\n\n${hint}${muted ? "\n\n🔕 Напоминание про сайт после треков выключено." : ""}`, [
         ...choices, [labels.menu],
       ]);
     }
@@ -107,6 +110,7 @@ export function createChatHandler({ store, api, max, siteUrl }) {
           "",
           "**Ещё**",
           `${labels.songFromLyrics} — трек из сохранённого текста`,
+          "Сайт aimuza.ru — регистрация, выпуск треков на площадки и соцсеть музыкантов AIMUZA",
           "Команды: /start — меню · /unlink — отвязать сайт",
         ].join("\n"), menu);
       }
@@ -127,6 +131,14 @@ export function createChatHandler({ store, api, max, siteUrl }) {
         await call("unlink");
         save({});
         return md("✅ Связь с сайтом снята. Выбран профиль «Только в MAX».");
+      }
+      if (btn === "muteInfo") {
+        store.setSetting(event.userId, { siteInfoMuted: true });
+        return md("👌 Хорошо — больше не будет этого сообщения. Подключить сайт и зарегистрироваться можно в любой момент в разделе 👤 Профиль.");
+      }
+      if (btn === "unmuteInfo") {
+        store.setSetting(event.userId, { siteInfoMuted: false });
+        return md("🔔 Напоминания про сайт снова включены — покажу после следующего трека.");
       }
       if (text === "Только в MAX" || text === "Аккаунт сайта") {
         const mode = text === "Только в MAX" ? "max" : "site";
@@ -205,7 +217,7 @@ export function createChatHandler({ store, api, max, siteUrl }) {
           return await sendLyrics(send, lyric, [[labels.songFromLyrics], [labels.worksLyrics, labels.menu]]);
         }
         if (item) {
-          store.addJob({ id: randomUUID(), event, ownerId: state.ownerId, kind: state.kind ?? item.kind, phase: "deliver", items: [item] });
+          store.addJob({ id: randomUUID(), event, ownerId: state.ownerId, kind: state.kind ?? item.kind, phase: "deliver", items: [item], urls: item.audioUrl ? [item.audioUrl] : [] });
           return reply("📤 Отправляю файл…", [[labels.menu]]);
         }
       }

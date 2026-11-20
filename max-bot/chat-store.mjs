@@ -8,6 +8,7 @@ export function createChatStore(path) {
     CREATE TABLE IF NOT EXISTS inbox (key TEXT PRIMARY KEY, event TEXT NOT NULL, due INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS chat_state (id TEXT PRIMARY KEY, state TEXT NOT NULL, touched INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, data TEXT NOT NULL, due INTEGER NOT NULL, created INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS user_settings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS inbox_due ON inbox (due);
     CREATE INDEX IF NOT EXISTS jobs_due ON jobs (due);
   `);
@@ -49,6 +50,15 @@ export function createChatStore(path) {
     setLastLyrics(userId, value) {
       db.prepare("INSERT INTO chat_state VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,touched=excluded.touched")
         .run(`${userId}:lyrics`, JSON.stringify(value), Date.now());
+    },
+    // Постоянные настройки чата (например, «не напоминать про сайт»).
+    setting(userId) {
+      const row = db.prepare("SELECT data FROM user_settings WHERE id=?").get(String(userId));
+      return row ? JSON.parse(row.data) : {};
+    },
+    setSetting(userId, patch) {
+      db.prepare("INSERT INTO user_settings VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data")
+        .run(String(userId), JSON.stringify({...this.setting(userId), ...patch}));
     },
     addJob(job) {
       db.prepare("INSERT OR IGNORE INTO jobs VALUES (?,?,?,?)").run(job.id, JSON.stringify(job), Date.now(), Date.now());

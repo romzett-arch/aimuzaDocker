@@ -20,7 +20,7 @@ const store = createChatStore(process.env.MAX_BOT_DB ?? ":memory:");
 const api = createAimuzaClient(origin,internal);
 const max = createMaxClient(token);
 const handle = createChatHandler({store,api,max,siteUrl});
-const stop = startChatWorkers({store,api,max,handle});
+const stop = startChatWorkers({store,api,max,handle,siteUrl});
 store.prune();
 const cleanup = setInterval(store.prune,86_400_000);
 cleanup.unref();
