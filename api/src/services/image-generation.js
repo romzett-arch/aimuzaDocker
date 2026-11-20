@@ -3,10 +3,10 @@ import { pool } from '../db.js';
 const service = 'generate_image';
 const metadata = 'id, prompt, aspect_ratio, resolution, status, price_rub, mime_type, created_at';
 
-export async function imageHistory(userId) {
+export async function imageHistory(userId, limit = 20, offset = 0) {
   return (await pool.query(
     `SELECT ${metadata} FROM public.image_generation_jobs WHERE user_id=$1
-     ORDER BY created_at DESC, id DESC LIMIT 20`, [userId],
+     ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`, [userId, limit, offset],
   )).rows;
 }
 

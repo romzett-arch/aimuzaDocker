@@ -11,15 +11,16 @@ import { recoverLyricsJob } from "../_shared/lyrics-results.ts";
 const API_BASE = "https://api.sunoapi.org";
 // Лимит описания: провайдер Suno принимает максимум 200 символов.
 const PROMPT_LIMIT = 200;
+const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
+const json = (body: Record<string, unknown>, status = 200) => new Response(JSON.stringify(body), {
+  status, headers: { ...corsHeaders, "Content-Type": "application/json" },
+});
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   const startedAt = Date.now();
-  const requestId = crypto.randomUUID();
-  let userId: string | null = null;
-  let debitedAmount = 0;
-  let generationLogId: string | null = null;
+  let requestId: string = crypto.randomUUID();
   let jobCreated = false;
   let dispatched = false;
   let adminClient: SupabaseClient<any> | null = null;
@@ -43,8 +44,6 @@ serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-    userId = user.id;
-
     const body = await req.json();
     const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
     if (!prompt) {
@@ -60,56 +59,36 @@ serve(async (req) => {
       });
     }
 
-    const { data: debitRows, error: debitError } = await adminClient.rpc("debit_addon_service", {
-      p_user_id: userId,
-      p_service_name: "generate_lyrics",
-      p_description: "Создание текста песни с AI",
-      p_metadata: { request_id: requestId, service_name: "generate_lyrics" },
-    });
-    if (debitError) {
-      const insufficient = debitError.message?.includes("Insufficient balance");
-      return new Response(JSON.stringify({ error: insufficient ? "Недостаточно средств на балансе" : "Услуга временно недоступна" }), {
-        status: insufficient ? 402 : 503,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    const fromQueue = body.requestId !== undefined;
+    if (fromQueue) {
+      if (typeof body.requestId !== "string" || !UUID.test(body.requestId) ||
+          !Number.isSafeInteger(body.expectedPrice) || body.expectedPrice < 1) {
+        return json({ error: "Недопустимый запрос", code: "BAD_INPUT" }, 400);
+      }
+      requestId = body.requestId;
     }
-
-    const debit = debitRows?.[0];
-    debitedAmount = Number(debit?.amount_debited || 0);
-    const { data: logRow, error: logError } = await adminClient
-      .from("generation_logs")
-      .insert({
-        user_id: userId,
-        request_id: requestId,
-        service_id: debit?.service_id || null,
-        service_name: "generate_lyrics",
-        provider: debit?.provider || "music_ai",
-        provider_operation: debit?.provider_operation || "generate_lyrics",
-        provider_model: null,
-        model: "lyrics-ai",
-        prompt,
-        status: "pending",
-        cost_rub: debitedAmount,
-        sale_price_rub: debitedAmount,
-        base_cost_credits: Number(debit?.base_cost_credits || 0),
-        generation_params: { prompt_length: prompt.length },
-      })
-      .select("id")
-      .single();
-    if (logError || !logRow?.id) {
-      console.error("Failed to create lyrics log:", logError);
-      throw new Error("Не удалось зафиксировать платную операцию");
-    }
-    generationLogId = logRow?.id || null;
 
     const apiKey = Deno.env.get("SUNO_API_KEY");
-    if (!apiKey) throw new Error("Музыкальный AI временно недоступен");
+    if (!apiKey) return json({ error: "Музыкальный AI временно недоступен", code: "UNAVAILABLE" }, 503);
 
     const callbackToken = crypto.randomUUID();
-    const { error: jobError } = await adminClient.from("lyrics_generation_jobs").insert({
-      id: requestId, user_id: userId, prompt, callback_token: callbackToken, generation_log_id: generationLogId,
+    const { data: reserved, error: reservationError } = await adminClient.rpc("reserve_lyrics_generation", {
+      p_id: requestId,
+      p_user_id: user.id,
+      p_prompt: prompt,
+      p_callback_token: callbackToken,
+      p_expected_price: fromQueue ? body.expectedPrice : null,
     });
-    if (jobError) throw jobError;
+    if (reservationError) {
+      const reason = reservationError.message;
+      if (reason.includes("Insufficient balance")) return json({ error: "Недостаточно средств на балансе", code: "INSUFFICIENT_FUNDS" }, 402);
+      if (reason.includes("Lyrics price changed")) return json({ error: "Цена изменилась", code: "PRICE_CHANGED" }, 409);
+      if (reason.includes("Lyrics request conflict")) return json({ error: "Идентификатор уже использован", code: "BAD_INPUT" }, 409);
+      console.error("Lyrics reservation failed:", reservationError.code);
+      return json({ error: "Услуга временно недоступна", code: "UNAVAILABLE" }, 503);
+    }
+    if (!reserved) return json({ pending: true, jobId: requestId }, 202);
+
     jobCreated = true;
     const callbackBase = new URL(Deno.env.get("LYRICS_CALLBACK_URL") || "/functions/v1/lyrics-callback", Deno.env.get("SUNO_CALLBACK_URL") || "https://aimuza.ru");
     callbackBase.search = "";
@@ -136,6 +115,7 @@ serve(async (req) => {
     const { error: taskError } = await adminClient.from("lyrics_generation_jobs")
       .update({ provider_task_id: taskId }).eq("id", requestId);
     if (taskError) throw taskError;
+    if (fromQueue) return json({ pending: true, jobId: requestId }, 202);
 
     for (let attempt = 0; attempt < 20 && Date.now() - startedAt < 40000; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -170,26 +150,6 @@ serve(async (req) => {
       if (failError) console.error("Lyrics failure settlement needs recovery", failError);
       return new Response(JSON.stringify({ error: message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
-    let refundSucceeded = false;
-    if (adminClient && userId && debitedAmount > 0) {
-      const { error: refundError } = await adminClient.rpc("refund_addon_service", {
-        p_user_id: userId,
-        p_amount: debitedAmount,
-        p_description: "Возврат за неуспешное создание текста",
-        p_metadata: { request_id: requestId, service_name: "generate_lyrics" },
-      });
-      if (refundError) console.error("Lyrics refund failed:", refundError);
-      refundSucceeded = !refundError;
-    }
-    if (adminClient && generationLogId) {
-      await adminClient.from("generation_logs").update({
-        status: "failed",
-        error_message: message,
-        refund_rub: refundSucceeded ? debitedAmount : 0,
-        duration_ms: Date.now() - startedAt,
-      }).eq("id", generationLogId);
-    }
-
     return new Response(JSON.stringify({ error: message }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },

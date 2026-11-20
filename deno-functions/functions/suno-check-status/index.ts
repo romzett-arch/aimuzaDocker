@@ -235,7 +235,7 @@ serve(async (req) => {
           const errorMessage = statusData.data.fail_reason || statusData.data.error_message || 
                                statusData.msg || "Генерация отклонена сервисом";
           
-          const { error: updateError } = await supabaseClient
+          const { error: updateError } = await supabaseAdmin
             .from("tracks")
             .update({
               status: "failed",
@@ -290,7 +290,9 @@ serve(async (req) => {
         let tracksWithTask: MatchedTrack[] = [];
 
         if (trackId) {
-          const { data: targetTrack, error: targetTrackError } = await supabaseClient
+          // Track lookup must go through the server client: bot tokens and some
+          // hosted sessions are not served by the user-scoped REST path here.
+          const { data: targetTrack, error: targetTrackError } = await supabaseAdmin
             .from("tracks")
             .select("id, title, description, status, audio_url, master_audio_url, cover_url, suno_audio_id, error_message")
             .eq("id", trackId)
@@ -329,7 +331,8 @@ serve(async (req) => {
           }
         } else {
           // Backward-compatible fallback for callers without trackId.
-          const { data: matchedTracks } = await supabaseClient
+          // Server client as well: see the note above the trackId branch.
+          const { data: matchedTracks } = await supabaseAdmin
             .from("tracks")
             .select("id, title, description, status, audio_url, master_audio_url, cover_url, suno_audio_id, error_message")
             .eq("user_id", userId)

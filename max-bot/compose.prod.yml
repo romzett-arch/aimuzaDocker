@@ -1,0 +1,38 @@
+name: aimuza-max
+
+services:
+  max-bot:
+    image: ${MAX_BOT_IMAGE:?Specify the published MAX image}
+    container_name: aimuza-max-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MAX_AIMUZA_API: http://api:3000
+      MAX_BOT_DB: /app/state/updates.sqlite
+      MAX_SITE_URL: https://aimuza.ru
+    ports:
+      - "127.0.0.1:3215:3215"
+    volumes:
+      - max_bot_state:/app/state
+    networks:
+      - aimuza-net
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 192m
+    pids_limit: 64
+    logging:
+      driver: journald
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3215/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  max_bot_state:
+
+networks:
+  aimuza-net:
+    external: true
+    name: deploy_aimuza-net

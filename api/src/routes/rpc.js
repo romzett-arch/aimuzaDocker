@@ -19,9 +19,10 @@ import { assertModerationRpcAccess } from '../security/moderation-rpc-policy.js'
 const router = Router();
 const RPC_ERROR_SQL_BLACKLIST = /\b(select|insert|update|delete|syntax|column|relation|constraint|violates|duplicate key|null value|permission denied|operator does not exist|invalid input syntax)\b/i;
 const RPC_BUSINESS_CODE_RE = /^[a-z][a-z0-9_]+$/i;
+const LYRICS_RESERVATION_ERRORS = new Set(['Lyrics price changed', 'Lyrics request conflict']);
 
 const ALLOWED_RPC = new Set([
-  'complete_lyrics_job', 'fail_lyrics_job',
+  'complete_lyrics_job', 'fail_lyrics_job', 'reserve_lyrics_generation',
   'security_reserve_wav','security_fail_wav','security_claim_wav_callback','security_complete_wav',
   'accept_role_invitation', 'add_user_credits', 'admin_add_xp',   'admin_annul_vote', 'admin_approve_purchase',
   'admin_cancel_role_invitation', 'admin_create_role_invitation', 'admin_process_verification',
@@ -112,7 +113,7 @@ const ALLOWED_RPC = new Set([
 // These functions are internal transaction boundaries. The API connects as
 // the database owner, so PostgreSQL GRANT alone cannot protect them here.
 const SERVICE_ROLE_ONLY_RPC = new Set([
-  'complete_lyrics_job', 'fail_lyrics_job',
+  'complete_lyrics_job', 'fail_lyrics_job', 'reserve_lyrics_generation',
   'begin_track_deposit',
   'fail_track_deposit_and_refund',
   'record_lyrics_blockchain_deposit',
@@ -249,7 +250,8 @@ async function handleRpc(req, res) {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[RPC]', req.params.fn, err.message);
-    const safeMsg = getSafeRpcMessage(err.message);
+    const safeMsg = req.params.fn === 'reserve_lyrics_generation' && LYRICS_RESERVATION_ERRORS.has(err.message)
+      ? err.message : getSafeRpcMessage(err.message);
     res.status(err.status || 400).json({ message: safeMsg, error: safeMsg, code: 'RPC_ERROR', details: null, hint: null });
   } finally {
     client.release();

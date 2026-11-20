@@ -23,7 +23,7 @@ export function registerUser(router) {
 
       res.json({
         id: user.id,
-        email: user.email,
+        email: req.user.session_origin === 'max' ? req.user.email : user.email,
         created_at: user.created_at,
         is_super_admin: user.is_super_admin || false,
         app_metadata: { provider: 'email', role: profile?.role || 'user' },

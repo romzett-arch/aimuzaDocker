@@ -1,0 +1,33 @@
+services:
+  api:
+    env_file:
+      - ./max-bot/.env
+  max-bot:
+    image: aimuza-max-bot:local
+    build: ./max-bot
+    container_name: aimuza-max-bot
+    restart: unless-stopped
+    env_file:
+      - ./max-bot/.env
+      - ./max-bot/.env.local
+    environment:
+      MAX_BOT_DB: /app/state/updates.sqlite
+    ports:
+      - "127.0.0.1:3215:3215"
+    volumes:
+      - max_bot_state:/app/state
+    networks:
+      - aimuza-net
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 192m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3215/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  max_bot_state:

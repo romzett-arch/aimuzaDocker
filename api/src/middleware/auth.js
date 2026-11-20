@@ -19,6 +19,15 @@ const SERVICE_ROLE_KEY_BUF = process.env.SERVICE_ROLE_KEY
   ? Buffer.from(process.env.SERVICE_ROLE_KEY)
   : null;
 
+const maxServicePosts = new Set([
+  '/studio/v1/generations',
+  '/functions/v1/download-track',
+  '/functions/v1/generate-image',
+  '/functions/v1/generate-lyrics',
+  '/functions/v1/robokassa-create',
+  '/functions/v1/suno-check-status',
+]);
+
 export async function authMiddleware(req, res, next) {
   req.user = null;
 
@@ -41,6 +50,11 @@ export async function authMiddleware(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     if (decoded.token_use && decoded.token_use !== 'access') return next();
+    const maxSession = decoded.session_origin === 'max';
+    if (maxSession && !(req.method === 'GET' && req.path === '/auth/v1/user') &&
+        !(req.method === 'POST' && maxServicePosts.has(req.path))) {
+      return res.sendStatus(403);
+    }
     const versionResult = await pool.query(
       `SELECT COALESCE(
          CASE WHEN COALESCE(raw_user_meta_data->>'session_version', '') ~ '^\\d+$'
@@ -56,8 +70,10 @@ export async function authMiddleware(req, res, next) {
            AND category.is_active IS TRUE
        ), ARRAY[]::text[]) AS permissions
        FROM auth.users
-       WHERE id = $1 AND email_confirmed_at IS NOT NULL`,
-      [decoded.sub]
+       WHERE id = $1 AND (email_confirmed_at IS NOT NULL OR
+         ($2 AND raw_user_meta_data->>'max_only' = 'true'))
+         AND NOT (COALESCE(raw_user_meta_data,'{}'::jsonb) ? 'deleted_at')`,
+      [decoded.sub, maxSession]
     );
     const currentVersion = Number(versionResult.rows[0]?.session_version ?? -1);
     const tokenVersion = readSessionVersion(decoded);
