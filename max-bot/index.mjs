@@ -4,6 +4,7 @@ import { createChatStore } from "./chat-store.mjs";
 import { createAimuzaClient } from "./aimuza.mjs";
 import { createChatHandler } from "./chat.mjs";
 import { startChatWorkers } from "./chat-jobs.mjs";
+import { createBroadcastService, startBroadcastWorker } from "./broadcast.mjs";
 
 const token = process.env.MAX_BOT_TOKEN?.trim();
 const secret = process.env.MAX_WEBHOOK_SECRET?.trim();
@@ -20,12 +21,15 @@ if (!token || !secret || !/^[A-Za-z0-9_-]{5,256}$/.test(secret) || !internal || 
 const store = createChatStore(process.env.MAX_BOT_DB ?? ":memory:");
 const api = createAimuzaClient(origin,internal);
 const max = createMaxClient(token);
-const handle = createChatHandler({store,api,max,appUrl});
+const broadcast = createBroadcastService({ store: store.broadcasts, max });
+const chat = createChatHandler({store,api,max,appUrl});
+const handle = event => event.type === "broadcast_group" ? broadcast.groupEvent(event) : chat(event);
 const stop = startChatWorkers({store,api,max,handle,siteUrl});
+const stopBroadcast = startBroadcastWorker(broadcast);
 store.prune();
 const cleanup = setInterval(store.prune,86_400_000);
 cleanup.unref();
 
-const server = createWebhookServer({secret,enqueue:store.enqueue});
+const server = createWebhookServer({secret,enqueue:store.enqueue,internalSecret:internal,admin:broadcast.admin});
 server.listen(3215,"0.0.0.0",()=>console.info("MAX chat bot ready on port 3215"));
-process.once("SIGTERM",()=>{stop();server.close();});
+process.once("SIGTERM",()=>{stop();stopBroadcast();server.close();});

@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { createBroadcastStore } from "./broadcast-store.mjs";
 
 export function createChatStore(path) {
   const db = new DatabaseSync(path);
@@ -14,7 +15,9 @@ export function createChatStore(path) {
     CREATE INDEX IF NOT EXISTS jobs_due ON jobs (due);
   `);
 
+  const broadcasts = createBroadcastStore(db);
   return {
+    broadcasts,
     enqueue(event) {
       db.prepare("INSERT OR IGNORE INTO inbox(key,event,due) SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM updates WHERE key=?)")
         .run(event.key, JSON.stringify(event), Date.now(), event.key);
@@ -95,6 +98,7 @@ export function createChatStore(path) {
       return row && new Blob([row.photo], { type: row.type });
     },
     prune() {
+      broadcasts.prune();
       db.prepare("DELETE FROM updates WHERE seen_at<?").run(Date.now() - 7 * 86_400_000);
       db.prepare("DELETE FROM chat_state WHERE touched<?").run(Date.now() - 86_400_000);
       db.prepare("DELETE FROM photo_references WHERE created<?").run(Date.now() - 2 * 86_400_000);

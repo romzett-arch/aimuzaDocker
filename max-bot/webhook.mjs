@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { editImagePattern } from "./chat-images.mjs";
 import { maxIdentity } from "./max-identity.mjs";
+import { readGroupUpdate } from "./broadcast.mjs";
 
 function readEvent(update) {
   if (!update || typeof update !== "object") return null;
@@ -47,22 +48,30 @@ async function readUpdate(request) {
     if (size>128*1024) return {status:413};
     chunks.push(chunk);
   }
-  try { return {data:JSON.parse(Buffer.concat(chunks).toString("utf8"))}; }
+  try {
+    const data = JSON.parse(Buffer.concat(chunks).toString("utf8"), (key, value, context) =>
+      key === "chat_id" && typeof value === "number" && !Number.isSafeInteger(value) ? context.source : value);
+    return { data };
+  }
   catch { return {status:400}; }
 }
 
-export function createWebhookServer({secret,enqueue}) {
-  const expected=Buffer.from(secret);
+export function createWebhookServer({secret,enqueue,internalSecret,admin}) {
+  const webhookKey = Buffer.from(secret);
+  const adminKey = Buffer.from(internalSecret ?? "");
   return createServer({requestTimeout:15000},async (request,response)=>{
     if (request.method==="GET" && request.url==="/health") {
       response.writeHead(200,{"Content-Type":"application/json"}).end('{"status":"ok"}');
       return;
     }
-    if (request.method!=="POST" || request.url!=="/webhooks/max") {
+    const webhook = request.url === "/webhooks/max";
+    const internal = admin && adminKey.length >= 32 && request.url === "/internal/admin/broadcast";
+    if (request.method!=="POST" || (!webhook && !internal)) {
       response.writeHead(404).end();
       return;
     }
-    const incoming=request.headers["x-max-bot-api-secret"];
+    const expected = webhook ? webhookKey : adminKey;
+    const incoming=request.headers[webhook ? "x-max-bot-api-secret" : "x-aimuza-max-secret"];
     const actual=typeof incoming==="string" ? Buffer.from(incoming) : Buffer.alloc(0);
     if (actual.length!==expected.length || !timingSafeEqual(actual,expected)) {
       response.writeHead(403,{Connection:"close"}).end();
@@ -74,11 +83,17 @@ export function createWebhookServer({secret,enqueue}) {
         response.writeHead(status,{Connection:"close"}).end();
         return;
       }
-      const event=readEvent(data);
+      if (internal) {
+        const [code, result] = await admin(data);
+        response.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" })
+          .end(JSON.stringify(result));
+        return;
+      }
+      const event=readGroupUpdate(data) ?? readEvent(data);
       if (event) enqueue(event);
       response.writeHead(200).end();
     } catch {
-      console.warn("MAX webhook could not store event");
+      console.warn(internal ? "MAX broadcast request failed" : "MAX webhook could not store event");
       response.writeHead(503).end();
     }
   });

@@ -23,6 +23,14 @@ export function createMaxClient(token, origin = apiOrigin) {
 
   return {
     me: () => request("/me"),
+    chat: id => request(`/chats/${encodeURIComponent(id)}`),
+    chatMembership: id => request(`/chats/${encodeURIComponent(id)}/members/me`),
+    chatPin: id => request(`/chats/${encodeURIComponent(id)}/pin`),
+    pin: (id, mid) => request(`/chats/${encodeURIComponent(id)}/pin`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message_id: mid, notify: false }),
+    }),
     messages: ids => request(`/messages?${new URLSearchParams({ message_ids: ids.join(",") })}`),
     answer: callbackId => request(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
@@ -60,8 +68,9 @@ export function createMaxClient(token, origin = apiOrigin) {
       if (!fileToken) throw new Error("MAX media upload incomplete");
       return {type,payload:{token:fileToken}};
     },
-    send: ({ userId, chatId }, message) => request(
-      Number.isSafeInteger(chatId) ? `/messages?chat_id=${chatId}` : `/messages?user_id=${userId}`, {
+    send: ({ userId, chatId, groupId }, message) => request(
+      `/messages?${new URLSearchParams(groupId || Number.isSafeInteger(chatId)
+        ? { chat_id: groupId ?? chatId } : { user_id: userId })}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message),
