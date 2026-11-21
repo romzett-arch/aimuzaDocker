@@ -17,7 +17,7 @@ export function createAimuzaClient(origin, secret) {
       headers,
       body,
       redirect: "error",
-      signal: AbortSignal.timeout(145_000),
+      signal: AbortSignal.timeout(action === "identity" ? 5_000 : 145_000),
     });
     if (!response.ok) {
       const data = await response.json().catch(() => null);

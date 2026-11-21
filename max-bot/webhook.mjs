@@ -1,13 +1,15 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { editImagePattern } from "./chat-images.mjs";
+import { maxIdentity } from "./max-identity.mjs";
 
 function readEvent(update) {
   if (!update || typeof update !== "object") return null;
   if (update.update_type==="bot_started" && Number.isSafeInteger(update.timestamp)) {
     const userId=update.user?.user_id;
     if (Number.isSafeInteger(userId) && userId>0 && !update.user.is_bot) {
-      return {key:`start:${userId}:${update.timestamp}`,type:"bot_started",userId,chatId:update.chat_id};
+      return {key:`start:${userId}:${update.timestamp}`,type:"bot_started",userId,chatId:update.chat_id,
+        identity:maxIdentity(update.user,update.timestamp)};
     }
   }
   if (update.update_type==="message_created") {
@@ -17,6 +19,7 @@ function readEvent(update) {
         typeof body?.mid==="string" && body.mid.length<=256 && (typeof body.text==="string" || attachment)) {
       const url = attachment?.payload?.url;
       return {key:`message:${body.mid}`,type:"message_created",userId:sender.user_id,chatId:recipient.chat_id,
+        identity:maxIdentity(sender,update.timestamp),
         text: typeof body.text === "string" ? body.text.slice(0,1001) : "",
         ...(attachment ? { photo: { mid: body.mid, url: typeof url === "string" && url.length <= 4096 ? url : undefined } } : {}),
       };
@@ -30,7 +33,7 @@ function readEvent(update) {
         typeof callback.payload === "string" && editImagePattern.test(callback.payload) &&
         typeof callback.callback_id === "string" && callback.callback_id.length <= 256) {
       return { key: `callback:${callback.callback_id}`, type: "message_callback", userId, chatId: recipient.chat_id,
-        callback: callback.payload, callbackId: callback.callback_id };
+        callback: callback.payload, callbackId: callback.callback_id, identity: maxIdentity(callback.user,update.timestamp) };
     }
   }
   return null;

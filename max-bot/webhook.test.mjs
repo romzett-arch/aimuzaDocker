@@ -15,18 +15,38 @@ test("authenticates webhook, queues private conversation text, deduplicates", as
   const origin=`http://127.0.0.1:${server.address().port}`;
   const payload={
     update_type:"message_created",
-    message:{sender:{user_id:3},recipient:{chat_type:"dialog",chat_id:40},body:{mid:"message1",text:"Музыка"}},
+    timestamp:1_795_250_000_000,
+    message:{sender:{user_id:3,first_name:" Анна ",last_name:"Иванова"},recipient:{chat_type:"dialog",chat_id:40},body:{mid:"message1",text:"Музыка"}},
   };
   const send=(secret,data=payload)=>fetch(origin+"/webhooks/max",{method:"POST",headers:{"X-Max-Bot-Api-Secret":secret},body:JSON.stringify(data)});
   assert.equal((await send("invalid")).status,403);
   assert.equal(store.nextEvent(),undefined);
   assert.deepEqual((await Promise.all(Array.from({length:3},()=>send("test-secret")))).map(r=>r.status),[200,200,200]);
-  assert.equal(store.nextEvent().event.text,"Музыка");
+  const { event } = store.nextEvent();
+  assert.equal(event.text,"Музыка");
+  assert.deepEqual(event.identity,{name:"Анна Иванова",observedAt:payload.timestamp});
   store.finishEvent("message:message1");
   assert.equal((await send("test-secret")).status,200);
   payload.message.recipient.chat_type="chat";
   payload.message.body.mid="message2";
   assert.equal((await send("test-secret")).status,200);
+  assert.equal(store.nextEvent(),undefined);
+});
+
+test("records sender identity after processing a private event", {timeout:4000}, async t => {
+  const store = createChatStore(":memory:");
+  const recorded = Promise.withResolvers();
+  const event = {key:"message:identity",type:"message_created",userId:3,chatId:40,
+    identity:{name:"Анна Иванова",observedAt:1_795_250_000_000}};
+  let handled = false;
+  const stop = startChatWorkers({store,
+    handle: async () => { handled = true; },
+    api: async (action,sender,body) => recorded.resolve({action,sender,body}),
+  });
+  t.after(() => { stop(); store.close(); });
+  store.enqueue(event);
+  assert.deepEqual(await recorded.promise,{action:"identity",sender:event,body:{identity:event.identity}});
+  assert.equal(handled,true);
   assert.equal(store.nextEvent(),undefined);
 });
 

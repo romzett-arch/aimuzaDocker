@@ -2,10 +2,10 @@ import { Router } from 'express';
 import sharp from 'sharp';
 import { pool } from '../db.js';
 import { requireAuth, requireServiceRole } from '../middleware/auth.js';
-import { distributionCoverResolution, isPaidReleaseCover, loadPaidReleaseCover, prepareDistributionCover, releaseCoverOptions } from '../services/distribution-cover.js';
+import { distributionCoverResolution, formatDistributionCover, isPaidReleaseCover, loadPaidReleaseCover } from '../services/distribution-cover.js';
 import { loadTrackCover } from '../services/release-cover-source.js';
 import {
-  completeImage, failImage, getGeneratedImage, getImageJob, imageGallery, imageHistory, reserveImage, savePreparedCover,
+  completeImage, failImage, getGeneratedImage, getImageJob, imageGallery, imageHistory, reserveImage,
 } from '../services/image-generation.js';
 
 const router = Router();
@@ -155,10 +155,6 @@ router.post('/generate-image', requireAuth, async (req, res, next) => {
 
   try {
     if (input.action === 'history') return res.json({ jobs: await imageHistory(userId) });
-    if (input.action === 'release-cover-options') {
-      if (!isUuid(input.trackId)) return res.json({ problem: 'INVALID_INPUT' });
-      return res.json({ items: await releaseCoverOptions(userId, input.trackId) });
-    }
     if (input.action === 'gallery') {
       if (input.cursor != null && !isUuid(input.cursor)) return res.json({ problem: 'INVALID_INPUT' });
       return res.json(await imageGallery(userId, input.cursor ?? null));
@@ -178,25 +174,24 @@ router.post('/generate-image', requireAuth, async (req, res, next) => {
       return res.json({ image: result.image.toString('base64'), mime_type: result.mime_type });
     }
 
-    const isMultipart = req.is('multipart/form-data');
-    const prepare = input.action === 'prepare-cover';
+    if (input.action === 'prepare-cover') return res.json({ problem: 'COVER_GENERATION_REQUIRED' });
     if (input.trackId && (!isUuid(input.trackId) || input.reference)) return res.json({ problem: 'INVALID_REFERENCE' });
-    if (input.referenceId && (!isUuid(input.referenceId) || input.trackId || input.reference || prepare)) {
+    if (input.referenceId && (!isUuid(input.referenceId) || input.trackId || input.reference)) {
       return res.json({ problem: 'INVALID_REFERENCE' });
     }
-    if (input.reference && !isMultipart) return res.json({ problem: 'INVALID_REFERENCE' });
+    if (input.reference && !req.is('multipart/form-data')) return res.json({ problem: 'INVALID_REFERENCE' });
     // Multipart form serialization expands line breaks to CRLF.
     const prompt = typeof input.prompt === 'string' ? input.prompt.replace(/\r\n?/g, '\n').trim() : '';
-    if (!isUuid(input.id) || (!prepare && (input.action !== 'generate' || !prompt || prompt.length > 2000 ||
+    if (!isUuid(input.id) || input.action !== 'generate' || !prompt || prompt.length > 2000 ||
         !ratios.has(input.ratio) || !resolutions.has(input.resolution) || !Number.isSafeInteger(input.price) ||
-        (input.trackId && input.resolution !== distributionCoverResolution)))) {
+        (input.trackId && input.resolution !== distributionCoverResolution)) {
       return res.json({ problem: 'INVALID_INPUT' });
     }
     const apiKey = process.env.ROUTERAI_IMAGE_API_KEY?.trim();
-    if (!apiKey && !prepare) return res.json({ problem: 'UNAVAILABLE' });
+    if (!apiKey) return res.json({ problem: 'UNAVAILABLE' });
 
     if (input.releaseTrackId !== undefined) {
-      if (!isUuid(input.releaseTrackId) || prepare || input.resolution !== distributionCoverResolution ||
+      if (!isUuid(input.releaseTrackId) || input.resolution !== distributionCoverResolution ||
           (input.trackId && input.trackId !== input.releaseTrackId)) return res.json({ problem: 'INVALID_INPUT' });
       const track = await pool.query("SELECT 1 FROM public.tracks WHERE id=$1 AND user_id=$2 AND status='completed'", [input.releaseTrackId, userId]);
       if (!track.rowCount) return res.json({ problem: 'INVALID_INPUT' });
@@ -216,12 +211,8 @@ router.post('/generate-image', requireAuth, async (req, res, next) => {
       if (bytes) {
         const mime = imageType(bytes);
         if (!mime) return res.json({ problem: 'INVALID_REFERENCE' });
-        if (prepare) {
-          const image = await prepareDistributionCover(bytes);
-          return res.json({ job: await savePreparedCover(userId, input.id, image, distributionCoverResolution) });
-        }
         reference = `data:${mime};base64,${bytes.toString('base64')}`;
-      } else if (prepare) return res.json({ problem: 'INVALID_REFERENCE' });
+      }
     } catch {
       return res.json({ problem: 'INVALID_REFERENCE' });
     }
@@ -235,7 +226,7 @@ router.post('/generate-image', requireAuth, async (req, res, next) => {
     try {
       const resolution = isDistributionCover ? '2K' : input.resolution;
       const { bytes, type } = await requestImage({ prompt, ratio, resolution, reference }, apiKey);
-      const image = isDistributionCover ? await prepareDistributionCover(bytes) : bytes;
+      const image = isDistributionCover ? await formatDistributionCover(bytes) : bytes;
       if (image.length > maxOutputBytes) throw new Error('Generated image exceeds size limit');
       const completed = await completeImage(userId, job.id, image, isDistributionCover ? 'image/jpeg' : type);
       return res.json(completed ? { job: completed } : { problem: 'GENERATION_FAILED' });

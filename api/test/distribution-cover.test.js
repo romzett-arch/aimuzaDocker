@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import sharp from 'sharp';
-import { distributionCoverResolution, isPaidReleaseCover, prepareDistributionCover } from '../src/services/distribution-cover.js';
+import { distributionCoverResolution, formatDistributionCover, isPaidReleaseCover } from '../src/services/distribution-cover.js';
 
 test('distribution cover conversion always yields square 3000 × 3000 JPEG bytes', async () => {
   const source = await sharp({ create: { width: 320, height: 200, channels: 4, background: '#558822aa' } }).png().toBuffer();
-  const picture = await prepareDistributionCover(source);
+  const picture = await formatDistributionCover(source);
   const { width, height, format, hasAlpha } = await sharp(picture).metadata();
   assert.deepEqual({ width, height, format, hasAlpha }, { width: 3000, height: 3000, format: 'jpeg', hasAlpha: false });
 });

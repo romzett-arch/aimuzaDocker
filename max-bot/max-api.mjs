@@ -23,6 +23,7 @@ export function createMaxClient(token, origin = apiOrigin) {
 
   return {
     me: () => request("/me"),
+    messages: ids => request(`/messages?${new URLSearchParams({ message_ids: ids.join(",") })}`),
     answer: callbackId => request(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
     }),

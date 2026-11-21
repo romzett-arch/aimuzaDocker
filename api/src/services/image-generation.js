@@ -37,17 +37,6 @@ export async function getImageJob(userId, id) {
   )).rows[0];
 }
 
-export async function savePreparedCover(userId, id, image, resolution) {
-  const result = await pool.query(
-    `INSERT INTO public.image_generation_jobs
-       (user_id,id,prompt,aspect_ratio,resolution,status,image,mime_type)
-     VALUES ($1,$2,'Подготовленная обложка','1:1',$3,'completed',$4,'image/jpeg')
-     ON CONFLICT (user_id,id) DO NOTHING RETURNING ${metadata}`,
-    [userId, id, resolution, image],
-  );
-  return result.rows[0] ?? getImageJob(userId, id);
-}
-
 export async function reserveImage(userId, input) {
   const db = await pool.connect();
   try {

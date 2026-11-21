@@ -12,7 +12,7 @@ router.post('/max-admin', requireAuth, async (req, res, next) => {
   const { action, search = '', filter = 'all', page = 0, maxId, blocked } = req.body ?? {};
   try {
     if (action === 'list' && typeof search === 'string' && search.length <= 100 &&
-        ['all', 'linked', 'blocked'].includes(filter) && Number.isSafeInteger(page) && page >= 0 && page < 10000) {
+        ['all', 'linked', 'max_only', 'blocked'].includes(filter) && Number.isSafeInteger(page) && page >= 0 && page < 10000) {
       return res.json(await maxAdminList({ search: search.trim(), filter, offset: page * 25 }));
     }
     if (action === 'block' && validMaxId(maxId) && typeof blocked === 'boolean') {

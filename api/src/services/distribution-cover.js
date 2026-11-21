@@ -10,18 +10,6 @@ export function isPaidReleaseCover(cover, trackId) {
     (cover.release_track_id === null || cover.release_track_id === trackId);
 }
 
-export async function releaseCoverOptions(userId, trackId) {
-  const { rows } = await pool.query(
-    `SELECT id, prompt, created_at FROM public.image_generation_jobs
-     WHERE user_id=$1 AND status='completed' AND price_rub>0 AND mime_type='image/jpeg'
-       AND resolution=$3 AND image IS NOT NULL AND (release_track_id IS NULL OR release_track_id=$2)
-       AND EXISTS (SELECT 1 FROM public.tracks WHERE id=$2 AND user_id=$1 AND status='completed')
-     ORDER BY (release_track_id IS NOT NULL) DESC, created_at DESC, id DESC LIMIT 20`,
-    [userId, trackId, distributionCoverResolution],
-  );
-  return rows;
-}
-
 export async function loadPaidReleaseCover(userId, coverId, trackId) {
   const normalizedTrackId = trackId.toLowerCase();
   const cover = await getGeneratedImage(userId, coverId);
@@ -42,7 +30,7 @@ export async function loadPaidReleaseCover(userId, coverId, trackId) {
   return claim.rowCount ? cover.image : null;
 }
 
-export async function prepareDistributionCover(bytes) {
+export async function formatDistributionCover(bytes) {
   return sharp(bytes, { limitInputPixels: 20_000_000 })
     .autoOrient()
     .resize(3000, 3000, { fit: 'cover', position: 'centre', kernel: 'lanczos3' })

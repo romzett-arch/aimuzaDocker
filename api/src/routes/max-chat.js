@@ -6,6 +6,7 @@ import { linkedMaxAccount, maxAccount, selectMaxMode, standaloneMaxAccount } fro
 import { actions, ChatActionError, uuid } from '../services/max-chat-actions.js';
 import { isMaxBlocked, validMaxId } from '../services/max-admin.js';
 import { readMaxImageInput } from '../services/max-image-input.js';
+import { recordMaxIdentity } from '../services/max-chat-identity.js';
 
 const router = Router();
 const secret = Buffer.from(process.env.MAX_INTERNAL_SECRET || '');
@@ -33,8 +34,12 @@ router.post('/internal/:action', requireBot, readMaxImageInput, async(req,res,ne
   const {maxId,ownerId,standalone} = req.body ?? {};
   if (!validMaxId(maxId)) return res.status(400).json({code:'BAD_INPUT'});
   try {
-    if (await isMaxBlocked(maxId)) return res.status(403).json({code:'MAX_BLOCKED'});
     const action = req.params.action;
+    if (action==='identity') {
+      const updated = await recordMaxIdentity(maxId, req.body.identity);
+      return updated === null ? res.status(400).json({code:'BAD_INPUT'}) : res.json({updated});
+    }
+    if (await isMaxBlocked(maxId)) return res.status(403).json({code:'MAX_BLOCKED'});
     if (action==='link') {
       const profile = await standaloneMaxAccount(maxId);
       return res.json(await issueMaxLink(maxId, Boolean(profile && !profile.email)));

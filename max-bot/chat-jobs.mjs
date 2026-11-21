@@ -14,6 +14,11 @@ export function startChatWorkers({store,api,max,handle,siteUrl}) {
     try {
       await handle(entry.event);
       store.finishEvent(entry.key);
+      if (entry.event.identity) {
+        await api("identity", entry.event, { identity: entry.event.identity }).catch(error => {
+          console.warn("MAX identity update failed:", error.status ?? error.name);
+        });
+      }
       console.info("MAX reply delivered:",entry.event.type);
     } catch (error) {
       console.warn("MAX chat reply failed:",error.status ?? error.name);
