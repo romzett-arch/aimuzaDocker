@@ -1,6 +1,5 @@
 import { pool } from '../db.js';
-import { getImageJob } from '../services/image-generation.js';
-import { isPaidReleaseCover } from '../services/distribution-cover.js';
+import { loadPaidReleaseCover } from '../services/distribution-cover.js';
 
 const cleanText = (value, limit) => typeof value === 'string' ? value.trim().slice(0, limit) : '';
 const validUuid = (value) => typeof value === 'string' && /^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(value);
@@ -35,14 +34,13 @@ export async function prepareStudioReleasePackage(req, res, next) {
     );
     if (!track.rows[0]) return res.status(404).json({ error: 'Готовый трек не найден' });
 
-    const cover = validUuid(coverId) && await getImageJob(req.user.id, coverId);
-    if (!isPaidReleaseCover(cover, trackId)) {
-      return res.status(400).json({ error: 'Сгенерируйте и подтвердите обложку релиза 3000 × 3000' });
-    }
-
     const denoUrl = process.env.DENO_FUNCTIONS_URL;
     const authorization = req.get('authorization');
     if (!denoUrl || !authorization) return res.status(503).json({ error: 'Сервис подготовки релиз-пакета временно недоступен' });
+
+    if (!validUuid(coverId) || !(await loadPaidReleaseCover(req.user.id, coverId, trackId))) {
+      return res.status(400).json({ error: 'Выберите оплаченную обложку релиза 3000 × 3000 или сгенерируйте новую' });
+    }
 
     // То же обновление карточки, которое сайт делает перед вызовом Edge Function.
     await pool.query(

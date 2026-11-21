@@ -2,7 +2,7 @@ import { Router } from 'express';
 import sharp from 'sharp';
 import { pool } from '../db.js';
 import { requireAuth, requireServiceRole } from '../middleware/auth.js';
-import { distributionCoverResolution, isPaidReleaseCover, prepareDistributionCover } from '../services/distribution-cover.js';
+import { distributionCoverResolution, isPaidReleaseCover, loadPaidReleaseCover, prepareDistributionCover, releaseCoverOptions } from '../services/distribution-cover.js';
 import { loadTrackCover } from '../services/release-cover-source.js';
 import {
   completeImage, failImage, getGeneratedImage, getImageJob, imageGallery, imageHistory, reserveImage, savePreparedCover,
@@ -53,13 +53,9 @@ router.get('/generated-image/:id', requireAuth, async (req, res, next) => {
 router.post('/release-package-cover', requireServiceRole, async (req, res, next) => {
   try {
     const { user_id: userId, id, track_id: trackId } = req.body ?? {};
-    const result = isUuid(userId) && isUuid(id) && isUuid(trackId) && await getGeneratedImage(userId, id);
-    if (!isPaidReleaseCover(result, trackId)) return res.sendStatus(404);
-    const { width, height, format } = await sharp(result.image, { limitInputPixels: 20_000_000 }).metadata();
-    if (format !== 'jpeg' || width !== 3000 || height !== 3000) {
-      return res.sendStatus(404);
-    }
-    return res.set('Cache-Control', 'private, no-store').type(result.mime_type).send(result.image);
+    const image = isUuid(userId) && isUuid(id) && isUuid(trackId) && await loadPaidReleaseCover(userId, id, trackId);
+    if (!image) return res.sendStatus(404);
+    return res.set('Cache-Control', 'private, no-store').type('image/jpeg').send(image);
   } catch (error) { next(error); }
 });
 
@@ -159,6 +155,10 @@ router.post('/generate-image', requireAuth, async (req, res, next) => {
 
   try {
     if (input.action === 'history') return res.json({ jobs: await imageHistory(userId) });
+    if (input.action === 'release-cover-options') {
+      if (!isUuid(input.trackId)) return res.json({ problem: 'INVALID_INPUT' });
+      return res.json({ items: await releaseCoverOptions(userId, input.trackId) });
+    }
     if (input.action === 'gallery') {
       if (input.cursor != null && !isUuid(input.cursor)) return res.json({ problem: 'INVALID_INPUT' });
       return res.json(await imageGallery(userId, input.cursor ?? null));
@@ -207,7 +207,7 @@ router.post('/generate-image', requireAuth, async (req, res, next) => {
       let bytes = input.trackId ? await loadTrackCover(input.trackId, req.get('authorization')) : input.reference;
       if (input.referenceId) {
         const source = await getGeneratedImage(userId, input.referenceId);
-        if (!source?.image || (input.releaseTrackId && source.release_track_id !== input.releaseTrackId)) {
+        if (!source?.image || (input.releaseTrackId && !isPaidReleaseCover(source, input.releaseTrackId.toLowerCase()))) {
           return res.json({ problem: 'INVALID_REFERENCE' });
         }
         bytes = await sharp(source.image, { limitInputPixels: 20_000_000 }).autoOrient()
