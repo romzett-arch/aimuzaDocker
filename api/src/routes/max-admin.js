@@ -14,8 +14,8 @@ router.post('/max-admin', requireAuth, async (req, res, next) => {
   const { action, search = '', filter = 'all', page = 0, maxId, blocked } = req.body ?? {};
   try {
     if (broadcastActions.has(action)) {
-      const { id, text, targets, chatId } = req.body;
-      const [status, result] = await requestMaxBroadcast(req.user.id, { action, id, text, targets, chatId });
+      const { id, text, targets, chatId, includeBotLink } = req.body;
+      const [status, result] = await requestMaxBroadcast(req.user.id, { action, id, text, targets, chatId, includeBotLink });
       return res.status(status).json(result);
     }
     if (action === 'list' && typeof search === 'string' && search.length <= 100 &&

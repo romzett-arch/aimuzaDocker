@@ -67,7 +67,7 @@ test("broadcast sends once to selected groups, pins conditionally and reports pa
   }
   const request = { owner, action: "broadcast-send", id, text: "Анонс от АИМУЗА", targets };
   assert.equal((await service.admin(request))[0], 200);
-  assert.equal((await service.admin(request))[0], 200);
+  assert.equal((await service.admin({ ...request, includeBotLink: false }))[0], 200);
   assert.equal((await service.admin({ ...request, text: "Другой текст" }))[0], 409);
   for (const _target of targets) await service.processNext();
   const [, report] = await service.admin({ owner, action: "broadcast-status", id });
@@ -82,6 +82,46 @@ test("broadcast sends once to selected groups, pins conditionally and reports pa
   assert.deepEqual(calls.filter(([method]) => method === "PUT").map(([, groupId]) => groupId), ["-1"]);
   assert.equal(pins.get("-2"), "other-pin");
   assert.equal((await service.admin({ action: "broadcast-status", id, owner: id }))[0], 404);
+});
+
+test("broadcast can attach a button to the bot's own MAX profile", async t => {
+  const store = createChatStore(":memory:");
+  t.after(store.close);
+  const deliveries = [];
+  let profileReads = 0;
+  const max = {
+    async chat() { return { type: "chat", status: "active" }; },
+    async chatMembership() { return { is_admin: true, permissions: ["write"] }; },
+    async me() {
+      profileReads++;
+      return { is_bot: true, username: "test_aimuza_bot" };
+    },
+    async send(target, body) {
+      deliveries.push({ target, body });
+      return { message: { body: { mid: "sent-message" } } };
+    },
+  };
+  const service = createBroadcastService({ store: store.broadcasts, max });
+  const targets = ["-1", "-2"].map(id => ({ id, pin: false }));
+  for (const target of targets) store.broadcasts.group(target.id, null, true, Date.now());
+
+  const input = { action: "broadcast-send", owner, id, text: "Давайте создадим песню!", targets, includeBotLink: true };
+  assert.equal((await service.admin({ ...input, includeBotLink: "true" }))[0], 400);
+  assert.equal((await service.admin(input))[0], 200);
+  assert.equal((await service.admin({ ...input, includeBotLink: false }))[0], 409);
+  await service.processNext();
+  await service.processNext();
+  assert.equal((await service.admin(input))[1].done, true);
+  assert.equal(profileReads, 1);
+  assert.deepEqual(deliveries, targets.map(({ id }) => ({
+    target: { groupId: id },
+    body: {
+      text: input.text,
+      attachments: [{ type: "inline_keyboard", payload: { buttons: [[{
+        type: "link", text: "Открыть АИМУЗА", url: "https://max.ru/test_aimuza_bot",
+      }]] } }],
+    },
+  })));
 });
 
 test("group events preserve large IDs and internal broadcast requests require the separate secret", async t => {

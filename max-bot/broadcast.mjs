@@ -1,3 +1,5 @@
+import { linkButton, message } from "./chat-messages.mjs";
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const groupEvents = new Set(["bot_added", "bot_removed", "bot_admin_permissions_changed"]);
 const validChatId = id => typeof id === "string" && /^-?[1-9]\d{0,18}$/.test(id) &&
@@ -19,6 +21,20 @@ function readableTitle(chat) {
 }
 
 export function createBroadcastService({ store, max }) {
+  let botUrl;
+
+  async function broadcastMessage(input) {
+    if (!input.includeBotLink) return { text: input.text };
+    if (!botUrl) {
+      const { username, is_bot: isBot } = await max.me();
+      if (isBot !== true || typeof username !== "string" || !/^[a-z0-9_]{1,60}$/i.test(username)) {
+        throw new Error("MAX bot public username unavailable");
+      }
+      botUrl = `https://max.ru/${username}`;
+    }
+    return message(input.text, [[linkButton("Открыть АИМУЗА", botUrl)]]);
+  }
+
   async function groupEvent(event) {
     const { chatId, timestamp, removed } = event;
     if (removed) {
@@ -30,7 +46,7 @@ export function createBroadcastService({ store, max }) {
   }
 
   async function admin(input) {
-    const { action, owner, id, text, targets, chatId } = input ?? {};
+    const { action, owner, id, text, targets, chatId, includeBotLink = false } = input ?? {};
     if (typeof owner !== "string" || !uuid.test(owner)) return [400, { code: "BAD_INPUT" }];
     if (action === "broadcast-groups") return [200, { groups: store.groups() }];
     if (action === "broadcast-add-group" && validChatId(chatId)) {
@@ -53,11 +69,16 @@ export function createBroadcastService({ store, max }) {
       return batch ? [200, report(batch)] : [404, { code: "BROADCAST_NOT_FOUND" }];
     }
     if (action !== "broadcast-send" || typeof text !== "string" || !text.trim() || text.length > 4000 ||
+        typeof includeBotLink !== "boolean" ||
         !Array.isArray(targets) || targets.length === 0 || targets.length > 100 ||
         !targets.every(target => validChatId(target?.id) && typeof target.pin === "boolean") ||
         new Set(targets.map(target => target.id)).size !== targets.length) return [400, { code: "BAD_INPUT" }];
 
-    const normalized = { text: text.trim(), targets: targets.map(({ id, pin }) => ({ id, pin })) };
+    const normalized = {
+      text: text.trim(),
+      targets: targets.map(({ id, pin }) => ({ id, pin })),
+      ...(includeBotLink ? { includeBotLink } : {}),
+    };
     const results = normalized.targets.map(({ id, pin }) => {
       const known = store.knownGroup(id);
       return { id, pin, title: known?.title ?? null, status: known ? "queued" : "group_unavailable" };
@@ -85,11 +106,15 @@ export function createBroadcastService({ store, max }) {
         return outcome(result, unavailable(error) ? "group_unavailable" : "send_failed");
       }
 
+      let body;
+      try { body = await broadcastMessage(batch.input); }
+      catch { return outcome(result, "bot_link_unavailable"); }
+
       // MAX не поддерживает ключ идемпотентности для POST /messages.
       result.status = "sending";
       store.save(batch);
       try {
-        const response = await max.send({ groupId: id }, { text: batch.input.text });
+        const response = await max.send({ groupId: id }, body);
         const mid = response.message?.body?.mid;
         if (!result.pin) return outcome(result, "sent");
         if (typeof mid !== "string" || !mid) return outcome(result, "pin_failed");
