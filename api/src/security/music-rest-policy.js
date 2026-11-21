@@ -8,6 +8,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { ADMIN_RELEASE_DELETE_FILTER, USER_RELEASE_PROTECTED_COLUMNS } from './silk-release-rest-policy.js';
 
 const UPLOADS_DIR = path.resolve(process.env.UPLOADS_DIR || '/opt/aimuza/data/uploads');
 
@@ -49,11 +50,6 @@ const USER_TRACK_PROTECTED_COLUMNS = new Set([
   'provider_task_id', 'suno_audio_id', 'normalized_audio_url', 'original_audio_url',
   'wav_url', 'wav_expires_at',
   'blockchain_hash', 'blockchain_timestamp', 'certificate_url', 'deposit_id',
-]);
-
-const USER_RELEASE_PROTECTED_COLUMNS = new Set([
-  'id', 'user_id', 'status', 'admin_note', 'submitted_at', 'reviewed_at',
-  'sent_to_silk_at', 'live_at', 'created_at', 'updated_at',
 ]);
 
 function httpError(status, message, code) {
@@ -359,7 +355,7 @@ export function getMusicMutationScope(table, user, startIndex = 1, operation = '
   }
   if (isMusicAdmin(user)) {
     if (table === 'silk_releases' && operation === 'delete') {
-      return { sql: `"status" IN ('draft', 'rejected')`, params: [] };
+      return { sql: ADMIN_RELEASE_DELETE_FILTER, params: [] };
     }
     return { sql: '', params: [] };
   }
