@@ -87,10 +87,10 @@ export function startChatWorkers({store,api,max,handle,siteUrl}) {
             .filter(Boolean)
             .map((href, i, all) => linkButton(all.length>1 ? `⬇️ Версия ${i+1}` : "⬇️ Скачать MP3", href));
           await max.send(job.event,message(
-            "🌍 Это не всё: зарегистрируйся на сайте AIMUZA — там можно выпустить свои треки на площадки (стриминги) и познакомиться с музыкантами в нашей соцсети. Всё просто и в одном месте.",
+            "🌍 Это не всё: с аккаунтом сайта трек можно выпустить на площадки (стриминги), а в соцсети AIMUZA — найти слушателей. Подключение прямо в чате: 👤 Профиль → 🔗 Подключить сайт.",
             [
-              [linkButton("🌐 Открыть AIMUZA", siteUrl)],
               ...(downloads.length ? [downloads] : []),
+              [labels.link],
               [labels.muteInfo, labels.menu],
             ],
           ));

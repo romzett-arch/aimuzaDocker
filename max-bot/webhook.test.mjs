@@ -98,7 +98,7 @@ test("queues generation and sends a finished file to the same private chat", {ti
   assert.equal(store.nextJob(),undefined);
 });
 
-test("starts in MAX, generates all formats and switches to a linked account", async t=>{
+test("starts in MAX, generates all formats and registers a site account in chat", async t=>{
   const store=createChatStore(":memory:");
   t.after(store.close);
   const sent=[];
@@ -106,15 +106,22 @@ test("starts in MAX, generates all formats and switches to a linked account", as
   let linked=false;
   let mode="max";
   const handle=createChatHandler({
-    store,siteUrl:"https://aimuza.test",
+    store,appUrl:"https://app.aimuza.ru",
     max:{send:async (_event,body)=>sent.push(body)},
     api:async (action,_event,details)=>{
       apiCalls.push({action,details});
-      if (action==="link") return {link:"a".repeat(64),signupCode:"01234567"};
-      if (action==="verify") {
-        linked=details.code==="01112222";
-        if (linked) mode="site";
-        return {linked};
+      if (action==="authEmail") {
+        assert.equal(details.email,"user@example.com");
+        return {mode:"signup"};
+      }
+      if (action==="authRegister") {
+        assert.equal(details.username,"Анна");
+        assert.equal(details.email,"user@example.com");
+        return {mode:"signup"};
+      }
+      if (action==="authVerify") {
+        if (details.code==="AB12CD") { linked=true; mode="site"; return {ok:true,mode:"signup"}; }
+        return {code:"BAD_CODE"};
       }
       if (action==="switch") {mode=details.mode; return {mode};}
       if (action==="profile") return {ownerId:mode,balance:mode==="site" ? 100 : 50,mode,siteLinked:linked,music:28,image:5,lyrics:3};
@@ -176,12 +183,25 @@ test("starts in MAX, generates all formats and switches to a linked account", as
   await send("Баланс");
   assert.match(sent.at(-1).text,/50 ₽/);
   await send("Профиль");
+  assert.match(sent.at(-1).text,/дистрибуцию/);
+  assert.match(sent.at(-1).text,/соцсеть музыкантов/);
   await send("Подключить сайт");
-  const url=new URL(sent.at(-1).attachments[0].payload.buttons[0][0].url);
-  assert.equal(url.pathname,"/m/max-link");
-  assert.equal(url.searchParams.get("signup"),"1");
-  assert.equal(url.hash.slice(1),"a".repeat(64));
-  await send("01112222");
+  assert.match(sent.at(-1).text,/Пришли почту/);
+  await send("user@example.com");
+  assert.match(sent.at(-1).text,/создадим/);
+  assert.match(sent.at(-1).text,/пароль/);
+  await send("Sup3rSecret!");
+  assert.match(sent.at(-1).text,/Никнейм/);
+  await send("Анна");
+  assert.match(sent.at(-1).text,/Код подтверждения/);
+  await send("ZZZZZZ");
+  assert.match(sent.at(-1).text,/не подошёл/);
+  await send("AB12CD");
+  assert.match(sent.at(-1).text,/Аккаунт создан и привязан/);
+  const studio=sent.at(-1).attachments[0].payload.buttons[0][0];
+  assert.equal(studio.type,"link");
+  assert.equal(studio.text,"🚀 Открыть Студию");
+  assert.equal(studio.url,"https://app.aimuza.ru");
   await send("Баланс");
   assert.match(sent.at(-1).text,/100 ₽/);
   await send("Пополнить");
@@ -195,12 +215,48 @@ test("starts in MAX, generates all formats and switches to a linked account", as
   assert.match(sent.at(-1).text,/50 ₽/);
 });
 
+test("links an existing site account with just the email and the code from it", async t=>{
+  const store=createChatStore(":memory:");
+  t.after(store.close);
+  const sent=[];
+  let linked=false;
+  let mode="max";
+  const handle=createChatHandler({
+    store,appUrl:"https://app.aimuza.ru",
+    max:{send:async (_event,body)=>sent.push(body)},
+    api:async (action,_event,details)=>{
+      if (action==="authEmail") {
+        assert.equal(details.email,"old@example.com");
+        return {mode:"login"};
+      }
+      if (action==="authVerify") {
+        assert.equal(details.code,"AB12CD");
+        linked=true; mode="site";
+        return {ok:true,mode:"login"};
+      }
+      if (action==="switch") {mode=details.mode; return {mode};}
+      if (action==="profile") return {ownerId:mode,balance:mode==="site" ? 100 : 50,mode,siteLinked:linked,music:28,image:5,lyrics:3};
+      assert.fail(`Unexpected action: ${action}`);
+    },
+  });
+  const send=(text,key=text)=>handle({key,userId:31,chatId:40,text});
+  await send("Профиль");
+  await send("Подключить сайт");
+  await send("old@example.com");
+  assert.match(sent.at(-1).text,/Код подтверждения/);
+  assert.doesNotMatch(sent.at(-1).text,/пароль/);
+  await send("ab12cd");
+  assert.match(sent.at(-1).text,/Сайт подключён/);
+  await send("Баланс");
+  assert.match(sent.at(-1).text,/100 ₽/);
+});
+
 test("mutes the post-track info and re-enables it from the profile", async t=>{
   const store=createChatStore(":memory:");
   t.after(store.close);
   const sent=[];
   const handle=createChatHandler({
-    store,siteUrl:"https://aimuza.test",
+    store,appUrl:"https://app.aimuza.ru",
     max:{send:async (_event,body)=>sent.push(body)},
     api:async (action,_event)=>{
       if (action==="profile") return {ownerId:"max",balance:50,mode:"max",siteLinked:false,music:28,image:5,lyrics:3};

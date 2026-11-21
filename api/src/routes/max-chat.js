@@ -1,8 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.js';
-import { issueMaxLink, prepareMaxConfirmation, confirmMaxAccount, unlinkMaxAccount } from '../services/max-chat-accounts.js';
-import { linkedMaxAccount, maxAccount, selectMaxMode, standaloneMaxAccount } from '../services/max-chat-profiles.js';
+import { registerMaxChatAccount, startMaxAuth, unlinkMaxAccount, verifyMaxAuth } from '../services/max-chat-registration.js';
+import { linkedMaxAccount, maxAccount, selectMaxMode } from '../services/max-chat-profiles.js';
 import { actions, ChatActionError, uuid } from '../services/max-chat-actions.js';
 import { isMaxBlocked, validMaxId } from '../services/max-admin.js';
 import { readMaxImageInput } from '../services/max-image-input.js';
@@ -11,18 +10,6 @@ import { recordMaxIdentity } from '../services/max-chat-identity.js';
 const router = Router();
 const secret = Buffer.from(process.env.MAX_INTERNAL_SECRET || '');
 router.use((_req,res,next) => { res.set('Cache-Control','no-store'); next(); });
-
-router.post('/confirm',requireAuth,async (req,res,next)=>{
-  try {
-    if (secret.length < 32) return res.sendStatus(503);
-    const link = req.body?.link;
-    if (req.user.role !== 'authenticated' || typeof link !== 'string' || !/^[a-f0-9]{64}$/.test(link))
-      return res.status(400).json({code:'INVALID_LINK'});
-    const code = await prepareMaxConfirmation(link,req.user);
-    if (!code) return res.status(410).json({code:'INVALID_LINK'});
-    res.json({code});
-  } catch(error) { next(error); }
-});
 
 function requireBot(req, res, next) {
   const candidate = Buffer.from(req.get('x-aimuza-max-secret') || '');
@@ -40,14 +27,10 @@ router.post('/internal/:action', requireBot, readMaxImageInput, async(req,res,ne
       return updated === null ? res.status(400).json({code:'BAD_INPUT'}) : res.json({updated});
     }
     if (await isMaxBlocked(maxId)) return res.status(403).json({code:'MAX_BLOCKED'});
-    if (action==='link') {
-      const profile = await standaloneMaxAccount(maxId);
-      return res.json(await issueMaxLink(maxId, Boolean(profile && !profile.email)));
-    }
-    if (action==='verify') {
-      if (typeof req.body.code !== 'string' || !/^[0-9]{8}$/.test(req.body.code)) return res.status(400).json({code:'BAD_INPUT'});
-      return res.json({linked:await confirmMaxAccount(maxId,req.body.code)});
-    }
+    // Мастер привязки/регистрации аккаунта сайта — целиком в личном чате MAX.
+    if (action==='authEmail') return res.json(await startMaxAuth(maxId, req.body.email));
+    if (action==='authRegister') return res.json(await registerMaxChatAccount(maxId, req.body));
+    if (action==='authVerify') return res.json(await verifyMaxAuth(maxId, req.body));
     if (action==='unlink') {
       await unlinkMaxAccount(maxId);
       return res.json({ok:true});

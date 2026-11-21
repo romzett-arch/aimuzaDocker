@@ -12,6 +12,7 @@ services:
       - ./max-bot/.env.local
     environment:
       MAX_BOT_DB: /app/state/updates.sqlite
+      MAX_APP_URL: https://app.aimuza.ru
     ports:
       - "127.0.0.1:3215:3215"
     volumes:

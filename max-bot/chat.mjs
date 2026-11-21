@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { handleImageStep } from "./chat-images.mjs";
+import { createAuthStep } from "./chat-auth.mjs";
 import {
   action, errorButtons, genreRows, itemIcon, kindTitle, labels, linkButton, menu, message,
   presentError, profileLabel, quote, rubles, sendLyrics, statusIcon, title, vocalRows,
@@ -22,7 +23,7 @@ const eta = {
   image: "Картинка обычно готова за минуту-две",
 };
 
-export function createChatHandler({ store, api, max, siteUrl }) {
+export function createChatHandler({ store, api, max, appUrl }) {
   return async event => {
     const text = event.text?.trim() ?? "";
     const btn = action[text] ?? (text.startsWith(labels.balance) ? "balance" : text);
@@ -33,6 +34,7 @@ export function createChatHandler({ store, api, max, siteUrl }) {
     const save = value => store.setState(event.userId, value);
     const call = (name, body) => api(name, event, body);
     const imageStep = () => handleImageStep({ event, state, save, call, max, store, reply, confirmCard, btn, text });
+    const authStep = createAuthStep({ state, save, call, reply, md, appUrl });
 
     const menuRows = balance => [
       [labels.music], [labels.lyrics], [labels.image], [labels.works],
@@ -68,7 +70,14 @@ export function createChatHandler({ store, api, max, siteUrl }) {
         ? "Библиотека и баланс общие с сайтом aimuza.ru."
         : profile.siteLinked
           ? "Можно переключиться на аккаунт сайта — там общие библиотека и баланс с aimuza.ru."
-          : "Привяжи аккаунт сайта, чтобы пользоваться общими работами и балансом на aimuza.ru.";
+          : [
+            "Аккаунт сайта добавляет к боту:",
+            "• общие работы и баланс на сайте и в Студии",
+            "• 🚀 дистрибуцию — выпуск треков на площадки (стриминги)",
+            "• 🌍 соцсеть музыкантов AIMUZA: лента, слушатели, релизы",
+            "",
+            "Понравился трек — выпусти его так, чтобы его услышали все. Аккаунт создаётся или привязывается прямо здесь, в чате, за пару сообщений.",
+          ].join("\n");
       const choices = [
         ...(profile.mode === "site" ? [["Только в MAX"]] : [[profile.siteLinked ? "Аккаунт сайта" : labels.link]]),
         ...(muted ? [[labels.unmuteInfo]] : []),
@@ -113,7 +122,8 @@ export function createChatHandler({ store, api, max, siteUrl }) {
           "",
           "**Ещё**",
           `${labels.songFromLyrics} — трек из сохранённого текста`,
-          "Сайт aimuza.ru — регистрация, выпуск треков на площадки и соцсеть музыкантов AIMUZA",
+          `${labels.link} — аккаунт сайта за пару сообщений прямо в чате: общий баланс, 🚀 дистрибуция на площадки, 🌍 соцсеть музыкантов`,
+          "Студия app.aimuza.ru — веб-приложение AIMUZA, вход с аккаунтом сайта",
           "Команды: /start — меню · /unlink — отвязать сайт",
         ].join("\n"), menu);
       }
@@ -150,26 +160,16 @@ export function createChatHandler({ store, api, max, siteUrl }) {
         return md(`✅ Выбран профиль «${profileLabel(mode)}».`);
       }
       if (btn === "link") {
-        const { link, signupCode } = await call("link");
-        const url = new URL("/m/max-link", siteUrl);
-        if (signupCode) url.searchParams.set("signup", "1");
-        url.hash = link;
-        save({ mode: "link" });
-        const signup = signupCode
-          ? "\n\nНет аккаунта сайта? Выбери «Создать аккаунт» на странице и введи код регистрации: " +
-            `${signupCode}. Работы и баланс MAX сохранятся.`
-          : "";
-        return md(`# 🔗 Подключение сайта\n\n1. Открой AIMUZA по кнопке и войди в аккаунт\n2. Нажми «Получить код» на странице привязки\n3. Пришли сюда 8-значный код со страницы${signup}`, [
-          [linkButton("🔗 Открыть AIMUZA", url.href)], [labels.cancel],
-        ]);
+        save({ mode: "linkEmail" });
+        return md([
+          "# 🔗 Подключение сайта",
+          "",
+          "Пришли почту своего аккаунта AIMUZA — пришлю код подтверждения на неё.",
+          "",
+          "Нет аккаунта? Пришли любую свою почту: создадим аккаунт прямо здесь. Работы и баланс MAX сохранятся, а треки можно будет выпускать на площадки.",
+        ].join("\n"), [[labels.cancel]]);
       }
-      if (state.mode === "link" && /^[0-9]{8}$/.test(text)) {
-        const { linked } = await call("verify", { code: text });
-        if (linked) save({});
-        return linked
-          ? md("✅ Сайт подключён — выбран «Аккаунт сайта». Баланс и библиотека теперь общие с aimuza.ru, а профиль MAX доступен в разделе «Профиль».")
-          : reply("❌ Код не подошёл или связь уже занята. Проверь код либо запроси новую ссылку.", [[labels.link, labels.cancel]]);
-      }
+      if (state.mode?.startsWith("link")) return await authStep({ text, btn });
 
       if (event.callback) {
         if (event.callbackId) await max.answer?.(event.callbackId).catch(() => {});
@@ -316,7 +316,7 @@ export function createChatHandler({ store, api, max, siteUrl }) {
       }
       return reply("🤔 Не понял. Выбери действие в меню.");
     } catch (error) {
-      if (error.message === "LINK_REQUIRED") return reply("🔗 Подключи аккаунт сайта по новой ссылке.", [[labels.link, "Только в MAX"]]);
+      if (error.message === "LINK_REQUIRED") return reply("🔗 Аккаунт сайта не привязан. Подключи его: 👤 Профиль → 🔗 Подключить сайт — вход или регистрация прямо в чате.", [[labels.link, "Только в MAX"]]);
       if (error.status >= 400 && error.status < 500) return reply(presentError(error), errorButtons(error));
       throw error;
     }
