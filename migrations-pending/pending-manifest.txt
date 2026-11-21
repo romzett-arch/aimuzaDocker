@@ -1,3 +1,1 @@
-20261120233000_max_chat_accounts.sql
-20261121001000_max_chat_standalone.sql
 20261121120000_song_ideas_campaign_sync_4.sql

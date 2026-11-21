@@ -1,9 +1,15 @@
 import { assertOwnedMediaPath } from './storage-path-policy.js';
 
+// Пакеты релизов: имена различаются между поколениями генератора
+// (release-package-audio-v3.zip, release-package.zip, <asset-uuid>/package-<ts>.zip),
+// поэтому ветка определяется по префиксу пути + обязательной регистрации
+// пути как package_zip в silk_release_assets (см. запрос ниже).
+const RELEASE_PACKAGE_ZIP = /^release-packages\/[0-9a-f-]{36}\/(?:.+\/)?[^/]+\.zip$/i;
+
 // Generated archives are server-managed. Signing them does not grant write access.
 export async function assertMediaSigningAccess(user, bucket, filePath, client) {
   if (user?.role === 'service_role') return;
-  if (bucket !== 'tracks' || !/^release-packages\/[0-9a-f-]{36}\/release-package-audio-v3\.zip$/i.test(filePath)) {
+  if (bucket !== 'tracks' || !RELEASE_PACKAGE_ZIP.test(filePath)) {
     return assertOwnedMediaPath(user, bucket, filePath);
   }
   const isAdmin = ['admin', 'super_admin', 'superadmin'].includes(user?.app_role);
