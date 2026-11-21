@@ -41,6 +41,7 @@ import functionsRouter from './routes/functions.js';
 import studioRouter from './routes/studio.js';
 import legalRouter from './routes/legal.js';
 import maxChatRouter from './routes/max-chat.js';
+import maxAdminRouter from './routes/max-admin.js';
 import { startLegalWorker } from './services/legal/worker.js';
 import { authMiddleware, requireServiceRole } from './middleware/auth.js';
 import { startMediaLifecycle, runMediaLifecycle } from './services/mediaLifecycle.js';
@@ -175,6 +176,7 @@ app.use('/storage/v1', storageRouter);
 app.use('/studio/v1', studioRouter);
 app.use('/api/legal', legalRouter);
 app.use('/api/max', maxChatRouter);
+app.use('/functions/v1', maxAdminRouter);
 app.use('/functions/v1', emailRouter);       // Email — обрабатывается в Node.js (не Deno)
 app.use('/functions/v1', imageGenerationRouter);
 app.use('/functions/v1', functionsRouter);    // Остальные функции — проксируются в Deno

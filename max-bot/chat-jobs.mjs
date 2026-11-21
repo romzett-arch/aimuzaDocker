@@ -1,4 +1,5 @@
-import { errorButtons, labels, linkButton, message, presentError, sendLyrics, title } from "./chat-messages.mjs";
+import { errorButtons, isInsufficientFunds, labels, linkButton, lyricsMessages, message, presentError, title } from "./chat-messages.mjs";
+import { imageActions } from "./chat-images.mjs";
 
 export function startChatWorkers({store,api,max,handle,siteUrl}) {
   let processingEvent = false;
@@ -32,7 +33,13 @@ export function startChatWorkers({store,api,max,handle,siteUrl}) {
         await max.send(job.event,message("⌛️ Задание всё ещё в работе. Позже проверь в «Моих работах» — результат появится там.",[[labels.works, labels.menu]]));
         store.finishJob(job.id);
       } else if (job.phase==="start") {
-        await call("start",{id:job.id,kind:job.kind,prompt:job.prompt,price:job.price,lyricsId:job.lyricsId});
+        const reference = job.referenceId ? store.reference(job.event.userId, job.referenceId) : undefined;
+        if (job.referenceId && !reference) {
+          const error = new Error("INVALID_REFERENCE");
+          error.status = 422;
+          throw error;
+        }
+        await call("start",{id:job.id,kind:job.kind,prompt:job.prompt,price:job.price,lyricsId:job.lyricsId,imageId:job.imageId,reference});
         store.saveJob({...job,phase:"status",prompt:undefined},3000);
       } else if (job.phase==="status") {
         const result = await call("status",{id:job.id,kind:job.kind});
@@ -44,10 +51,15 @@ export function startChatWorkers({store,api,max,handle,siteUrl}) {
         }
       } else if (job.kind === "lyrics") {
         const lyric = await call("lyric", { id: job.items[0].id });
-        await sendLyrics(body => max.send(job.event, body), lyric, [[labels.songFromLyrics], [labels.worksLyrics, labels.menu]]);
         store.setLastLyrics(job.event.userId, { lyricsId: job.items[0].id, ownerId: job.ownerId });
-        if (job.items.length === 1) store.finishJob(job.id);
-        else store.saveJob({ ...job, items: job.items.slice(1), retries: 0 }, 1000);
+        const chunks = lyricsMessages(lyric, [[labels.songFromLyrics], [labels.worksLyrics, labels.menu]]);
+        for (const [index, body] of chunks.entries()) {
+          if (index < (job.sentChunks ?? 0)) continue;
+          await max.send(job.event, body);
+          job.sentChunks = index + 1;
+          store.saveJob(job);
+        }
+        store.finishJob(job.id);
       } else {
         await call("profile");
         const item = job.items[0];
@@ -56,7 +68,7 @@ export function startChatWorkers({store,api,max,handle,siteUrl}) {
         const attachment = job.attachment ?? await max.upload(kind,blob);
         if (!job.attachment) { store.saveJob({...job,attachment},3000); return; }
         if (!job.delivered) {
-          const caption = `${job.kind==="image" ? "🖼️" : "🎧"} «${title(item.title)}»${job.kind==="image" ? " готова" : " готов"}!`;
+          const caption = job.kind === "image" ? "🖼️ Картинка готова!" : `🎧 «${title(item.title)}» готов!`;
           // MAX не принимает inline-кнопки вместе с медиа — вложение уходит без клавиатуры.
           await max.send(job.event,{text:caption,attachments:[attachment]});
           if (job.items.length===1) { store.saveJob({...job,delivered:true},0); job.delivered=true; }
@@ -78,12 +90,18 @@ export function startChatWorkers({store,api,max,handle,siteUrl}) {
             ],
           ));
         }
+        if (job.kind === "image") await max.send(job.event, imageActions(item.id, job.ownerId));
         store.finishJob(job.id);
       }
     } catch (error) {
       const retries = (job.retries ?? 0) + 1;
       const final = error.status===401 || (job.phase==="start" && error.status>=400 && error.status<500) || retries>=7;
-      if (final) {
+      if (job.phase === "start" && isInsufficientFunds(error)) {
+        store.deferOrder(job);
+        await max.send(job.event, message("😢 Не хватает средств. Заказ сохранён на сутки. После пополнения нажми «Продолжить генерацию».", [
+          [labels.topUpOrder], [labels.retryOrder], [labels.menu],
+        ])).catch(() => {});
+      } else if (final) {
         const body = presentError(error);
         await max.send(job.event,message(body,errorButtons(error))).catch(()=>{});
         store.finishJob(job.id);

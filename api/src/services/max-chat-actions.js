@@ -15,10 +15,12 @@ export class ChatActionError extends Error {
 
 async function existingApi(account, path, input) {
   const token = signToken({ ...account, session_origin: 'max' });
+  const headers = { Authorization: `Bearer ${token}` };
+  if (!(input instanceof FormData)) headers['Content-Type'] = 'application/json';
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    headers,
+    body: input instanceof FormData ? input : JSON.stringify(input),
     redirect: 'error',
     signal: AbortSignal.timeout(140_000),
   });
@@ -48,7 +50,33 @@ async function profile(account) {
   };
 }
 
-async function start(account, { kind, id, prompt, price, lyricsId }) {
+async function imageSource(account, { id }) {
+  const image = uuid(id) && await getImageJob(account.id, id);
+  if (image?.status !== 'completed') throw new ChatActionError('NOT_FOUND', 404);
+  return image;
+}
+
+async function startImage(account, { id, prompt, price, imageId, reference }) {
+  if (await getImageJob(account.id, id)) return;
+  if (reference != null && !(reference instanceof Blob)) throw new ChatActionError('INVALID_REFERENCE', 422);
+
+  const source = imageId === undefined ? null : await imageSource(account, { id: imageId });
+  const input = {
+    action: 'generate', id, prompt: source
+      ? `Отредактируй исходное изображение. Сохрани композицию и детали, которые не просят менять. Изменения: ${prompt}`
+      : prompt,
+    ratio: source?.aspect_ratio ?? '1:1', resolution: source?.resolution ?? '2K', price,
+    ...(source?.release_track_id ? { releaseTrackId: source.release_track_id } : {}),
+    ...(source && !reference ? { referenceId: source.id } : {}),
+  };
+  if (!reference) return existingApi(account, '/functions/v1/generate-image', input);
+  const form = new FormData();
+  for (const [key, value] of Object.entries(input)) form.set(key, String(value));
+  form.set('reference', reference, 'reference');
+  return existingApi(account, '/functions/v1/generate-image', form);
+}
+
+async function start(account, { kind, id, prompt, price, lyricsId, imageId, reference }) {
   if (!uuid(id) || !kinds.has(kind) || typeof prompt !== 'string' || !prompt.trim() ||
       prompt.length > (kind === 'lyrics' ? 200 : 1000) || !Number.isSafeInteger(price) || price < 1) {
     throw new ChatActionError('BAD_INPUT');
@@ -66,10 +94,7 @@ async function start(account, { kind, id, prompt, price, lyricsId }) {
     }
     await existingApi(account, '/studio/v1/generations', input);
   } else if (kind === 'image') {
-    const prior = await getImageJob(account.id,id);
-    if (!prior) await existingApi(account, '/functions/v1/generate-image', {
-      action:'generate', id, prompt:prompt.trim(), ratio:'1:1', resolution:'2K', price,
-    });
+    await startImage(account, { id, prompt: prompt.trim(), price, imageId, reference });
   } else await existingApi(account, '/functions/v1/generate-lyrics', { prompt: prompt.trim(), requestId: id, expectedPrice: price });
   return { accepted: true };
 }
@@ -131,7 +156,7 @@ async function lyricsStatus(account, id) {
   );
   if (job?.status !== 'completed') return { pending: job?.status === 'pending', items: [] };
   const { rows: items } = await pool.query(
-    "SELECT id,title FROM public.generated_lyrics WHERE user_id=$1 AND job_id=$2 AND NULLIF(lyrics,'') IS NOT NULL ORDER BY created_at,id",
+    "SELECT id,title FROM public.generated_lyrics WHERE user_id=$1 AND job_id=$2 AND NULLIF(lyrics,'') IS NOT NULL ORDER BY created_at,id LIMIT 1",
     [account.id, id],
   );
   return { pending: false, items };
@@ -154,6 +179,10 @@ async function media(account, {id,kind}, res) {
 
 export const actions = {
   profile, start, works, media, lyric,
+  async 'image-source'(account, input) {
+    await imageSource(account, input);
+    return { price: (await profile(account)).image, mode: account.mode };
+  },
   async status(account,{id,kind}) {
     if (!uuid(id) || !kinds.has(kind)) throw new ChatActionError('BAD_INPUT');
     if (kind==='music') return musicStatus(account,id);

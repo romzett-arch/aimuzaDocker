@@ -126,6 +126,8 @@ test("starts in MAX, generates all formats and switches to a linked account", as
   assert.equal(store.nextJob(),undefined);
   await send("Картинки");
   await send("Ночной город");
+  assert.match(sent.at(-1).text, /картинка для примера/);
+  await send("Без референса");
   await send("Создать","image-confirmation");
   assert.equal(store.nextJob().kind,"image");
   store.finishJob(store.nextJob().id);
@@ -209,8 +211,9 @@ test("delivers generated lyrics as a message to their owner", {timeout:8000}, as
       assert.equal(event.userId,25);
       assert.equal(body.ownerId,"max-owner");
       if (action==="start") return {accepted:true};
-      if (action==="status") return {pending:false,items:[{id:"text",title:"Песня"}]};
+      if (action==="status") return {pending:false,items:[{id:"text",title:"Песня"},{id:"duplicate",title:"Песня"}]};
       assert.equal(action,"lyric");
+      assert.equal(body.id, "text");
       return {title:"Песня",lyrics:"Первая строка"};
     },
     max:{send:async (event,body)=>delivered.resolve({chatId:event.chatId,body})},

@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import sharp from 'sharp';
+import { pool } from '../db.js';
 import { requireAuth, requireServiceRole } from '../middleware/auth.js';
-import { distributionCoverResolution, prepareDistributionCover } from '../services/distribution-cover.js';
+import { distributionCoverResolution, isPaidReleaseCover, prepareDistributionCover } from '../services/distribution-cover.js';
 import { loadTrackCover } from '../services/release-cover-source.js';
 import {
   completeImage, failImage, getGeneratedImage, getImageJob, imageGallery, imageHistory, reserveImage, savePreparedCover,
@@ -51,9 +52,11 @@ router.get('/generated-image/:id', requireAuth, async (req, res, next) => {
 
 router.post('/release-package-cover', requireServiceRole, async (req, res, next) => {
   try {
-    const { user_id: userId, id } = req.body ?? {};
-    const result = isUuid(userId) && isUuid(id) && await getGeneratedImage(userId, id);
-    if (!result || result.resolution !== distributionCoverResolution || result.mime_type !== 'image/jpeg') {
+    const { user_id: userId, id, track_id: trackId } = req.body ?? {};
+    const result = isUuid(userId) && isUuid(id) && isUuid(trackId) && await getGeneratedImage(userId, id);
+    if (!isPaidReleaseCover(result, trackId)) return res.sendStatus(404);
+    const { width, height, format } = await sharp(result.image, { limitInputPixels: 20_000_000 }).metadata();
+    if (format !== 'jpeg' || width !== 3000 || height !== 3000) {
       return res.sendStatus(404);
     }
     return res.set('Cache-Control', 'private, no-store').type(result.mime_type).send(result.image);
@@ -178,6 +181,9 @@ router.post('/generate-image', requireAuth, async (req, res, next) => {
     const isMultipart = req.is('multipart/form-data');
     const prepare = input.action === 'prepare-cover';
     if (input.trackId && (!isUuid(input.trackId) || input.reference)) return res.json({ problem: 'INVALID_REFERENCE' });
+    if (input.referenceId && (!isUuid(input.referenceId) || input.trackId || input.reference || prepare)) {
+      return res.json({ problem: 'INVALID_REFERENCE' });
+    }
     if (input.reference && !isMultipart) return res.json({ problem: 'INVALID_REFERENCE' });
     // Multipart form serialization expands line breaks to CRLF.
     const prompt = typeof input.prompt === 'string' ? input.prompt.replace(/\r\n?/g, '\n').trim() : '';
@@ -189,9 +195,24 @@ router.post('/generate-image', requireAuth, async (req, res, next) => {
     const apiKey = process.env.ROUTERAI_IMAGE_API_KEY?.trim();
     if (!apiKey && !prepare) return res.json({ problem: 'UNAVAILABLE' });
 
+    if (input.releaseTrackId !== undefined) {
+      if (!isUuid(input.releaseTrackId) || prepare || input.resolution !== distributionCoverResolution ||
+          (input.trackId && input.trackId !== input.releaseTrackId)) return res.json({ problem: 'INVALID_INPUT' });
+      const track = await pool.query("SELECT 1 FROM public.tracks WHERE id=$1 AND user_id=$2 AND status='completed'", [input.releaseTrackId, userId]);
+      if (!track.rowCount) return res.json({ problem: 'INVALID_INPUT' });
+    }
+
     let reference;
     try {
-      const bytes = input.trackId ? await loadTrackCover(input.trackId, req.get('authorization')) : input.reference;
+      let bytes = input.trackId ? await loadTrackCover(input.trackId, req.get('authorization')) : input.reference;
+      if (input.referenceId) {
+        const source = await getGeneratedImage(userId, input.referenceId);
+        if (!source?.image || (input.releaseTrackId && source.release_track_id !== input.releaseTrackId)) {
+          return res.json({ problem: 'INVALID_REFERENCE' });
+        }
+        bytes = await sharp(source.image, { limitInputPixels: 20_000_000 }).autoOrient()
+          .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 90 }).toBuffer();
+      }
       if (bytes) {
         const mime = imageType(bytes);
         if (!mime) return res.json({ problem: 'INVALID_REFERENCE' });

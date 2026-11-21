@@ -9,6 +9,7 @@ export function createChatStore(path) {
     CREATE TABLE IF NOT EXISTS chat_state (id TEXT PRIMARY KEY, state TEXT NOT NULL, touched INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, data TEXT NOT NULL, due INTEGER NOT NULL, created INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS user_settings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS photo_references (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, photo BLOB NOT NULL, type TEXT NOT NULL, created INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS inbox_due ON inbox (due);
     CREATE INDEX IF NOT EXISTS jobs_due ON jobs (due);
   `);
@@ -71,9 +72,32 @@ export function createChatStore(path) {
       db.prepare("UPDATE jobs SET data=?,due=? WHERE id=?").run(JSON.stringify(job),Date.now()+delay,job.id);
     },
     finishJob(id) { db.prepare("DELETE FROM jobs WHERE id=?").run(id); },
+    pendingOrder(userId) {
+      const row = db.prepare("SELECT state FROM chat_state WHERE id=? AND touched>?").get(`${userId}:payment`, Date.now() - 86_400_000);
+      return row ? JSON.parse(row.state) : null;
+    },
+    deferOrder(job) {
+      db.exec("BEGIN");
+      try {
+        this.setState(`${job.event.userId}:payment`, job);
+        this.finishJob(job.id);
+        db.exec("COMMIT");
+      } catch (error) { db.exec("ROLLBACK"); throw error; }
+    },
+    clearPendingOrder(userId, id) {
+      db.prepare("DELETE FROM chat_state WHERE id=? AND json_extract(state,'$.id')=?").run(`${userId}:payment`, id);
+    },
+    saveReference(userId, id, { bytes, type }) {
+      db.prepare("INSERT INTO photo_references VALUES (?,?,?,?,?)").run(id, String(userId), bytes, type, Date.now());
+    },
+    reference(userId, id) {
+      const row = db.prepare("SELECT photo,type FROM photo_references WHERE id=? AND user_id=?").get(id, String(userId));
+      return row && new Blob([row.photo], { type: row.type });
+    },
     prune() {
       db.prepare("DELETE FROM updates WHERE seen_at<?").run(Date.now() - 7 * 86_400_000);
       db.prepare("DELETE FROM chat_state WHERE touched<?").run(Date.now() - 86_400_000);
+      db.prepare("DELETE FROM photo_references WHERE created<?").run(Date.now() - 2 * 86_400_000);
     },
     close: () => db.close(),
   };

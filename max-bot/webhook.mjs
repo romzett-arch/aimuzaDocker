@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { editImagePattern } from "./chat-images.mjs";
 
 function readEvent(update) {
   if (!update || typeof update !== "object") return null;
@@ -11,9 +12,25 @@ function readEvent(update) {
   }
   if (update.update_type==="message_created") {
     const {sender,recipient,body}=update.message ?? {};
+    const attachment = Array.isArray(body?.attachments) && body.attachments.find(item => item?.type === "image");
     if (recipient?.chat_type==="dialog" && !sender?.is_bot && Number.isSafeInteger(sender?.user_id) && sender.user_id>0 &&
-        typeof body?.mid==="string" && body.mid.length<=256 && typeof body.text==="string") {
-      return {key:`message:${body.mid}`,type:"message_created",userId:sender.user_id,chatId:recipient.chat_id,text:body.text.slice(0,1001)};
+        typeof body?.mid==="string" && body.mid.length<=256 && (typeof body.text==="string" || attachment)) {
+      const url = attachment?.payload?.url;
+      return {key:`message:${body.mid}`,type:"message_created",userId:sender.user_id,chatId:recipient.chat_id,
+        text: typeof body.text === "string" ? body.text.slice(0,1001) : "",
+        ...(attachment ? { photo: { mid: body.mid, url: typeof url === "string" && url.length <= 4096 ? url : undefined } } : {}),
+      };
+    }
+  }
+  if (update.update_type === "message_callback") {
+    const { callback, message } = update;
+    const userId = callback?.user?.user_id;
+    const recipient = message?.recipient;
+    if (recipient?.chat_type === "dialog" && !callback?.user?.is_bot && Number.isSafeInteger(userId) && userId > 0 &&
+        typeof callback.payload === "string" && editImagePattern.test(callback.payload) &&
+        typeof callback.callback_id === "string" && callback.callback_id.length <= 256) {
+      return { key: `callback:${callback.callback_id}`, type: "message_callback", userId, chatId: recipient.chat_id,
+        callback: callback.payload, callbackId: callback.callback_id };
     }
   }
   return null;

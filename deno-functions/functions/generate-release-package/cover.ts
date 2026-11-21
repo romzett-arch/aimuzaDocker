@@ -19,11 +19,11 @@ export async function respondWithCoverSource(url: string, headers: Record<string
   }
 }
 
-export async function loadConfirmedCover(apiUrl: string, serviceKey: string, userId: string, coverId: string) {
+export async function loadConfirmedCover(apiUrl: string, serviceKey: string, userId: string, trackId: string, coverId: string) {
   const response = await fetch(`${apiUrl.replace(/\/$/, "")}/functions/v1/release-package-cover`, {
     method: "POST",
     headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, id: coverId }),
+    body: JSON.stringify({ user_id: userId, id: coverId, track_id: trackId }),
     redirect: "error",
     signal: AbortSignal.timeout(15_000),
   });

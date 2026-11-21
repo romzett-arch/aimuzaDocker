@@ -4,6 +4,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { issueMaxLink, prepareMaxConfirmation, confirmMaxAccount, unlinkMaxAccount } from '../services/max-chat-accounts.js';
 import { linkedMaxAccount, maxAccount, selectMaxMode, standaloneMaxAccount } from '../services/max-chat-profiles.js';
 import { actions, ChatActionError, uuid } from '../services/max-chat-actions.js';
+import { isMaxBlocked, validMaxId } from '../services/max-admin.js';
+import { readMaxImageInput } from '../services/max-image-input.js';
 
 const router = Router();
 const secret = Buffer.from(process.env.MAX_INTERNAL_SECRET || '');
@@ -21,12 +23,17 @@ router.post('/confirm',requireAuth,async (req,res,next)=>{
   } catch(error) { next(error); }
 });
 
-router.post('/internal/:action', async(req,res,next)=>{
+function requireBot(req, res, next) {
   const candidate = Buffer.from(req.get('x-aimuza-max-secret') || '');
   if (secret.length < 32 || candidate.length !== secret.length || !timingSafeEqual(candidate,secret)) return res.sendStatus(403);
+  next();
+}
+
+router.post('/internal/:action', requireBot, readMaxImageInput, async(req,res,next)=>{
   const {maxId,ownerId,standalone} = req.body ?? {};
-  if (typeof maxId !== 'string' || !/^[1-9][0-9]{0,18}$/.test(maxId)) return res.status(400).json({code:'BAD_INPUT'});
+  if (!validMaxId(maxId)) return res.status(400).json({code:'BAD_INPUT'});
   try {
+    if (await isMaxBlocked(maxId)) return res.status(403).json({code:'MAX_BLOCKED'});
     const action = req.params.action;
     if (action==='link') {
       const profile = await standaloneMaxAccount(maxId);

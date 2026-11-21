@@ -1,3 +1,5 @@
+import { fetchMaxPhoto } from "./max-photo.mjs";
+
 const apiOrigin = "https://platform-api2.max.ru";
 
 export function createMaxClient(token, origin = apiOrigin) {
@@ -21,6 +23,21 @@ export function createMaxClient(token, origin = apiOrigin) {
 
   return {
     me: () => request("/me"),
+    answer: callbackId => request(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    }),
+    async downloadPhoto({ mid, url }) {
+      if (url) {
+        try { return await fetchMaxPhoto(url); }
+        catch (error) {
+          if (![403, 404, 410].includes(error.status)) throw error;
+        }
+      }
+      const message = await request(`/messages/${encodeURIComponent(mid)}`);
+      const photo = message.body?.attachments?.find(item => item.type === "image");
+      if (!photo?.payload?.url) throw new Error("MAX photo URL missing");
+      return fetchMaxPhoto(photo.payload.url);
+    },
     async upload(type, blob) {
       if (!blob || !blob.size || blob.size > 32 * 1024 * 1024) throw new Error("Invalid media size");
       const target = await request(`/uploads?type=${type}`, {method:"POST"});

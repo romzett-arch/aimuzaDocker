@@ -10,6 +10,9 @@ export const labels = {
   cancel: "✖️ Отмена",
   create: "🚀 Создать",
   topUp: "➕ Пополнить",
+  topUpOrder: "➕ Пополнить для заказа",
+  retryOrder: "🔁 Продолжить генерацию",
+  skipReference: "Без референса",
   worksMusic: "🎧 Мои треки",
   worksLyrics: "📝 Мои тексты",
   worksImage: "🌆 Мои картинки",
@@ -148,6 +151,8 @@ const errorTexts = {
   GENERATION_FAILED: "😔 Генерация не завершилась. Проверь статус в «Моих работах».",
   BAD_AMOUNT: "🔢 Сумма — от 10 до 150 000 ₽ целым числом. Попробуй ещё раз.",
   NOT_FOUND: "🔍 Работа недоступна. Обнови список в «Моих работах».",
+  INVALID_REFERENCE: "🖼️ Референс недоступен. Начни генерацию и прикрепи картинку заново.",
+  MAX_BLOCKED: "Доступ к боту AIMUZA в MAX ограничен.",
 };
 
 const errorRows = {
@@ -159,6 +164,8 @@ const errorRows = {
   BAD_AMOUNT: () => [[labels.cancel]],
 };
 
+export const isInsufficientFunds = error => ['INSUFFICIENT_FUNDS', 'INSUFFICIENT_BALANCE'].includes(error.message);
+
 export function presentError(error) {
   return errorTexts[error.message] ?? "⚠️ Не удалось выполнить действие. Попробуй ещё раз.";
 }
@@ -167,15 +174,21 @@ export function errorButtons(error) {
   return (errorRows[error.message] ?? (() => [[labels.menu]]))();
 }
 
-export async function sendLyrics(send, lyric, rows) {
+export function lyricsMessages(lyric, rows) {
   const head = lyric.title ? `📝 «${title(lyric.title)}»` : "📝 Текст песни";
   let remaining = [head, lyric.lyrics].filter(Boolean).join("\n\n").trim();
+  const chunks = [];
   while (remaining.length > 3000) {
     const lastLine = remaining.lastIndexOf("\n", 3000);
     let end = lastLine > 1500 ? lastLine + 1 : 3000;
     if (/[\uD800-\uDBFF]/.test(remaining[end - 1])) end--;
-    await send(message(remaining.slice(0, end)));
+    chunks.push(message(remaining.slice(0, end)));
     remaining = remaining.slice(end);
   }
-  await send(message(remaining, rows));
+  chunks.push(message(remaining, rows));
+  return chunks;
+}
+
+export async function sendLyrics(send, lyric, rows) {
+  for (const chunk of lyricsMessages(lyric, rows)) await send(chunk);
 }

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { handleImageStep } from "./chat-images.mjs";
 import {
   action, errorButtons, genreRows, itemIcon, kindTitle, labels, linkButton, menu, message,
   presentError, profileLabel, quote, rubles, sendLyrics, statusIcon, title, vocalRows,
@@ -31,6 +32,7 @@ export function createChatHandler({ store, api, max, siteUrl }) {
     const state = store.state(event.userId);
     const save = value => store.setState(event.userId, value);
     const call = (name, body) => api(name, event, body);
+    const imageStep = () => handleImageStep({ event, state, save, call, max, store, reply, confirmCard, btn, text });
 
     const menuRows = balance => [
       [labels.music], [labels.lyrics], [labels.image], [labels.works],
@@ -53,7 +55,8 @@ export function createChatHandler({ store, api, max, siteUrl }) {
     const confirmCard = s => {
       const brief = s.prompt.length > 400 ? `${s.prompt.slice(0, 400).trimEnd()}…` : s.prompt;
       const versions = s.kind === "music" ? "\n💿 В цену входят две версии трека" : "";
-      return md(`✅ Проверь заказ\n\n${quote(brief)}\n\n💰 ${rubles(s.price)} · профиль «${profileLabel(s.profileMode)}»${versions}\n\nСоздаём?`, [
+      const reference = s.referenceId ? "\n🖼️ Референс прикреплён" : s.imageId ? "\n🖼️ Использую выбранную картинку" : "";
+      return md(`✅ Проверь заказ\n\n${quote(brief)}\n\n💰 ${rubles(s.price)} · профиль «${profileLabel(s.profileMode)}»${versions}${reference}\n\nСоздаём?`, [
         [labels.create, labels.cancel],
       ]);
     };
@@ -114,7 +117,7 @@ export function createChatHandler({ store, api, max, siteUrl }) {
           "Команды: /start — меню · /unlink — отвязать сайт",
         ].join("\n"), menu);
       }
-      if (!text || /^\/start(\s|$)/i.test(text) || btn === "menu" || btn === "cancel") {
+      if ((!text && !event.photo && !event.callback) || /^\/start(\s|$)/i.test(text) || btn === "menu" || btn === "cancel") {
         const fresh = Object.keys(state).length === 0 && (!text || /^\/start(\s|$)/i.test(text));
         save({});
         const profile = await call("profile");
@@ -168,8 +171,21 @@ export function createChatHandler({ store, api, max, siteUrl }) {
           : reply("❌ Код не подошёл или связь уже занята. Проверь код либо запроси новую ссылку.", [[labels.link, labels.cancel]]);
       }
 
+      if (event.callback) {
+        if (event.callbackId) await max.answer?.(event.callbackId).catch(() => {});
+        return await imageStep();
+      }
+
+      const pending = store.pendingOrder(event.userId);
+      const lastLyrics = btn === "songFromLyrics" && store.lastLyrics(event.userId);
+      if (btn === "retryOrder" || (lastLyrics && pending?.lyricsId === lastLyrics.lyricsId && pending.ownerId === lastLyrics.ownerId)) {
+        if (!pending) return reply("Нет заказа, который ожидает пополнения.");
+        store.addJob({ ...pending, event });
+        store.clearPendingOrder(event.userId, pending.id);
+        return reply("⏳ Повторяю запуск сохранённого заказа.", [[labels.works, labels.menu]]);
+      }
       if (btn === "songFromLyrics") {
-        const last = store.lastLyrics(event.userId);
+        const last = lastLyrics;
         if (!last?.lyricsId) {
           return reply("🎧 Сначала выбери текст в «Мои тексты» — из него соберу трек.", [[labels.worksLyrics, labels.menu]]);
         }
@@ -187,13 +203,14 @@ export function createChatHandler({ store, api, max, siteUrl }) {
         if (btn === "music") return trackScreen(undefined, price);
         return md(`# ${itemIcon(btn)} ${itemNames[btn]} · ${rubles(price)}\n\n${promptHints[btn]}`, [[labels.cancel]]);
       }
-      if (btn === "balance" || btn === "topUp") {
-        const profile = await call("profile");
+      if (btn === "balance" || btn === "topUp" || btn === "topUpOrder") {
+        if (btn === "topUpOrder" && !pending) return reply("Нет заказа, который ожидает пополнения.", [[labels.balance]]);
+        const profile = await call("profile", btn === "topUpOrder" ? { ownerId: pending.ownerId } : undefined);
         const label = profileLabel(profile.mode);
         if (btn === "balance") {
           save({});
           return md(`# 💰 Баланс\n\nПрофиль «${label}» — ${rubles(profile.balance)}.\n\nПополнение от 10 до 150 000 ₽ целым числом. Деньги приходят после подтверждения Робокассой.`, [
-            [labels.topUp], ...menu,
+            [labels.topUp], ...(pending ? [[labels.retryOrder]] : []), ...menu,
           ]);
         }
         save({ mode: "payment", ownerId: profile.ownerId, profileMode: profile.mode });
@@ -228,19 +245,24 @@ export function createChatHandler({ store, api, max, siteUrl }) {
         const payment = state.mode === "checkout" ? state : await call("payment", { amount, ownerId: state.ownerId });
         save({ ...state, mode: "checkout", url: payment.url, eventKey: event.key });
         return md(`💳 Счёт на ${rubles(amount)} для «${profileLabel(state.profileMode)}» создан.\n\nБаланс обновится после подтверждения Робокассой.`, [
-          [linkButton("💳 Открыть оплату", payment.url)], [labels.balance],
+          [linkButton("💳 Открыть оплату", payment.url)],
+          ...(pending?.ownerId === state.ownerId ? [[labels.retryOrder]] : []), [labels.balance],
         ]);
       }
       if (btn === "create" && (state.mode === "confirm" || (state.mode === "queued" && state.eventKey === event.key))) {
-        store.addJob({
-          id: state.id, event, ownerId: state.ownerId, kind: state.kind, lyricsId: state.lyricsId,
-          prompt: state.prompt, price: state.price, phase: "start",
-        });
-        save({ ...state, mode: "queued", eventKey: event.key });
+        if (state.mode === "confirm") {
+          store.addJob({
+            id: state.id, event, ownerId: state.ownerId, kind: state.kind, lyricsId: state.lyricsId,
+            prompt: state.prompt, price: state.price, imageId: state.imageId, referenceId: state.referenceId, phase: "start",
+          });
+          save({ ...state, mode: "queued", eventKey: event.key });
+        }
         return md(`⏳ Задание принято в работу.\n\n${eta[state.kind] ?? "Обычно это занимает несколько минут"} — пришлю результат сюда.`, [
           [labels.works, labels.menu],
         ]);
       }
+      if (state.mode === "confirm" && state.eventKey === event.key) return confirmCard(state);
+      if (state.mode === "imageReference" || state.mode === "imageEdit") return await imageStep();
       if (state.mode === "prompt") {
         if (btn === "back") {
           save({});
@@ -261,12 +283,21 @@ export function createChatHandler({ store, api, max, siteUrl }) {
           }
         }
         const limit = state.kind === "lyrics" ? 200 : 1000;
+        if (state.kind === "image" && (event.photo || state.referenceId)) return await imageStep();
+        if (!text) return reply("Добавь описание к сообщению.", [[labels.cancel]]);
         if (text.length > limit) return reply(`✂️ Сократи описание до ${limit} символов — сейчас ${text.length}.`, [[labels.cancel]]);
+        if (state.kind === "image") {
+          save({ ...state, mode: "imageReference", id: randomUUID(), prompt: text });
+          return reply("Есть картинка для примера? Прикрепи её или нажми «Без референса».", [[labels.skipReference, labels.cancel]]);
+        }
         save({ ...state, mode: "confirm", id: randomUUID(), prompt: text });
         return confirmCard({ ...state, prompt: text });
       }
       if (state.mode === "styleInput") {
-        if (btn === "back") return trackScreen(state.lyricsId, state.price);
+        if (btn === "back") {
+          save({ ...state, mode: "prompt" });
+          return trackScreen(state.lyricsId, state.price);
+        }
         if (text.length > 300) return reply(`✂️ Сократи описание стиля до 300 символов — сейчас ${text.length}.`, [[labels.cancel]]);
         save({ ...state, mode: "vocal", genre: text, genreLabel: title(text) });
         return vocalScreen({ ...state, genreLabel: title(text) });

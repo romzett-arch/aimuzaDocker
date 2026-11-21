@@ -1,3 +1,4 @@
+// Превышение лимита 350: единая оркестрация сборки ZIP, блокировки и сохранения состояния задания.
 import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -550,8 +551,8 @@ serve(async (req) => {
     }
 
     const coverId = requestedCoverId ?? existingPackage?.requested_cover_id;
-    const coverBytes = coverId ? await loadConfirmedCover(supabaseUrl, supabaseServiceKey, track.user_id, coverId) : null;
-    if ((coverId && !coverBytes) || (!coverBytes && !track.cover_url)) {
+    const coverBytes = coverId ? await loadConfirmedCover(supabaseUrl, supabaseServiceKey, track.user_id, trackId, coverId) : null;
+    if (!coverBytes) {
       return Response.json({ success: false, error: "release_cover_unavailable" }, { status: 400, headers: corsHeaders });
     }
 
@@ -651,7 +652,7 @@ serve(async (req) => {
     zip.file(`${safeBaseName}.wav`, wavBytes);
     zip.file("genre.txt", genreBytes);
     zip.file("release-info.txt", releaseInfoBytes);
-    if (coverBytes) zip.file(releaseCoverFilename, coverBytes);
+    zip.file(releaseCoverFilename, coverBytes);
 
     if (deposit?.pdf_url) {
       const pdfBytes = await fetchBytes(deposit.pdf_url, req.url, ffmpegBaseUrl, storageOrigin);
@@ -668,12 +669,9 @@ serve(async (req) => {
     });
 
     const zipFileName = `release-packages/${trackId}/${RELEASE_PACKAGE_FILE_NAME}`;
-    let coverUrl = track.cover_url ? resolvePublicUrl(track.cover_url, req.url) : null;
-    if (coverBytes) {
-      const coverPath = `release-packages/${trackId}/${releaseCoverFilename}`;
-      await uploadBytes(supabase, coverPath, coverBytes, "image/jpeg");
-      coverUrl = buildStoragePublicUrl(coverPath, req.url);
-    }
+    const coverPath = `release-packages/${trackId}/${releaseCoverFilename}`;
+    await uploadBytes(supabase, coverPath, coverBytes, "image/jpeg");
+    const coverUrl = buildStoragePublicUrl(coverPath, req.url);
     await uploadBytes(supabase, zipFileName, zipBytes, "application/zip");
     const zipUrl = buildStoragePublicUrl(zipFileName, req.url);
 
