@@ -9,7 +9,7 @@
  * DELETE /storage/v1/object/:bucket  — удаление (body: paths[])
  */
 import { Router } from 'express';
-import multer from 'multer';
+import { parseStorageUpload } from '../middleware/storage-multipart.js';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -215,11 +215,9 @@ function isValidSignedStorageRequest(bucket, filePath, query) {
   return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-// Multer — принимаем файлы в память (any field name)
-const upload = multer({
-  limits: { fileSize: 100 * 1024 * 1024, files:1, fields:10, parts:11 }, // 1GB for release masters
-  storage: multer.memoryStorage(),
-});
+// Multipart-парсер: multer падал MISSING_FIELD_NAME на supabase-js >= 2.9x,
+// который шлёт файл с пустым именем поля (body.append('', blob)).
+const upload = { any: () => parseStorageUpload };
 
 const ALLOWED_UPLOAD_EXTENSIONS = new Set([
   '.mp3', '.wav', '.ogg', '.flac', '.aac',
