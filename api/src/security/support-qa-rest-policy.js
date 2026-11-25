@@ -191,7 +191,7 @@ export async function assertSupportQaInsertRelation(client, table, row, user) {
   let result;
   if (table === 'ticket_messages') {
     result = await client.query(
-      'SELECT 1 FROM public.support_tickets WHERE id = $1 AND user_id = $2 AND status NOT IN (\'resolved\', \'closed\')',
+      'SELECT 1 FROM public.support_tickets WHERE id = $1 AND user_id = $2 AND status <> \'closed\' FOR UPDATE',
       [row.ticket_id, user.id],
     );
   } else if (table === 'qa_comments') {

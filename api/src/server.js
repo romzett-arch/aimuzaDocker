@@ -85,6 +85,7 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN || 'http://localhost').split(',
 app.use(cors({
   origin: ALLOWED_ORIGINS,
   credentials: true,
+  exposedHeaders: ['Content-Range', 'X-Total-Count'],
 }));
 app.use(morgan((tokens,req,res)=>`${tokens.method(req,res)} ${req.path} ${tokens.status(req,res)} ${tokens['response-time'](req,res)} ms`));
 // Reject abusive traffic and unauthenticated uploads before buffering the body.

@@ -4,6 +4,11 @@ import { handlePost, handlePatch, handleDelete } from './rest-mutations.js';
 
 const router = Router();
 
+router.use('/notifications', (_req, res, next) => {
+  res.set('Cache-Control', 'private, no-store');
+  next();
+});
+
 router.head('/:table', handleHead);
 router.get('/:table', handleGet);
 router.post('/:table', handlePost);

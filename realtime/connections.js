@@ -35,10 +35,15 @@ export function createConnectionHandler(wss, clientSubs, presenceState, jwt, JWT
           const identity=token ? await security.validate(token) : null;
           if(ws.user?.id!==identity?.id) clearSubscriptions(ws,subs);
           ws.user=identity; ws.token=token||null;
-          ws.joinAuthorized=(payload?.config?.postgres_changes||[]).every(c=>canSubscribe(c.table,c.schema||'public',ws.user));
-          if ((payload?.config?.presence || /presence|typing|online/.test(topic)) && !(await security.presenceAllowed(ws.user,topic))) ws.joinAuthorized=false;
-          if (payload?.config?.presence && ws.user) payload.config.presence.key=ws.user.id;
-          if ((payload?.config?.postgres_changes || []).length > 20) ws.joinAuthorized=false;
+          const changes = payload?.config?.postgres_changes || [];
+          const presence = payload?.config?.presence;
+          const hasPresence = presence && presence.enabled !== false;
+          const needsPresenceAccess = hasPresence || /presence|typing|online/.test(topic);
+          const canReadChanges = changes.length <= 20
+            && changes.every(change => canSubscribe(change.table, change.schema || 'public', identity));
+          ws.joinAuthorized = canReadChanges
+            && (!needsPresenceAccess || await security.presenceAllowed(identity, topic));
+          if (hasPresence && identity) presence.key = identity.id;
         } catch {ws.user=null;ws.token=null;ws.joinAuthorized=false;}
 
         handleJoin(wss, clientSubs, presenceState, sendMsg, ws, topic, payload, ref, subs);

@@ -142,8 +142,9 @@ export function handleJoin(wss, clientSubs, presenceState, send, ws, topic, payl
     }));
   }
 
-  if (payload?.config?.presence) {
-    config.presenceKey = payload.config.presence.key || null;
+  const presence = payload?.config?.presence;
+  if (presence && presence.enabled !== false) {
+    config.presenceKey = presence.key || null;
   }
 
   subs.set(topic, config);

@@ -15,9 +15,15 @@ export function createRealtimeSecurity(pool,jwt,secret) {
     const claims=jwt.verify(token,secret,{algorithms:['HS256']});
     if (claims.role==='anon') return null;
     if (!claims.sub || claims.role!=='authenticated') throw Error('Invalid identity');
-    const {rows}=await pool.query(`SELECT id,COALESCE(raw_user_meta_data->>'session_version','0') AS version FROM auth.users WHERE id=$1 AND email_confirmed_at IS NOT NULL`,[claims.sub]);
+    const { rows } = await pool.query(
+      `SELECT u.id, COALESCE(u.raw_user_meta_data->>'session_version', '0') AS version,
+              EXISTS (SELECT 1 FROM public.user_roles r WHERE r.user_id = u.id
+                      AND r.role IN ('moderator', 'admin', 'super_admin')) AS support_staff
+       FROM auth.users u WHERE u.id = $1 AND u.email_confirmed_at IS NOT NULL`,
+      [claims.sub],
+    );
     if (!rows.length || String(claims.session_version??0)!==rows[0].version) throw Error('Session revoked');
-    return {id:claims.sub,exp:claims.exp,email:claims.email};
+    return {id:claims.sub,exp:claims.exp,email:claims.email,supportStaff:rows[0].support_staff === true};
   }
   async function readable(ws,table,row) {
     if(ws.token && ws.user?.id) {
@@ -33,6 +39,15 @@ export function createRealtimeSecurity(pool,jwt,secret) {
         ? 'SELECT 1 FROM public.conversation_participants cp JOIN public.messages m ON m.conversation_id=cp.conversation_id WHERE m.id=$1 AND cp.user_id=$2'
         : 'SELECT 1 FROM public.conversation_participants WHERE conversation_id=$1 AND user_id=$2';
       return (await pool.query(sql,[table==='message_reactions'?row.message_id:conversationId,ws.user.id])).rowCount>0;
+    }
+    if (table === 'support_tickets') return ws.user.supportStaff || row.user_id === ws.user.id;
+    if (table === 'qa_tickets') return ws.user.supportStaff || row.reporter_id === ws.user.id;
+    if (table === 'ticket_messages' || table === 'qa_comments') {
+      if (ws.user.supportStaff) return true;
+      const sql = table === 'ticket_messages'
+        ? 'SELECT 1 FROM public.support_tickets WHERE id = $1 AND user_id = $2'
+        : 'SELECT 1 FROM public.qa_tickets WHERE id = $1 AND reporter_id = $2';
+      return (await pool.query(sql, [row.ticket_id, ws.user.id])).rowCount > 0;
     }
     return row.user_id===ws.user.id || row.recipient_id===ws.user.id;
   }
