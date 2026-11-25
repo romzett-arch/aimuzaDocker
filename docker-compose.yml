@@ -55,6 +55,7 @@ services:
       API_PORT: 3000
       UPLOADS_DIR: /opt/aimuza/data/uploads
       DENO_FUNCTIONS_URL: http://deno-functions:8081
+      VOICE_FFMPEG_URL: http://ffmpeg-api:3001
       FFMPEG_OUTPUT_DIR: /opt/aimuza/data/ffmpeg-output
     volumes:
       - uploads_data:/opt/aimuza/data/uploads

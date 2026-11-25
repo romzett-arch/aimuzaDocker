@@ -24,7 +24,22 @@ export function normalizeStudioGeneration(body) {
   if (tempo !== undefined && (!Number.isInteger(tempo) || tempo < 1 || tempo > 240 || mode !== 'custom')) throw inputError('Темп должен быть целым числом от 1 до 240 BPM в режиме «Свой текст»');
   const songIdeaId = body?.songIdeaId || undefined;
   const personaId = body?.personaId || undefined;
+  const voiceProfileId = body?.voiceProfileId || undefined;
   const audioReference = body?.audioReference || undefined;
+  if (voiceProfileId !== undefined && (mode !== 'custom' || !validUuid(voiceProfileId) || instrumental || personaId || audioReference)) {
+    throw inputError('Выберите голос для песни с вокалом. Для этого режима уберите персону и аудиореференс.');
+  }
+  const weights = {};
+  if (voiceProfileId) {
+    for (const field of ['styleWeight', 'weirdnessConstraint', 'audioWeight']) {
+      if (body[field] === undefined) continue;
+      const value = body[field];
+      if (!Number.isFinite(value) || value < 0 || value > 1 || Math.abs(Math.round(value * 100) - value * 100) > 1e-8) {
+        throw inputError('Настройки влияния должны быть от 0 до 1 с точностью до двух знаков');
+      }
+      weights[field] = value;
+    }
+  }
   if (personaId !== undefined && (mode !== 'custom' || !validUuid(personaId))) throw inputError('Выберите персону в режиме «Свой текст»');
   if (audioReference !== undefined && (typeof audioReference !== 'string' || audioReference.length > 8192)) throw inputError('Прикрепите аудиореференс заново');
   if (songIdeaId !== undefined && !validUuid(songIdeaId)) throw inputError('Некорректная идея для песни');
@@ -35,7 +50,7 @@ export function normalizeStudioGeneration(body) {
     if (!style) throw inputError('Укажите стиль и аранжировку');
     if (!instrumental && !lyrics) throw inputError('Добавьте текст песни или выберите инструментал');
   }
-  return { requestId, mode, prompt, title, lyrics, style, negativeTags, instrumental, vocalGender, duration, tempo, songIdeaId, personaId, audioReference };
+  return { requestId, mode, prompt, title, lyrics, style, negativeTags, instrumental, vocalGender, duration, tempo, songIdeaId, personaId, voiceProfileId, audioReference, ...weights };
 }
 
 export function studioSunoPayload(input, tracks, { personaId, audioReferenceUrl } = {}) {
@@ -45,10 +60,13 @@ export function studioSunoPayload(input, tracks, { personaId, audioReferenceUrl 
     lyrics: input.lyrics || undefined,
     style: input.tempo ? input.style.slice(0, 980) + ', ' + input.tempo + ' BPM' : input.style,
     title: input.title || 'Новый трек', instrumental: input.instrumental,
-    negativeTags: input.negativeTags || undefined, vocalGender: input.vocalGender,
+    negativeTags: input.negativeTags || undefined, vocalGender: input.voiceProfileId ? undefined : input.vocalGender,
     duration: input.duration,
     personaId,
-    personaModel: personaId ? 'style_persona' : undefined,
+    personaModel: personaId ? (input.voiceProfileId ? 'voice_persona' : 'style_persona') : undefined,
+    styleWeight: input.styleWeight,
+    weirdnessConstraint: input.weirdnessConstraint,
+    audioWeight: input.audioWeight,
     audioReferenceUrl,
   };
 }

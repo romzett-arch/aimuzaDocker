@@ -48,6 +48,7 @@ export function registerAccountDeletion(router) {
       await client.query("UPDATE public.lyrics_generation_jobs SET status='failed',prompt='',error_message='account_deleted' WHERE user_id=$1 AND status='pending'", [req.user.id]);
       // Private creative history is explicitly removed only by account closure.
       await client.query('DELETE FROM public.generated_lyrics WHERE user_id=$1', [req.user.id]);
+      await client.query('DELETE FROM public.voice_profiles WHERE user_id=$1', [req.user.id]);
       await client.query('DELETE FROM public.user_prompts WHERE user_id=$1', [req.user.id]);
       await client.query('UPDATE public.tracks SET is_public=false WHERE user_id=$1', [req.user.id]);
       for (const url of [user.avatar_url, user.cover_url].filter(Boolean)) {

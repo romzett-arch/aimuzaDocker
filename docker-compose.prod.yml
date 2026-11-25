@@ -69,6 +69,7 @@ services:
       YANDEX_CLIENT_ID: "e0e64eae06f84e5dabb798f9e757f648"
       UPLOADS_DIR: /opt/aimuza/data/uploads
       DENO_FUNCTIONS_URL: http://deno-functions:8081
+      VOICE_FFMPEG_URL: http://ffmpeg-api:3001
       FFMPEG_OUTPUT_DIR: /opt/aimuza/data/ffmpeg-output
       LEGAL_STORAGE_DIR: /opt/aimuza/legal
       LEGAL_CLAMAV_HOST: legal-scanner

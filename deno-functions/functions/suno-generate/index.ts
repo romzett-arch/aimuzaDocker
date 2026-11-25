@@ -1,7 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getSunoErrorMessage } from "./errors.ts";
-import { cleanStyleForSuno } from "./styleUtils.ts";
+import { hasVoiceAuthorization } from "./voice-authorization.ts";
+import { cleanStyleForSuno, parseOptionalWeight } from "./styleUtils.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -24,18 +25,6 @@ function validationError(message: string, field: string) {
     JSON.stringify({ error: "Некорректные параметры генерации", details: message, field }),
     { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } },
   );
-}
-
-function parseOptionalWeight(value: unknown, field: string): number | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-    throw new Error(`${field}: укажите число от 0 до 1`);
-  }
-  if (Math.abs(Math.round(parsed * 100) - parsed * 100) > 1e-8) {
-    throw new Error(`${field}: допускается не более двух знаков после запятой`);
-  }
-  return parsed;
 }
 
 serve(async (req) => {
@@ -139,6 +128,11 @@ serve(async (req) => {
       return validationError("Допустимы style_persona или voice_persona", "personaModel");
     }
     if (personaId && !isCustomMode) return validationError("Persona доступна только в режиме «Про»", "personaId");
+    if (personaModel === "voice_persona" && (
+      isInstrumental || !await hasVoiceAuthorization(
+        req.headers.get("x-aimuza-voice-authorization"), user.id, allTrackIds, personaId,
+      )
+    )) return validationError("Выберите подтверждённый голос в генераторе", "personaId");
 
     let parsedStyleWeight: number | undefined;
     let parsedWeirdness: number | undefined;

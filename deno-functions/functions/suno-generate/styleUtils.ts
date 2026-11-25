@@ -67,3 +67,15 @@ export function cleanStyleForSuno(style: string): string {
 
   return cleanedStyle;
 }
+
+export function parseOptionalWeight(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`${field}: укажите число от 0 до 1`);
+  }
+  if (Math.abs(Math.round(parsed * 100) - parsed * 100) > 1e-8) {
+    throw new Error(`${field}: допускается не более двух знаков после запятой`);
+  }
+  return parsed;
+}

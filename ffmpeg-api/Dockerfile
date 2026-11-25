@@ -32,7 +32,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force && rm -rf /usr/local/lib/node_modules/npm /opt/yarn*
 
-COPY server.js handlers.js utils.js duration.js safe-download.js safe-logging.js ./
+COPY server.js handlers.js utils.js duration.js safe-download.js safe-logging.js voice-recording.js ./
 RUN mkdir -p uploads output && chown -R node:node uploads output
 USER node
 

@@ -19,6 +19,8 @@ import './security/safe-logging.js';
  *   POST   /functions/v1/:name   — вызов Edge Function (проксирование в Deno)
  */
 import express from 'express';
+import voiceProfilesRouter from './routes/voice-profiles.js';
+import { startVoiceProfileWorker } from './services/voice-profile-worker.js';
 import { startLyricsRecovery } from './services/lyrics-recovery.js';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -180,6 +182,7 @@ app.use('/api/max', maxChatRouter);
 app.use('/functions/v1', maxAdminRouter);
 app.use('/functions/v1', emailRouter);       // Email — обрабатывается в Node.js (не Deno)
 app.use('/functions/v1', imageGenerationRouter);
+app.use('/functions/v1/voice-profiles', voiceProfilesRouter);
 app.use('/functions/v1', functionsRouter);    // Остальные функции — проксируются в Deno
 
 app.use((err, req, res, next) => {
@@ -201,6 +204,7 @@ async function start() {
     startVotingLifecycle();
     startMediaLifecycle();
     startLyricsRecovery();
+    startVoiceProfileWorker();
     startImageRecovery();
     startLegalWorker();
   });

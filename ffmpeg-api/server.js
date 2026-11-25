@@ -1,5 +1,6 @@
 require('./safe-logging');
 const express = require('express');
+const { voiceRecording } = require('./voice-recording');
 const fs = require('fs');
 const path = require('path');
 const { requireApiKey } = require('./utils');
@@ -183,6 +184,7 @@ app.post('/convert-format', heavyJobLimiter, createConvertFormatHandler(UPLOAD_D
 app.use('/trim-audio', requireApiKey(API_KEY));
 app.post('/trim-audio', heavyJobLimiter, createTrimAudioHandler(UPLOAD_DIR, OUTPUT_DIR));
 
+app.post('/internal/voice-recording', heavyJobLimiter, express.raw({ type: 'application/octet-stream', limit: '24mb' }), voiceRecording);
 app.use('/output', express.static(OUTPUT_DIR));
 
 app.get('/health', (req, res) => {
