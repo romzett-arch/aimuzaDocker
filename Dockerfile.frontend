@@ -38,6 +38,7 @@ RUN echo 'server { \
     listen 80; \
     root /usr/share/nginx/html; \
     index index.html; \
+    location ~* ^/(voting|arena|chart|admin/voting)/?$ { return 410; } \
     location / { \
         try_files $uri $uri/ /index.html; \
         add_header Cache-Control "no-cache, no-store, must-revalidate"; \

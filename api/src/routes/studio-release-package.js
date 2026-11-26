@@ -13,6 +13,8 @@ export async function prepareStudioReleasePackage(req, res, next) {
     const genre = cleanText(req.body?.genre, 80);
     const hasLyrics = req.body?.hasLyrics === true;
     const includeDeposit = req.body?.includeDeposit === true;
+    const usePromoDeposit = req.body?.usePromoDeposit === true;
+    const usePromoRelease = req.body?.usePromoRelease === true;
     const moveToMyReleases = req.body?.moveToMyReleases !== false;
     const coverId = req.body?.coverId;
     if (!validUuid(trackId)) return res.status(400).json({ error: 'Некорректный идентификатор трека' });
@@ -21,10 +23,10 @@ export async function prepareStudioReleasePackage(req, res, next) {
     // Проверка тарифа идёт до любого изменения трека или списания за
     // депонирование — так же, как в рабочем пространстве сайта.
     const tier = await pool.query(
-      'SELECT public.get_user_subscription_tier($1) AS tier',
-      [req.user.id],
+      'SELECT public.get_user_subscription_tier($1) AS tier, CASE WHEN $3 THEN public.promo_release_access($1,$2,false) ELSE false END AS promo',
+      [req.user.id, trackId, usePromoRelease],
     );
-    if (!['creator', 'pro', 'label'].includes(tier.rows[0]?.tier?.tier_key)) {
+    if (!['creator', 'pro', 'label'].includes(tier.rows[0]?.tier?.tier_key) && !tier.rows[0]?.promo) {
       return res.status(403).json({ error: 'Релиз-пакет доступен на тарифе «Музыкант» и выше' });
     }
 
@@ -63,6 +65,7 @@ export async function prepareStudioReleasePackage(req, res, next) {
           body: JSON.stringify({
             trackId,
             method: 'blockchain',
+            usePromo: usePromoDeposit,
             authorData: {
               performer_name: performer,
               music_author: author,
@@ -89,6 +92,7 @@ export async function prepareStudioReleasePackage(req, res, next) {
         move_to_my_releases: moveToMyReleases,
         cover_id: coverId,
         force_regenerate: true,
+        use_promo: usePromoRelease,
       }),
     });
     const result = await response.json().catch(() => ({}));

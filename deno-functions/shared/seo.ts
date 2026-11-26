@@ -49,17 +49,6 @@ export const STATIC_SEO_PAGES: StaticSeoPageDefinition[] = [
     intent: "Живая лента новых треков, активности артистов и рекомендаций.",
   },
   {
-    pageKey: "voting",
-    path: "/voting",
-    title: "Голосование за треки на дистрибуцию",
-    description: "Слушайте треки, голосуйте за релизы и помогайте артистам AIMUZA пройти отбор перед отправкой на дистрибуцию.",
-    priority: 0.85,
-    changefreq: "daily",
-    indexable: true,
-    pageType: "distribution",
-    intent: "Страница голосования сообщества за треки перед дистрибуцией.",
-  },
-  {
     pageKey: "contests",
     path: "/contests",
     title: "Конкурсы AI-музыкантов и артистов AIMUZA",

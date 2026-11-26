@@ -131,33 +131,6 @@ async function canReadGalleryObject(req, bucket, filePath) {
   return item.is_public === true && item.status === 'ready' && item.moderation_status === 'approved';
 }
 
-async function isActiveSilkVotingAsset(bucket, filePath) {
-  const silkPath = parseSilkPath(bucket, filePath);
-  if (!silkPath) return false;
-
-  const result = await pool.query(
-    `SELECT 1
-     FROM public.silk_release_assets asset
-     JOIN public.silk_releases release ON release.id = asset.release_id
-     JOIN public.tracks track ON track.id = release.source_track_id
-     WHERE asset.storage_bucket = $1
-       AND asset.storage_path = $2
-       AND asset.asset_type IN ('reference_mp3', 'master_wav', 'cover_art')
-       AND asset.validation_status = 'valid'
-       AND release.id = $3
-       AND release.user_id = $4
-       AND release.status = 'voting'
-       AND track.moderation_status = 'voting'
-       AND track.voting_type = 'public'
-       AND track.voting_result = 'pending'
-       AND track.voting_ends_at > now()
-     LIMIT 1`,
-    [bucket, filePath, silkPath.releaseId, silkPath.userId],
-  );
-
-  return result.rowCount === 1;
-}
-
 async function assertSilkPathAccess(req, bucket, filePath) {
   const silkPath = parseSilkPath(bucket, filePath);
   if (!silkPath) return;
@@ -417,7 +390,6 @@ router.get('/object/public/:bucket/*', async (req, res) => {
     if (
       parseSilkPath(bucket, filePath)
       && !isValidSignedStorageRequest(bucket, filePath, req.query)
-      && !(await isActiveSilkVotingAsset(bucket, filePath))
     ) {
       return res.status(401).json({ error: 'A valid signed URL is required', code: 'SIGNED_URL_REQUIRED' });
     }

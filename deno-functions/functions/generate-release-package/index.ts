@@ -1,10 +1,11 @@
-// Превышение лимита 350: единая оркестрация сборки ZIP, блокировки и сохранения состояния задания.
-import { safeMediaFetch } from "../_shared/safe-media-fetch.ts";
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import JSZip from "npm:jszip@3.10.1";
-import { upsertReleasePackage } from "./package-state.ts";
+import { beginReleasePackage, finishReleasePackage } from "./package-state.ts";
+import { resolveReleaseAccess, releaseAccessDenied } from "./promo.ts";
 import { loadConfirmedCover, releaseCoverFilename, respondWithCoverSource, validCoverId } from "./cover.ts";
+import { buildReleaseMetadata, buildReleaseInfoText, buildGenreText, loadProfileIdentity, sanitizeBaseName, sha256Hex } from "./metadata.ts";
+import { buildStoragePublicUrl, callFfmpegJson, DEFAULT_BASE_URL, fetchBytes, stripFfmpegRoute, toInternalFetchUrl, uploadBytes } from "./media.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -12,373 +13,7 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const TRACKS_BUCKET = "tracks";
-const DEFAULT_BASE_URL = "https://aimuza.ru";
 const RELEASE_PACKAGE_FILE_NAME = "release-package-audio-v3.zip";
-const STORAGE_UPLOAD_MAX_ATTEMPTS = 12;
-const STORAGE_UPLOAD_BASE_DELAY_MS = 5_000;
-const STORAGE_UPLOAD_MAX_DELAY_MS = 45_000;
-const activePackages = new Set<string>();
-
-interface WavPreparationResult {
-  status: "ready" | "processing";
-  wavUrl: string | null;
-}
-
-interface ReleaseMetadata {
-  artistName: string;
-  authorName: string;
-  genreName: string;
-  publisherName: string;
-  cabinetId: string;
-  metadata: Record<string, string>;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function isRetryableStorageError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-
-  const candidate = error as { status?: number; statusCode?: string | number; message?: string };
-  const statusCode = String(candidate.statusCode ?? candidate.status ?? "");
-  const message = String(candidate.message ?? "");
-
-  return statusCode === "429"
-    || statusCode === "408"
-    || statusCode === "409"
-    || /rate limit/i.test(message)
-    || /too many requests/i.test(message)
-    || /resource already exists/i.test(message);
-}
-
-function stripFfmpegRoute(url: string): string {
-  return url.replace(/\/(clean-metadata|analyze|normalize|process-wav|convert-format)\/?$/, "");
-}
-
-function sanitizeBaseName(value: string): string {
-  return (value || "release-track")
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120) || "release-track";
-}
-
-function buildReleaseMetadata(track: {
-  id: string;
-  user_id: string;
-  title: string | null;
-  performer_name?: string | null;
-  author_name?: string | null;
-  music_author?: string | null;
-  lyrics_author?: string | null;
-  genre_name?: string | null;
-  label_name?: string | null;
-  profile?: {
-    username?: string | null;
-    display_name?: string | null;
-    short_id?: string | null;
-  } | null;
-}): ReleaseMetadata {
-  const artistName =
-    track.performer_name?.trim()
-    || track.profile?.display_name?.trim()
-    || track.profile?.username?.trim()
-    || "AIMuza Artist";
-  const authorName =
-    track.author_name?.trim()
-    || track.music_author?.trim()
-    || track.lyrics_author?.trim()
-    || artistName;
-  const genreName = track.genre_name?.trim() || "Без жанра";
-
-  const publisherName = track.label_name?.trim() || "AIMuza";
-  const cabinetId = track.profile?.short_id?.trim() || track.user_id;
-  const title = track.title || "Без названия";
-
-  return {
-    artistName,
-    authorName,
-    genreName,
-    publisherName,
-    cabinetId,
-    metadata: {
-      title,
-      artist: artistName,
-      composer: authorName,
-      genre: genreName,
-      album: "AIMuza Release Package",
-      publisher: publisherName,
-      comment: `Prepared for release on aimuza.ru | Cabinet ID: ${cabinetId} | Track ID: ${track.id} | Author: ${authorName}`,
-      copyright: `© ${new Date().getFullYear()} ${authorName} performed by ${artistName} via ${publisherName}`,
-      TXXX_AIMUZA_TRACK_ID: track.id,
-      TXXX_AIMUZA_USER_ID: track.user_id,
-      TXXX_AIMUZA_CABINET_ID: cabinetId,
-      TXXX_AIMUZA_ARTIST: artistName,
-      TXXX_AIMUZA_AUTHOR: authorName,
-      TXXX_AIMUZA_PUBLISHER: publisherName,
-      TXXX_AIMUZA_RELEASE_PACKAGE: "true",
-      TXXX_AIMUZA_WEBSITE: "aimuza.ru",
-    },
-  };
-}
-
-async function loadProfileIdentity(
-  supabase: ReturnType<typeof createClient>,
-  userId: string,
-): Promise<{ username: string | null; display_name: string | null; short_id: string | null }> {
-  const { data } = await supabase
-    .from("profiles")
-    .select("username")
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  return {
-    username: data?.username ?? null,
-    display_name: null,
-    short_id: null,
-  };
-}
-
-function resolvePublicUrl(rawUrl: string, requestUrl: string): string {
-  const baseUrl = Deno.env.get("BASE_URL") || new URL(requestUrl).origin || DEFAULT_BASE_URL;
-  return new URL(rawUrl, baseUrl).toString();
-}
-
-function toInternalFetchUrl(
-  rawUrl: string,
-  requestUrl: string,
-  ffmpegBaseUrl?: string,
-  storageOrigin?: string,
-): string {
-  const resolved = resolvePublicUrl(rawUrl, requestUrl);
-  const normalizedStorageOrigin = (storageOrigin || "").replace(/\/$/, "");
-  const target = new URL(resolved);
-
-  if (normalizedStorageOrigin && target.pathname.startsWith("/storage/v1/object/public/")) {
-    return `${normalizedStorageOrigin}${target.pathname}${target.search}`;
-  }
-
-  if (ffmpegBaseUrl && target.pathname.startsWith("/api/ffmpeg/")) {
-    return `${ffmpegBaseUrl.replace(/\/$/, "")}${target.pathname.replace(/^\/api\/ffmpeg/, "")}${target.search}`;
-  }
-
-  return resolved;
-}
-
-async function fetchBytes(
-  rawUrl: string,
-  requestUrl: string,
-  ffmpegBaseUrl?: string,
-  storageOrigin?: string,
-): Promise<Uint8Array> {
-  const response = await safeMediaFetch(toInternalFetchUrl(rawUrl, requestUrl, ffmpegBaseUrl, storageOrigin));
-  if (!response.ok) {
-    throw new Error(`asset_download_failed:${response.status}`);
-  }
-
-  return new Uint8Array(await response.arrayBuffer());
-}
-
-async function uploadBytes(
-  supabase: ReturnType<typeof createClient>,
-  fileName: string,
-  bytes: Uint8Array,
-  contentType: string,
-): Promise<void> {
-  for (let attempt = 1; attempt <= STORAGE_UPLOAD_MAX_ATTEMPTS; attempt++) {
-    const { error } = await supabase.storage
-      .from(TRACKS_BUCKET)
-      .upload(fileName, bytes, {
-        upsert: true,
-        contentType,
-        cacheControl: "0",
-      });
-
-    if (!error) {
-      return;
-    }
-
-    console.error(`[generate-release-package] Upload error on attempt ${attempt}/${STORAGE_UPLOAD_MAX_ATTEMPTS}:`, error);
-
-    if (!isRetryableStorageError(error) || attempt === STORAGE_UPLOAD_MAX_ATTEMPTS) {
-      throw new Error(`upload_failed:${fileName}:${error.message}`);
-    }
-
-    const delayMs = Math.min(
-      STORAGE_UPLOAD_MAX_DELAY_MS,
-      STORAGE_UPLOAD_BASE_DELAY_MS * Math.pow(2, attempt - 1),
-    );
-    console.warn(`[generate-release-package] Storage rate limit hit, retrying in ${delayMs}ms...`);
-    await sleep(delayMs);
-  }
-}
-
-function buildStoragePublicUrl(fileName: string, requestUrl: string): string {
-  const baseUrl = Deno.env.get("BASE_URL") || new URL(requestUrl).origin || DEFAULT_BASE_URL;
-  return `${baseUrl.replace(/\/$/, "")}/storage/v1/object/public/${TRACKS_BUCKET}/${fileName}`;
-}
-
-function buildReleaseInfoText(input: {
-  title: string;
-  artistName: string;
-  authorName: string;
-  genreName: string;
-  publisherName: string;
-  includeDeposit: boolean;
-  promptText?: string | null;
-  lyricsText?: string | null;
-  includeLyricsBlock: boolean;
-}): string {
-  const sections = [
-    "AIMuza Release Package",
-    "",
-    `Title: ${input.title}`,
-    `Performer: ${input.artistName}`,
-    `Author: ${input.authorName}`,
-    `Genre: ${input.genreName}`,
-    `Publisher: ${input.publisherName}`,
-    `Deposit included: ${input.includeDeposit ? "yes" : "no"}`,
-    `Generated at: ${new Date().toISOString()}`,
-  ];
-
-  if (input.includeLyricsBlock) {
-    sections.push("", "Lyrics:");
-    sections.push(input.lyricsText?.trim() || "Текст отсутствует");
-    sections.push("", "Prompt:");
-    sections.push(input.promptText?.trim() || "Промт отсутствует");
-  }
-
-  return sections.join("\n");
-}
-
-function buildGenreText(input: {
-  genreName: string;
-  hasLyrics: boolean;
-  lyricsText?: string | null;
-  promptText?: string | null;
-}): string {
-  const sections = [
-    input.genreName,
-    input.hasLyrics ? "с текстом" : "без текста",
-  ];
-
-  if (input.hasLyrics) {
-    sections.push("", "Текст трека:");
-    sections.push(input.lyricsText?.trim() || "Текст отсутствует");
-    sections.push("", "Промт:");
-    sections.push(input.promptText?.trim() || "Промт отсутствует");
-  }
-
-  return `${sections.join("\n")}\n`;
-}
-
-async function callFfmpegJson(
-  ffmpegBaseUrl: string,
-  ffmpegApiSecret: string,
-  endpoint: "clean-metadata" | "convert-format",
-  payload: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  const response = await fetch(`${ffmpegBaseUrl}/${endpoint}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "x-api-key": ffmpegApiSecret,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = typeof data?.message === "string" ? data.message : `ffmpeg_${endpoint}_failed`;
-    throw new Error(message);
-  }
-
-  return data;
-}
-
-async function invokeInternalFunction(
-  supabaseUrl: string,
-  supabaseServiceKey: string,
-  functionName: string,
-  body: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  const response = await fetch(`${supabaseUrl.replace(/\/$/, "")}/functions/v1/${functionName}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Authorization": `Bearer ${supabaseServiceKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = typeof data?.error === "string" ? data.error : `${functionName}_failed`;
-    throw new Error(message);
-  }
-
-  return data;
-}
-
-async function ensurePreparedWav(
-  supabase: ReturnType<typeof createClient>,
-  supabaseUrl: string,
-  supabaseServiceKey: string,
-  track: {
-    id: string;
-    suno_audio_id?: string | null;
-  },
-): Promise<WavPreparationResult> {
-  const { data: addonService, error: addonServiceError } = await supabase
-    .from("addon_services")
-    .select("id")
-    .eq("name", "convert_wav")
-    .single();
-
-  if (addonServiceError || !addonService?.id) {
-    throw new Error("release_package_wav_service_missing");
-  }
-
-  const { data: existingAddon, error: existingAddonError } = await supabase
-    .from("track_addons")
-    .select("status, result_url")
-    .eq("track_id", track.id)
-    .eq("addon_service_id", addonService.id)
-    .maybeSingle();
-
-  if (existingAddonError) {
-    throw new Error(`release_package_wav_lookup_failed:${existingAddonError.message}`);
-  }
-
-  if (existingAddon?.status === "completed" && existingAddon.result_url) {
-    return { status: "ready", wavUrl: existingAddon.result_url };
-  }
-
-  if (existingAddon?.status === "processing") {
-    return { status: "processing", wavUrl: null };
-  }
-
-  const convertResult = await invokeInternalFunction(
-    supabaseUrl,
-    supabaseServiceKey,
-    "convert-to-wav",
-    { track_id: track.id, audio_id: track.suno_audio_id ?? null },
-  );
-
-  const wavUrl = typeof convertResult?.wav_url === "string" ? convertResult.wav_url : null;
-  if (wavUrl) {
-    return { status: "ready", wavUrl };
-  }
-
-  return { status: "processing", wavUrl: null };
-}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -393,7 +28,7 @@ serve(async (req) => {
   const storageOrigin = Deno.env.get("SUPABASE_URL") || Deno.env.get("BASE_URL") || DEFAULT_BASE_URL;
   let requestedTrackId: string | null = null;
   let requestedUserId: string | null = null;
-  let ownsPackageLock = false;
+  let packageLease: string | null = null;
   let isInternalCall = false;
 
   if (!ffmpegApiUrl || !ffmpegApiSecret) {
@@ -460,22 +95,8 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    if (!isInternalCall) {
-      const { data: tierData, error: tierError } = await supabase.rpc("get_user_subscription_tier" as never, {
-        p_user_id: userId,
-      });
-
-      if (tierError) {
-        throw new Error(`subscription_check_failed:${tierError.message}`);
-      }
-
-      if (!["creator", "pro", "label"].includes((tierData as { tier_key?: string } | null)?.tier_key || "")) {
-        return new Response(
-          JSON.stringify({ success: false, error: "Релиз-пакет доступен на тарифе «Музыкант» и выше", code: "release_package_requires_musician_tier" }),
-          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-        );
-      }
-    }
+    const access = isInternalCall ? "internal" : await resolveReleaseAccess(supabase, userId!, trackId, body?.use_promo === true);
+    if (!access) return releaseAccessDenied(corsHeaders);
 
     const { data: track, error: trackError } = await supabase
       .from("tracks")
@@ -523,20 +144,15 @@ serve(async (req) => {
       );
     }
 
-    // Status polling must not launch another memory-heavy ZIP build.
-    if (activePackages.has(trackId)) {
-      return new Response(JSON.stringify({ success: true, status: "processing" }), {
-        status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-    activePackages.add(trackId);
-    ownsPackageLock = true;
-
     const { data: existingPackage } = await supabase
       .from("release_packages")
-      .select("status, zip_url, mp3_url, wav_url, cover_url, genre_txt_url, certificate_url, certificate_pdf_url, blockchain_proof_url, requested_title, requested_performer_name, requested_author_name, requested_genre, requested_cover_id, requested_has_lyrics, requested_include_deposit, requested_move_to_my_releases, error_message")
+      .select("lease_until, status, zip_url, mp3_url, wav_url, cover_url, genre_txt_url, certificate_url, certificate_pdf_url, blockchain_proof_url, requested_title, requested_performer_name, requested_author_name, requested_genre, requested_cover_id, requested_has_lyrics, requested_include_deposit, requested_move_to_my_releases, error_message")
       .eq("track_id", trackId)
       .maybeSingle();
+
+    if (existingPackage?.status === "processing" && Date.parse(existingPackage.lease_until) > Date.now()) {
+      return Response.json({ success: true, status: "processing" }, { status: 202, headers: corsHeaders });
+    }
 
     if (
       !forceRegenerate
@@ -566,8 +182,7 @@ serve(async (req) => {
     const hasLyrics = requestedHasLyrics ?? existingPackage?.requested_has_lyrics ?? Boolean(track.lyrics && track.lyrics.trim().length > 0);
     const includeDeposit = requestedIncludeDeposit ?? existingPackage?.requested_include_deposit ?? true;
 
-    await upsertReleasePackage(supabase, trackId, track.user_id, {
-      status: "processing",
+    const claim = await beginReleasePackage(supabase, trackId, track.user_id, access === "promo", {
       requested_title: trackTitle,
       requested_performer_name: performerName || null,
       requested_author_name: authorName || null,
@@ -575,9 +190,13 @@ serve(async (req) => {
       requested_cover_id: coverId,
       requested_has_lyrics: hasLyrics,
       requested_include_deposit: includeDeposit,
-      requested_move_to_my_releases: requestedMoveToMyReleases,
-      error_message: null,
+      requested_move_to_my_releases: requestedMoveToMyReleases ?? null,
     });
+    if (claim === "denied") return releaseAccessDenied(corsHeaders);
+    if (claim === "processing") {
+      return Response.json({ success: true, status: "processing" }, { status: 202, headers: corsHeaders });
+    }
+    packageLease = claim;
 
     const profileIdentity = await loadProfileIdentity(supabase, track.user_id);
     const releaseMeta = buildReleaseMetadata({
@@ -668,14 +287,14 @@ serve(async (req) => {
       compressionOptions: { level: 6 },
     });
 
-    const zipFileName = `release-packages/${trackId}/${RELEASE_PACKAGE_FILE_NAME}`;
-    const coverPath = `release-packages/${trackId}/${releaseCoverFilename}`;
+    const zipFileName = `release-packages/${trackId}/${packageLease}/${RELEASE_PACKAGE_FILE_NAME}`;
+    const coverPath = `release-packages/${trackId}/${packageLease}/${releaseCoverFilename}`;
     await uploadBytes(supabase, coverPath, coverBytes, "image/jpeg");
     const coverUrl = buildStoragePublicUrl(coverPath, req.url);
     await uploadBytes(supabase, zipFileName, zipBytes, "application/zip");
     const zipUrl = buildStoragePublicUrl(zipFileName, req.url);
 
-    await upsertReleasePackage(supabase, trackId, track.user_id, {
+    await finishReleasePackage(supabase, trackId, track.user_id, packageLease, {
       status: "completed",
       zip_url: zipUrl,
       mp3_url: mp3Url,
@@ -708,9 +327,9 @@ serve(async (req) => {
     console.error("[generate-release-package] Error:", message);
 
     try {
-      if (ownsPackageLock && requestedTrackId && requestedUserId) {
+      if (packageLease && requestedTrackId && requestedUserId) {
         const supabase = createClient(supabaseUrl, supabaseServiceKey);
-        await upsertReleasePackage(supabase, requestedTrackId, requestedUserId, {
+        await finishReleasePackage(supabase, requestedTrackId, requestedUserId, packageLease, {
           status: "failed",
           error_message: message,
         });
@@ -723,7 +342,5 @@ serve(async (req) => {
       JSON.stringify({ success: false, error: message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
-  } finally {
-    if (ownsPackageLock && requestedTrackId) activePackages.delete(requestedTrackId);
   }
 });

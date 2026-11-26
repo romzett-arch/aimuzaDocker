@@ -37,6 +37,7 @@ export function studioTrackDto(track) {
     stage: track.status === 'completed' ? 'Готово' : track.status === 'failed' ? 'Ошибка' : 'Генерация',
     progress: track.status === 'completed' ? 100 : track.status === 'processing' ? 55 : 10,
     audioUrl: track.audio_url || null,
+    canCreatePersona: Boolean(track.audio_url && track.suno_audio_id && /\[task_id:\s*[^\]]+\]/.test(track.description || '')),
     coverUrl: track.cover_url || null,
     duration: Number(track.duration || 0),
     performerName: track.performer_name || null,
@@ -68,7 +69,7 @@ export function createStudioTracksRouter({ pollPendingGenerations, pollPendingSe
       await pollPendingSeparations(req.user.id, req.get('authorization'));
       const result = await pool.query(
         `SELECT (SELECT g.generation_params FROM public.generation_logs g WHERE g.track_id = t.id ORDER BY g.created_at DESC LIMIT 1) AS generation_params, t.id, t.title, t.description, t.lyrics, t.performer_name, t.music_author, t.lyrics_author, t.status, t.audio_url, t.cover_url, t.duration,
-              t.created_at, t.updated_at,
+              t.created_at, t.updated_at, t.suno_audio_id,
               EXISTS (SELECT 1 FROM public.user_listened_tracks l WHERE l.track_id = t.id AND l.user_id = $1) AS listened,
               EXISTS (SELECT 1 FROM public.silk_releases r WHERE r.source_track_id = t.id AND r.user_id = t.user_id) AS has_release,
               (SELECT s.status FROM public.audio_separations s WHERE s.track_id = t.id ORDER BY s.created_at DESC LIMIT 1) AS vocal_separation_status,

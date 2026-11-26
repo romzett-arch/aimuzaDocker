@@ -25,7 +25,6 @@
   "avatars",
   "balance_transactions",
   "bug_reports",
-  "chart_entries",
   "comment_likes",
   "comment_mentions",
   "comment_reactions",
@@ -175,7 +174,6 @@
   "track_quality_scores",
   "track_reactions",
   "track_royalties",
-  "track_votes",
   "tracks",
   "user_achievements",
   "user_blocks",
@@ -186,6 +184,5 @@
   "user_subscriptions",
   "verification_requests",
   "vocal_types",
-  "voting_snapshots",
   "xp_event_config"
 ]

@@ -1,6 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+import { createTopupPayment } from "../_shared/promo-topup.ts";
+
 const ALLOWED_ORIGINS = [
   "https://aimuza.ru",
   "http://localhost",
@@ -82,24 +84,11 @@ serve(async (req) => {
         ? body.description
         : `Пополнение баланса на ${amount} ₽`;
 
-    // --- Create payment record ---
-    const { data: payment, error: paymentError } = await supabase
-      .from("payments")
-      .insert({
-        user_id: user.id,
-        amount,
-        currency: "RUB",
-        status: "pending",
-        payment_system: "yookassa",
-        description,
-      })
-      .select()
-      .single();
-
-    if (paymentError) {
-      console.error("DB insert error:", paymentError);
-      return json(cors, 500, { error: "Ошибка создания платежа" });
-    }
+    const payment = await createTopupPayment(supabase, {
+      userId: user.id, amount, system: "yookassa", description,
+      promoCode: body.promo_code,
+    });
+    if ("error" in payment) return json(cors, payment.status, { error: payment.error });
 
     // --- Create YooKassa payment ---
     const idempotenceKey = crypto.randomUUID();
@@ -109,7 +98,7 @@ serve(async (req) => {
       capture: true,
       confirmation: { type: "redirect", return_url: safeReturnUrl },
       description,
-      metadata: { payment_id: payment.id, user_id: user.id },
+      metadata: { payment_id: payment.paymentId, user_id: user.id },
     };
 
     const response = await fetch("https://api.yookassa.ru/v3/payments", {
@@ -126,7 +115,7 @@ serve(async (req) => {
       const errText = await response.text();
       console.error("YooKassa API error:", response.status, errText);
       // Откатываем запись
-      await supabase.from("payments").delete().eq("id", payment.id);
+      await supabase.from("payments").delete().eq("id", payment.paymentId);
       return json(cors, 502, { error: "Ошибка создания платежа в ЮKassa" });
     }
 
@@ -136,11 +125,12 @@ serve(async (req) => {
     await supabase
       .from("payments")
       .update({ external_id: yooResponse.id, metadata: yooResponse })
-      .eq("id", payment.id);
+      .eq("id", payment.paymentId);
 
     return json(cors, 200, {
       success: true,
-      payment_id: payment.id,
+      payment_id: payment.paymentId,
+      bonus: payment.offer,
       payment_url: yooResponse.confirmation.confirmation_url,
     });
   } catch (error: unknown) {

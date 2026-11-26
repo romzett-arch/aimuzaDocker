@@ -10,7 +10,8 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { pool } from '../db.js';
 import { recoveryCodeForToken } from '../security/password.js';
-import { authTransport, consumeEmailCode, issueEmailCode, sendWelcomeEmail, welcomeEmailHtml } from '../services/auth-mailer.js';
+import { authTransport, issueEmailCode, sendWelcomeEmail, welcomeEmailHtml } from '../services/auth-mailer.js';
+import { verifySignupEmail } from '../services/verify-signup-email.js';
 
 const router = Router();
 
@@ -239,16 +240,10 @@ router.post('/verify-email-code', async (req, res) => {
     }
     const normalized = email.toLowerCase();
 
-    const matched = await consumeEmailCode(normalized, code);
-    if (!matched) {
+    const result = await verifySignupEmail(normalized, code);
+    if (!result) {
       return res.status(400).json({ error: 'Неверный или просроченный код' });
     }
-
-    // Подтверждаем email в auth.users
-    await pool.query(
-      'UPDATE auth.users SET email_confirmed_at = COALESCE(email_confirmed_at, now()), updated_at = now() WHERE email = $1',
-      [normalized]
-    );
 
     // Отправляем welcome-письмо
     const username = (await pool.query(
@@ -259,7 +254,7 @@ router.post('/verify-email-code', async (req, res) => {
     await sendWelcomeEmail(email, username);
 
     console.log(`[Email] Email verified: ${normalized}`);
-    res.json({ success: true });
+    res.json({ success: true, signupPromoStatus: result.promoStatus });
   } catch (err) {
     console.error('[Email] verify-email-code error:', err.message);
     res.status(500).json({ error: err.message });

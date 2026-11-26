@@ -1,4 +1,4 @@
-/** Full Robokassa checkout without filtering the merchant's payment methods. */
+/** Hosted Robokassa checkout with an optional selected payment method. */
 export function buildHostedCheckoutUrl(input: {
   merchantLogin: string;
   outSum: string;
@@ -8,6 +8,7 @@ export function buildHostedCheckoutUrl(input: {
   signature: string;
   isTest: boolean;
   email?: string;
+  preferredMethod?: 'BankCard';
 }): string {
   const url = new URL('https://auth.robokassa.ru/Merchant/Index.aspx');
   url.searchParams.set('MerchantLogin', input.merchantLogin);
@@ -21,5 +22,6 @@ export function buildHostedCheckoutUrl(input: {
   url.searchParams.set('SignatureValue', input.signature);
   if (input.isTest) url.searchParams.set('IsTest', '1');
   if (input.email) url.searchParams.set('Email', input.email);
+  if (input.preferredMethod) url.searchParams.set('IncCurrLabel', input.preferredMethod);
   return url.toString();
 }

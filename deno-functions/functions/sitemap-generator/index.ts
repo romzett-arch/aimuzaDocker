@@ -74,7 +74,6 @@ serve(async (req) => {
         { path: "/", priority: 1, changefreq: "hourly" },
         { path: "/catalog", priority: 0.9, changefreq: "daily" },
         { path: "/feed", priority: 0.9, changefreq: "hourly" },
-        { path: "/voting", priority: 0.9, changefreq: "daily" },
         { path: "/contests", priority: 0.8, changefreq: "daily" },
         { path: "/gallery", priority: 0.7, changefreq: "daily" },
         { path: "/playlists", priority: 0.7, changefreq: "daily" },

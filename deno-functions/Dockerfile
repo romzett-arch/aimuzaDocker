@@ -18,6 +18,9 @@ COPY . .
 # Сервер импортирует std и Supabase до открытия порта. Кэшируем этот граф при
 # сборке, чтобы запуск контейнера не зависел от доступа прод-сервера к deno.land.
 RUN deno cache --frozen --lock=deno.lock --import-map=import_map.json server.ts functions/*/index.ts
+RUN deno check --cached-only --frozen --lock=deno.lock --import-map=import_map.json \
+    functions/suno-generate/index.ts functions/generate-release-package/index.ts \
+    functions/lyrics-deposit/index.ts functions/track-deposit/index.ts functions/yookassa-callback/index.ts
 
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e
 COPY --from=cached /usr/bin/deno /usr/bin/deno

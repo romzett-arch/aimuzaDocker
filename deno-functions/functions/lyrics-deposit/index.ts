@@ -2,8 +2,9 @@ import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { DepositRequest } from "./types.ts";
 import { canonicalizeLyrics, generateEvidenceSignature, generateHash } from "./utils.ts";
-import { submitToOpenTimestamps, upgradeOpenTimestamps } from "./services.ts";
-import { confirmLyricsCertificate, generateLyricsCertificate } from "./certificate.ts";
+import { upgradeOpenTimestamps } from "./services.ts";
+import { confirmLyricsCertificate } from "./certificate.ts";
+import { prepareLyricsArtifacts, recoverLyricsArtifacts } from "./artifacts.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -67,6 +68,7 @@ async function refreshPendingLyricsDeposits(): Promise<void> {
     if (!supabaseUrl || !supabaseServiceKey) return;
 
     const supabase = createClient<any>(supabaseUrl, supabaseServiceKey);
+    await recoverLyricsArtifacts(supabase);
     const { data: pendingDeposits, error } = await supabase
       .from("lyrics_deposits")
       .select("*")
@@ -87,6 +89,8 @@ async function refreshPendingLyricsDeposits(): Promise<void> {
         console.warn(`[lyrics-deposit] status check failed for ${deposit.id}:`, error);
       }
     }
+  } catch (error) {
+    console.warn("[lyrics-deposit] recovery failed", error);
   } finally {
     state.running = false;
   }
@@ -126,7 +130,7 @@ serve(async (req) => {
       );
     }
 
-    const payload = await req.json() as DepositRequest & { action?: string; deposit_id?: string };
+    const payload = await req.json() as DepositRequest & { action?: string; deposit_id?: string; use_promo?: boolean };
 
     if (payload.action === "check_status") {
       if (!payload.deposit_id) {
@@ -155,6 +159,13 @@ serve(async (req) => {
           status: "completed",
           message: "Цифровая защита подтверждена",
         }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (currentDeposit.artifacts_pending) {
+        return Response.json({
+          success: true, confirmed: false, status: "pending",
+          message: "Цифровая метка сохранена. Доказательство ещё готовится", nextCheckSeconds: 60,
+        }, { headers: corsHeaders });
       }
 
       if (!currentDeposit.content_hash || !currentDeposit.external_proof) {
@@ -231,39 +242,6 @@ serve(async (req) => {
       });
     }
 
-    const { data: priceSetting } = await supabase
-      .from("settings")
-      .select("value")
-      .eq("key", `deposit_price_${method}`)
-      .single();
-
-    const basePrice = parseInt(priceSetting?.value || "300", 10);
-    const { data: depositLimit, error: limitError } = await supabase.rpc("check_deposit_limit", {
-      p_user_id: user.id,
-    });
-    if (limitError) {
-      return new Response(JSON.stringify({ error: "Не удалось проверить тарифный лимит депонирований" }), {
-        status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-    const usesTariffDeposit = Boolean((depositLimit as { is_free?: boolean } | null)?.is_free);
-    const depositPrice = usesTariffDeposit ? 0 : basePrice;
-
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("balance")
-      .eq("user_id", user.id)
-      .single();
-
-    if (!profile || (profile.balance || 0) < depositPrice) {
-      return new Response(
-        JSON.stringify({
-          error: `Недостаточно средств на балансе. Для депонирования требуется ${depositPrice} ₽. Пополните баланс в разделе «Кошелёк».`,
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
     const contentHash = await generateHash(canonicalizeLyrics(lyrics.title, lyrics.content));
     const depositedAt = new Date().toISOString();
     const depositId = `LYR-${crypto.randomUUID().replaceAll("-", "").slice(0, 20).toUpperCase()}`;
@@ -274,49 +252,37 @@ serve(async (req) => {
       signingSecret,
     );
 
-    let externalId: string | null = null;
-    let certificateUrl: string | null = null;
-    let externalProof: string | null = null;
-    let proofStatus = "pending_external";
-    let depositStatus = "pending";
-
-    const ots = await submitToOpenTimestamps(contentHash);
-    externalId = ots.id;
-    externalProof = ots.proofBase64;
-
-    if (!certificateUrl) {
-      certificateUrl = await generateLyricsCertificate(
-        supabase,
-        lyrics,
-        contentHash,
-        depositId,
-        depositedAt,
-        timestampHash,
-        proofStatus,
-      );
-    }
-
-    const { data: deposit, error: depositError } = await supabase.rpc("record_lyrics_blockchain_deposit", {
+    const { data: deposit, error: depositError } = await supabase.rpc("begin_lyrics_deposit_artifacts", {
       p_record_id: recordId,
       p_lyrics_id: lyrics_id,
       p_user_id: user.id,
       p_content_hash: contentHash,
       p_timestamp_signature: timestampHash,
-      p_external_id: externalId || depositId,
-      p_certificate_url: certificateUrl,
+      p_external_id: depositId,
       p_author_name: author_name || null,
       p_deposited_at: depositedAt,
       p_work_title: lyrics.title,
-      p_external_proof: externalProof,
-      p_base_price: basePrice,
+      p_use_promo: payload.use_promo === true,
     });
+    if (depositError?.message === "promo_unavailable") {
+      return Response.json({ error: "Бонус на депонирование закончился. Обновите остаток и подтвердите новую цену." }, { status: 409, headers: corsHeaders });
+    }
+    if (depositError?.message?.startsWith("Недостаточно средств")) {
+      return Response.json({ error: depositError.message }, { status: 402, headers: corsHeaders });
+    }
     if (depositError) throw new Error(depositError.message || "Ошибка записи депонирования");
+
+    const certificateUrl = await prepareLyricsArtifacts(supabase, recordId, user.id).catch((error) => {
+      console.warn(`[lyrics-deposit] artifacts queued for ${recordId}`, error);
+      return null;
+    });
 
     return new Response(
       JSON.stringify({
         success: true,
         deposit,
         certificateUrl,
+        artifactsPending: certificateUrl === null,
         tariffFreeDeposit: Boolean((deposit as { tariff_free_deposit?: boolean } | null)?.tariff_free_deposit),
         freeRemaining: Number((deposit as { free_remaining?: number } | null)?.free_remaining || 0),
       }),

@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { assertCoreRpcAccess } from '../security/core-rpc-policy.js';
 import { gatewayPool as pool } from '../gateway-db.js';
 import { setJwtClaims } from './rest-utils.js';
-import { rpcAnonLimiter, votingIpLimiter, votingUserLimiter } from '../middleware/votingRateLimit.js';
+import { rpcAnonLimiter } from '../middleware/rpcRateLimit.js';
 import { assertForumRpcAccess } from '../security/forum-rpc-policy.js';
 import { assertEventsRpcAccess } from '../security/events-rpc-policy.js';
 import { assertEconomyRpcAccess, ECONOMY_SERVICE_ROLE_ONLY_RPC } from '../security/economy-rpc-policy.js';
@@ -22,27 +22,33 @@ const RPC_BUSINESS_CODE_RE = /^[a-z][a-z0-9_]+$/i;
 const LYRICS_RESERVATION_ERRORS = new Set(['Lyrics price changed', 'Lyrics request conflict']);
 
 const ALLOWED_RPC = new Set([
+  'admin_create_promo_campaign', 'admin_issue_promo_codes', 'admin_set_promo_status', 'admin_list_promo_campaigns',
+  'admin_set_promo_topup_percent', 'create_promo_topup_payment', 'admin_delete_promo_campaign',
+  'use_promo_code', 'get_my_promo_bonuses', 'get_my_promo_release_tracks', 'check_promo_track_upload_limit',
+  'promo_release_access', 'begin_track_deposit_with_promo', 'record_lyrics_deposit_with_promo', 'claim_suno_generation',
+  'get_my_payout_available', 'get_my_promo_entitlements', 'get_my_promo_history', 'fail_suno_generation',
+  'register_suno_generation_task',
+  'begin_lyrics_deposit_artifacts', 'claim_lyrics_deposit_artifacts', 'begin_release_package', 'process_verified_payment_completion',
   'complete_lyrics_job', 'fail_lyrics_job', 'reserve_lyrics_generation',
   'security_reserve_wav','security_fail_wav','security_claim_wav_callback','security_complete_wav',
-  'accept_role_invitation', 'add_user_credits', 'admin_add_xp',   'admin_annul_vote', 'admin_approve_purchase',
+  'accept_role_invitation', 'add_user_credits', 'admin_add_xp',   'admin_approve_purchase',
   'admin_cancel_role_invitation', 'admin_create_role_invitation', 'admin_process_verification',
   'admin_reconcile_expired_blocks', 'admin_revoke_user_role', 'admin_set_user_permission',
-  'admin_adjust_user_xp', 'admin_end_voting_early', 'admin_extend_promotion', 'admin_get_active_votings',
+  'admin_adjust_user_xp', 'admin_extend_promotion',
   'admin_get_user_financial_summary', 'admin_send_mass_broadcast', 'admin_set_maintenance_access',
   'admin_manually_confirm_email',
   'super_admin_assign_user_tariff', 'super_admin_revoke_user_tariff',
   'admin_get_all_promotions', 'admin_get_deal_blockchain_info', 'admin_get_deal_content',
-  'admin_get_flagged_votes', 'admin_get_voting_dashboard', 'admin_grant_user_income',
-  'admin_reject_purchase', 'admin_review_flagged_votes', 'admin_stop_promotion',
+  'admin_grant_user_income',
+  'admin_reject_purchase', 'admin_stop_promotion',
   'approve_verification', 'award_contest_prize', 'award_xp',
-  'block_user', 'calculate_chart_scores', 'calculate_track_quality', 'cancel_contest',
-  'can_write_during_maintenance', 'cast_radio_vote_for_arena', 'cast_weighted_vote',
+  'block_user', 'calculate_track_quality', 'cancel_contest',
+  'can_write_during_maintenance',
   'check_achievements_after_finalize', 'check_contest_achievements',
-  'check_maintenance_access', 'check_user_achievements', 'check_voting_eligibility',
-  'close_voting_topic_on_rejection',
+  'check_maintenance_access', 'check_user_achievements',
   'get_admin_moderation_history', 'get_admin_moderation_stats', 'moderate_track',
   'request_track_copyright_evidence', 'respond_copyright_request', 'resolve_copyright_request',
-  'create_paid_user_prompt', 'create_voting_forum_topic', 'deactivate_expired_promotions', 'debit_addon_service', 'debit_balance', 'debit_for_generation', 'debit_for_generation_v6',
+  'create_paid_user_prompt', 'deactivate_expired_promotions', 'debit_addon_service', 'debit_balance', 'debit_for_generation', 'debit_for_generation_v6',
   'deduct_user_xp', 'delete_forum_topic_cascade', 'delete_user_prompt', 'delete_user_prompts', 'finalize_contest',
   'expire_blocks', 'finalize_contest_winners', 'find_similar_qa_tickets', 'find_user_by_short_id',
   'fn_add_xp', 'forum_authority_leaderboard', 'forum_boost_topic',
@@ -60,17 +66,17 @@ const ALLOWED_RPC = new Set([
   'generate_share_token', 'get_ad_for_slot', 'get_public_ad_settings', 'request_ad_for_slot', 'get_boosted_tracks', 'get_track_boost_state', 'get_my_active_track_boosts',
   'get_active_announcements', 'get_catalog_visible_author_ids', 'get_contest_leaderboard', 'get_creator_earnings_profile', 'get_economy_health',
   'get_feed_tracks_with_profiles', 'get_hero_stats', 'get_last_messages',
-  'get_marketplace_items', 'get_my_marketplace_commission', 'get_my_sanction_status', 'get_my_weighted_vote', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
+  'get_marketplace_items', 'get_my_marketplace_commission', 'get_my_sanction_status', 'get_or_create_referral_code', 'get_qa_dashboard_stats',
   'get_my_referral_stats', 'get_referral_overview', 'get_public_progression_config',
   'get_qa_leaderboard', 'get_qa_ticket_comment_counts', 'get_radio_listeners', 'get_radio_smart_queue',
-  'get_l2e_admin_stats', 'get_radio_stats', 'get_radio_xp_today', 'get_recent_voters',
+  'get_l2e_admin_stats', 'get_radio_stats', 'get_radio_xp_today',
   'get_reputation_leaderboard', 'get_reputation_profile', 'get_smart_feed', 'get_smart_feed_v3', 'get_admin_monetization_dashboard', 'get_admin_subscription_metrics',
   'get_sidebar_pending_counts', 'get_track_by_share_token', 'get_track_comments_counts',
   'get_track_prompt_if_accessible', 'get_track_prompt_info', 'get_unread_counts', 'get_user_block_info', 'get_deposit_method_catalog',
   'get_user_contest_rating', 'get_user_emails', 'get_admin_user_auth_status', 'get_user_role',
-  'get_importable_prompt_track_ids', 'get_user_prompt_stats', 'get_user_stats', 'get_user_subscription_tier', 'get_user_vote_weight',
-  'get_users_roles', 'get_users_subscription_tiers', 'get_velocity_tracks',
-  'get_voter_profile', 'get_voting_live_stats', 'has_permission',
+  'get_importable_prompt_track_ids', 'get_user_prompt_stats', 'get_user_stats', 'get_user_subscription_tier',
+  'get_users_roles', 'get_users_subscription_tiers',
+  'has_permission',
   'has_purchased_item', 'has_purchased_prompt', 'has_role',
   'hide_contest_comment', 'hide_track_comment',
   'increment_prompt_downloads', 'increment_track_download_count',
@@ -100,19 +106,24 @@ const ALLOWED_RPC = new Set([
   'recalculate_feed_scores', 'record_ad_click', 'record_ad_impression',
   'record_ad_click_v2', 'record_ad_impression_v2', 'record_ad_view_duration_v2',
   'admin_set_ad_campaign_slots', 'admin_set_ad_campaign_status', 'get_ad_campaign_readiness',
-  'request_seller_payout', 'resolve_qa_ticket', 'resolve_track_voting', 'revoke_share_token',
-  'revoke_verification', 'revoke_vote', 'safe_award_xp',
-  'send_silk_release_to_voting', 'send_track_to_voting', 'submit_contest_entry', 'take_voting_snapshot',
+  'request_seller_payout', 'resolve_qa_ticket', 'revoke_share_token',
+  'revoke_verification', 'safe_award_xp',
+  'submit_contest_entry',
   'submit_verification_request',
   'song_idea_quota', 'get_my_song_idea_history', 'find_song_idea', 'accept_song_idea', 'record_song_idea_generation',
   'unblock_user', 'unhide_contest_comment', 'update_last_seen',
   'update_referral_settings',
-  'update_voter_ranks', 'vote_qa_ticket', 'withdraw_contest_entry',
+  'vote_qa_ticket', 'withdraw_contest_entry',
 ]);
 
 // These functions are internal transaction boundaries. The API connects as
 // the database owner, so PostgreSQL GRANT alone cannot protect them here.
 const SERVICE_ROLE_ONLY_RPC = new Set([
+  'create_promo_topup_payment',
+  'fail_suno_generation', 'register_suno_generation_task',
+  'process_verified_payment_completion',
+  'begin_lyrics_deposit_artifacts', 'claim_lyrics_deposit_artifacts', 'begin_release_package',
+  'promo_release_access', 'begin_track_deposit_with_promo', 'record_lyrics_deposit_with_promo', 'claim_suno_generation',
   'complete_lyrics_job', 'fail_lyrics_job', 'reserve_lyrics_generation',
   'begin_track_deposit',
   'fail_track_deposit_and_refund',
@@ -123,26 +134,12 @@ const SERVICE_ROLE_ONLY_RPC = new Set([
   ...ECONOMY_SERVICE_ROLE_ONLY_RPC,
 ]);
 
-/** Общий rate limit для анонимов — на все RPC */
-const anonThenVoting = (req, res, next) => {
-  rpcAnonLimiter(req, res, (err) => {
-    if (err) return next(err);
-    votingRateLimit(req, res, next);
-  });
-};
-
-/** Rate limit только для cast_weighted_vote */
-function votingRateLimit(req, res, next) {
-  if (req.params.fn !== 'cast_weighted_vote') return next();
-  votingIpLimiter(req, res, (err) => {
-    if (err) return next(err);
-    votingUserLimiter(req, res, next);
-  });
-}
-
 function getSafeRpcMessage(message) {
   const cleanMessage = String(message || '').trim();
   if (!cleanMessage) return 'RPC call failed';
+  if (cleanMessage === 'insufficient_marketplace_funds') {
+    return 'Для покупки у продавца недостаточно оплаченных средств. Бонусы доступны для сервисов АИМУЗА.';
+  }
   if (cleanMessage.startsWith('RAISE:')) return cleanMessage.replace(/^RAISE:\s*/, '');
   if (cleanMessage.includes('Insufficient') || cleanMessage.includes('Unauthorized')) return cleanMessage;
   if (RPC_BUSINESS_CODE_RE.test(cleanMessage) && !RPC_ERROR_SQL_BLACKLIST.test(cleanMessage)) {
@@ -182,10 +179,6 @@ async function handleRpc(req, res) {
       return sendRpcError(res, 403, 'Service role required', 'SERVICE_ROLE_REQUIRED');
     }
 
-    if (['cast_weighted_vote', 'revoke_vote', 'get_my_weighted_vote'].includes(fnName) && !req.user?.id) {
-      return sendRpcError(res, 401, 'Необходимо войти в систему', 'AUTH_REQUIRED');
-    }
-
     const params = { ...((req.method === 'GET') ? req.query : (req.body || {})) };
     assertForumRpcAccess(fnName, req.user, params);
     assertEventsRpcAccess(fnName, req.user, params);
@@ -194,11 +187,6 @@ async function handleRpc(req, res) {
     assertAdsRpcAccess(fnName, req.user, params);
     assertRadioRpcAccess(fnName, req.user, params);
     assertModerationRpcAccess(fnName, req.user);
-    if (fnName === 'cast_weighted_vote') {
-      // Клиент не может подменить адрес: антифрод получает только IP,
-      // вычисленный Express с учётом доверенного reverse proxy.
-      params.p_ip = req.ip;
-    }
     const KEY_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
     const keys = Object.keys(params).filter(k =>
       !['select', 'order', 'limit', 'offset'].includes(k) && KEY_REGEX.test(k)
@@ -258,6 +246,6 @@ async function handleRpc(req, res) {
   }
 }
 
-router.post('/:fn', anonThenVoting, handleRpc);
+router.post('/:fn', rpcAnonLimiter, handleRpc);
 
 export default router;

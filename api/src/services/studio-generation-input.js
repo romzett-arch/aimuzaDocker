@@ -26,6 +26,8 @@ export function normalizeStudioGeneration(body) {
   const personaId = body?.personaId || undefined;
   const voiceProfileId = body?.voiceProfileId || undefined;
   const audioReference = body?.audioReference || undefined;
+  const usePromo = body?.usePromo === true;
+  if (usePromo && audioReference) throw inputError('Бонус на генерацию доступен без аудиореференса');
   if (voiceProfileId !== undefined && (mode !== 'custom' || !validUuid(voiceProfileId) || instrumental || personaId || audioReference)) {
     throw inputError('Выберите голос для песни с вокалом. Для этого режима уберите персону и аудиореференс.');
   }
@@ -50,7 +52,7 @@ export function normalizeStudioGeneration(body) {
     if (!style) throw inputError('Укажите стиль и аранжировку');
     if (!instrumental && !lyrics) throw inputError('Добавьте текст песни или выберите инструментал');
   }
-  return { requestId, mode, prompt, title, lyrics, style, negativeTags, instrumental, vocalGender, duration, tempo, songIdeaId, personaId, voiceProfileId, audioReference, ...weights };
+  return { requestId, mode, prompt, title, lyrics, style, negativeTags, instrumental, vocalGender, duration, tempo, songIdeaId, personaId, voiceProfileId, audioReference, ...(usePromo && {usePromo}), ...weights };
 }
 
 export function studioSunoPayload(input, tracks, { personaId, audioReferenceUrl } = {}) {

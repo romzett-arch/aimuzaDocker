@@ -35,7 +35,6 @@ serve(async (req) => {
     txt += `Allow: /artist/\n`;
     txt += `Allow: /contests\n`;
     txt += `Allow: /forum\n`;
-    txt += `Allow: /voting\n`;
     txt += `Disallow: /admin\n`;
     txt += `Disallow: /admin/\n`;
     txt += `Disallow: /messages\n`;

@@ -8,6 +8,7 @@ export interface DepositRequest {
   trackId: string;
   method: "blockchain";
   authorData?: AuthorData;
+  usePromo?: boolean;
 }
 
 export interface DepositError extends Error {

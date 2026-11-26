@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { createHash } from 'node:crypto';
 import { pool } from '../db.js';
 import { PASSWORD_POLICY_MESSAGE, validatePassword } from '../security/password.js';
 
@@ -21,6 +22,11 @@ export function registerSignup(router, database = pool) {
       if (!validatePassword(password)) {
         return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
       }
+      const rawPromo = req.body.data?.signup_promo_code ?? req.body.options?.data?.signup_promo_code;
+      const promoCode = typeof rawPromo === 'string' ? rawPromo.trim().toUpperCase() : '';
+      if ((rawPromo != null && typeof rawPromo !== 'string') || (promoCode && !/^[A-Z0-9][A-Z0-9-]{3,39}$/.test(promoCode))) {
+        return res.status(400).json({ error: 'Проверьте написание бонус-кода' });
+      }
 
       const existing = await database.query('SELECT id FROM auth.users WHERE email = $1', [normalizedEmail]);
       if (existing.rows.length > 0) {
@@ -32,6 +38,11 @@ export function registerSignup(router, database = pool) {
       const hashed = await bcrypt.hash(password, BCRYPT_ROUNDS);
       const usernameFromBody = req.body.data?.username || req.body.options?.data?.username || normalizedEmail.split('@')[0];
       const metadata = { username: String(usernameFromBody).slice(0,80), session_version: 0 };
+      if (promoCode) {
+        const digest = (value) => createHash('sha256').update(value).digest('hex');
+        metadata.signup_promo_digest = digest(promoCode);
+        if (/^AIMUZA-[A-F0-9]{20}$/.test(promoCode)) metadata.signup_promo_legacy_digest = digest(`AIM-${promoCode.slice(-20)}`);
+      }
       const referralCode = req.body.data?.signup_referral_code ?? req.body.options?.data?.signup_referral_code;
       if (typeof referralCode === 'string' && /^[a-z0-9_-]{3,20}$/i.test(referralCode)) {
         metadata.signup_referral_code = referralCode.toLowerCase();

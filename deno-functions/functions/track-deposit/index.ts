@@ -29,7 +29,7 @@ serve(async (req) => {
       throw new Error("Не авторизован");
     }
 
-    const { trackId, method, authorData }: DepositRequest = await req.json();
+    const { trackId, method, authorData, usePromo }: DepositRequest = await req.json();
     if (method !== "blockchain") {
       throw new Error("Доступна только цифровая защита AIMUZA");
     }
@@ -67,6 +67,7 @@ serve(async (req) => {
       performer: effectiveAuthorData.performer_name,
       musicAuthor: effectiveAuthorData.music_author,
       lyricsAuthor: effectiveAuthorData.lyrics_author,
+      usePromo: usePromo === true,
       duration: track.duration,
       fileHash,
       timestamp: new Date().toISOString(),
@@ -82,6 +83,7 @@ serve(async (req) => {
       metadataHash,
       performerName: effectiveAuthorData.performer_name,
       lyricsAuthor: effectiveAuthorData.lyrics_author,
+      usePromo: usePromo === true,
     });
     if (billing.price <= 0) {
       console.log(`Deposit is free for method ${method}`);
@@ -114,8 +116,6 @@ serve(async (req) => {
           blockchain_proof_url: result.blockchainProofUrl,
           blockchain_proof_status: result.blockchainProofStatus,
           blockchain_submitted_at: result.blockchainSubmittedAt,
-          external_deposit_id: result.externalDepositId,
-          external_certificate_url: result.externalCertificateUrl,
         })
         .eq("id", depositId);
       if (completionError) {

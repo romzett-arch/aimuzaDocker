@@ -22,7 +22,7 @@ interface SupabaseClient {
 
 export async function processDeposit(
   supabase: SupabaseClient,
-  track: Record<string, unknown>,
+  track: Parameters<typeof generatePdfCertificate>[1],
   fileHash: string,
   depositId: string,
   authorData: AuthorData,

@@ -219,7 +219,7 @@ router.post('/generate-image', requireAuth, async (req, res, next) => {
 
     const isDistributionCover = input.resolution === distributionCoverResolution;
     const ratio = isDistributionCover ? '1:1' : input.ratio;
-    const { job, isNew, problem } = await reserveImage(userId, { ...input, prompt, ratio });
+    const { job, isNew, problem } = await reserveImage(userId, { ...input, prompt, ratio, usePromo: input.usePromo === true || input.usePromo === 'true' });
     if (problem) return res.json({ problem });
     if (!isNew) return res.json({ job });
 

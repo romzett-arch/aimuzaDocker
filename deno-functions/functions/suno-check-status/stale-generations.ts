@@ -11,6 +11,7 @@ function abandonedQuery(client: SupabaseClient, userId: string, cutoff: string, 
     .eq("user_id", userId)
     .in("status", ["pending", "processing"])
     .lt("created_at", cutoff)
+    .is("suno_authorized_at", null)
     .is("suno_id", null)
     .is("provider_task_id", null)
     .is("suno_audio_id", null)

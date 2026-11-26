@@ -22,6 +22,7 @@ import express from 'express';
 import voiceProfilesRouter from './routes/voice-profiles.js';
 import { startVoiceProfileWorker } from './services/voice-profile-worker.js';
 import { startLyricsRecovery } from './services/lyrics-recovery.js';
+import { startSunoOrderRecovery } from './services/suno-order-recovery.js';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
@@ -51,7 +52,7 @@ import { markTrackDeleteError } from './security/music-rest-policy.js';
 import { maintenanceGuard } from './middleware/maintenance.js';
 import { isStorageObjectUpload } from './security/storage-rate-limit.js';
 import { blockedUserGuard } from './middleware/blocked-user.js';
-import { startVotingLifecycle } from './services/votingLifecycle.js';
+import { startContestLifecycle } from './services/contestLifecycle.js';
 import {
   LOGIN_FAILURE_LIMIT,
   LOGIN_FAILURE_WINDOW_MS,
@@ -201,9 +202,10 @@ async function start() {
   await testGatewayConnection();
   const server=app.listen(PORT, '0.0.0.0', () => {
     console.log(`[API] aimuza-api listening on :${PORT}`);
-    startVotingLifecycle();
+    startContestLifecycle();
     startMediaLifecycle();
     startLyricsRecovery();
+    startSunoOrderRecovery();
     startVoiceProfileWorker();
     startImageRecovery();
     startLegalWorker();

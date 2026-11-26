@@ -1,7 +1,8 @@
 import { raw, Router } from 'express';
-import crypto from 'crypto';
 import { pool, setJWTClaims } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { registerStudioReleaseAlbums } from './studio-release-albums.js';
+import { readStudioReleaseOptions } from './studio-release-options.js';
 import { prepareStudioReleasePackage } from './studio-release-package.js';
 import { needsNickname } from '../security/profile-onboarding.js';
 import { createStudioGeneration } from '../services/studio-generate.js';
@@ -257,74 +258,9 @@ router.post('/release-packages/:trackId/submit', requireAuth, async (req, res, n
   } finally { client?.release(); }
 });
 
-router.get('/release-options/:trackId', requireAuth, async (req, res, next) => {
-  if (!validUuid(req.params.trackId)) return res.status(400).json({ error: 'Некорректный идентификатор трека' });
-  let client;
-  try {
-    client = await pool.connect();
-    await client.query('BEGIN READ ONLY');
-    await setJWTClaims(client, req.user);
-    const track = await client.query('SELECT id FROM public.tracks WHERE id = $1 AND user_id = $2', [req.params.trackId, req.user.id]);
-    if (!track.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Трек не найден' });
-    }
-    const { rows: [row] } = await client.query(
-      `SELECT public.get_user_subscription_tier($1) AS tier,
-              public.check_deposit_limit($1) AS quota,
-              (SELECT price FROM public.get_deposit_method_catalog() WHERE method = 'blockchain' AND available) AS base_price,
-              EXISTS (SELECT 1 FROM public.track_deposits WHERE user_id = $1 AND track_id = $2 AND method = 'blockchain' AND status = 'completed') AS deposited`,
-      [req.user.id, req.params.trackId],
-    );
-    if (row.quota?.error || row.base_price == null) throw new Error('Не удалось проверить стоимость депонирования');
-    await client.query('COMMIT');
-    res.json({
-      canPrepare: ['creator', 'pro', 'label'].includes(row.tier?.tier_key),
-      deposit: {
-        price: row.deposited || row.quota?.is_free ? 0 : Number(row.base_price),
-        alreadyDeposited: row.deposited,
-        freeRemaining: Number(row.quota?.free_remaining || 0),
-      },
-    });
-  } catch (error) {
-    if (client) await client.query('ROLLBACK');
-    next(error);
-  } finally { client?.release(); }
-});
+router.get('/release-options/:trackId', requireAuth, readStudioReleaseOptions);
 
-// Same persisted album fields as the main site's My Releases. No new tables.
-router.post('/release-albums', requireAuth, async (req, res, next) => {
-  const title = cleanText(req.body?.title, 100);
-  const ids = Array.isArray(req.body?.trackIds) ? [...new Set(req.body.trackIds)] : [];
-  if (!title || ids.length < 2 || ids.length > 100 || !ids.every(validUuid)) {
-    return res.status(400).json({ error: 'Укажите название альбома и выберите от 2 до 100 треков' });
-  }
-  let client;
-  try {
-    client = await pool.connect();
-    await client.query('BEGIN');
-    const tracks = await client.query(
-      `SELECT t.id FROM public.tracks t
-       WHERE t.user_id = $1 AND t.id = ANY($2::uuid[])
-         AND EXISTS (SELECT 1 FROM public.release_packages p WHERE p.track_id = t.id AND p.user_id = $1)
-       ORDER BY t.id FOR UPDATE`, [req.user.id, ids],
-    );
-    if (tracks.rows.length !== ids.length) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Часть выбранных релизов недоступна. Обновите список.' });
-    }
-    const albumId = crypto.randomUUID();
-    await client.query(
-      'UPDATE public.tracks SET release_album_id = $1, release_album_name = $2 WHERE user_id = $3 AND id = ANY($4::uuid[])',
-      [albumId, title, req.user.id, ids],
-    );
-    await client.query('COMMIT');
-    res.json({ albumId });
-  } catch (error) {
-    if (client) await client.query('ROLLBACK');
-    next(error);
-  } finally { client?.release(); }
-});
+registerStudioReleaseAlbums(router, { cleanText, validUuid });
 
 router.post('/release-packages', requireAuth, prepareStudioReleasePackage);
 

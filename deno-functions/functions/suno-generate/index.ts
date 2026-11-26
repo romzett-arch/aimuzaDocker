@@ -1,6 +1,7 @@
+import { dispatchAuthorizedGeneration } from "./generation-dispatch.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { getSunoErrorMessage } from "./errors.ts";
+import { rejectSunoGeneration, saveSunoTask } from "./dispatch-result.ts";
 import { hasVoiceAuthorization } from "./voice-authorization.ts";
 import { cleanStyleForSuno, parseOptionalWeight } from "./styleUtils.ts";
 
@@ -80,7 +81,7 @@ serve(async (req) => {
       audioWeight,
     } = await req.json();
 
-    if (!trackId) {
+    if (typeof trackId !== "string") {
       return new Response(
         JSON.stringify({ error: "Missing required field: trackId" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -88,6 +89,8 @@ serve(async (req) => {
     }
 
     const allTrackIds: string[] = Array.isArray(trackIds) && trackIds.length > 0 ? trackIds : [trackId];
+
+    if (!allTrackIds.includes(trackId)) return validationError("Некорректный список треков", "trackIds");
 
     console.log(`Starting generation for tracks [${allTrackIds.join(", ")}] by user ${user.id}`);
     console.log(`Original prompt: ${prompt}`);
@@ -159,16 +162,6 @@ serve(async (req) => {
       if (cleanPrompt.length > promptLimit) return validationError(`Максимум ${promptLimit} символов`, "prompt");
     }
 
-    const { error: updateError } = await supabaseClient
-      .from("tracks")
-      .update({ status: "processing", error_message: null })
-      .in("id", allTrackIds)
-      .eq("user_id", user.id);
-
-    if (updateError) {
-      console.error("Failed to update track status:", updateError);
-    }
-
     const callbackSecret = Deno.env.get("SUNO_CALLBACK_SECRET");
     const explicitCallbackUrl = Deno.env.get("SUNO_CALLBACK_URL");
     const baseCallbackUrl = explicitCallbackUrl || `${Deno.env.get("SUPABASE_URL")}/functions/v1/suno-callback`;
@@ -227,143 +220,30 @@ serve(async (req) => {
       console.log("Using upload-cover endpoint with audio reference");
     }
 
-    console.log("Sending to Suno API:", JSON.stringify(sunoPayload));
-    console.log("Endpoint:", sunoEndpoint);
-
-    const sunoResponse = await fetch(sunoEndpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${SUNO_API_KEY}`,
-      },
-      body: JSON.stringify(sunoPayload),
+    if (!SUNO_API_KEY) throw new Error("Missing Suno configuration");
+    const operation = audioReferenceUrl ? "upload_cover" : "generate";
+    const sunoResponse = await dispatchAuthorizedGeneration(supabaseAdmin, {
+      userId: user.id, trackIds: allTrackIds, operation, endpoint: sunoEndpoint,
+      apiKey: SUNO_API_KEY, payload: sunoPayload,
     });
+    if (!sunoResponse) {
+      return Response.json({ error: "Для запуска нужна оплата или резерв бонуса" }, { status: 409, headers: corsHeaders });
+    }
 
     const sunoData = await sunoResponse.json();
     console.log("Suno API response:", JSON.stringify(sunoData));
 
     if (!sunoResponse.ok || sunoData.code !== 200) {
-      const rawErrorMessage = sunoData.msg || "Failed to start generation";
-      const errorCode = sunoData.code || sunoResponse.status || 500;
-
-      const errorInfo = getSunoErrorMessage(errorCode, rawErrorMessage);
-      const russianErrorMessage = errorInfo.short;
-
-      console.error(`Suno API error (${errorCode}): ${rawErrorMessage} -> ${russianErrorMessage}`);
-
-      await supabaseClient
-        .from("tracks")
-        .update({
-          status: "failed",
-          error_message: russianErrorMessage
-        })
-        .in("id", allTrackIds)
-        .eq("user_id", user.id);
-
-      const { data: logs } = await supabaseClient
-        .from("generation_logs")
-        .select("id, cost_rub")
-        .in("track_id", allTrackIds)
-        .eq("user_id", user.id)
-        .eq("status", "pending");
-
-      let totalRefund = 0;
-      if (logs && logs.length > 0) {
-        totalRefund = logs.reduce((sum, log) => sum + (log.cost_rub || 0), 0);
-
-        await supabaseClient
-          .from("generation_logs")
-          .update({ status: "failed" })
-          .in("id", logs.map(l => l.id));
-
-        if (totalRefund > 0) {
-          const { error: refundError } = await supabaseAdmin.rpc("refund_generation_failed", {
-            p_user_id: user.id,
-            p_amount: totalRefund,
-            p_track_id: trackId,
-            p_description: `Возврат за неудачную генерацию`,
-          });
-
-          if (refundError) {
-            console.error(`Refund failed for track ${trackId}:`, refundError);
-          } else {
-            console.log(`Refunded ${totalRefund} to user ${user.id}`);
-            await Promise.all(logs.map((log) =>
-              supabaseAdmin
-                .from("generation_logs")
-                .update({ refund_rub: log.cost_rub || 0 })
-                .eq("id", log.id)
-            ));
-          }
-        }
-      }
-
-      await supabaseClient
-        .from("tracks")
-        .update({ status: "failed", error_message: russianErrorMessage })
-        .eq("user_id", user.id)
-        .in("id", allTrackIds);
-
-      if (totalRefund > 0) {
-        await supabaseAdmin
-          .from("notifications")
-          .insert({
-            user_id: user.id,
-            type: "refund",
-            title: `Ошибка: ${russianErrorMessage}`,
-            message: `${errorInfo.full}\n\nВам возвращено ${totalRefund} ₽`,
-            target_type: "track",
-            target_id: trackId,
-          });
-      }
-
-      return new Response(
-        JSON.stringify({
-          error: russianErrorMessage,
-          details: errorInfo.full,
-          refunded: totalRefund > 0,
-          refundAmount: totalRefund
-        }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      return await rejectSunoGeneration(
+        supabaseAdmin, user.id, trackId, allTrackIds,
+        sunoData.code || sunoResponse.status || 500, sunoData.msg, corsHeaders,
       );
     }
 
     const taskId = sunoData.data?.taskId || sunoData.data?.task_id || sunoData.taskId || sunoData.task_id;
     console.log(`Generation started with task ID: ${taskId} (raw data keys: ${JSON.stringify(Object.keys(sunoData.data || {}))})`);
 
-    if (taskId) {
-      // Fetch all tracks in the pair by their IDs (reliable, no created_at matching)
-      const { data: pairTracks, error: pairErr } = await supabaseAdmin
-        .from("tracks")
-        .select("id, title, description")
-        .in("id", allTrackIds);
-
-      if (pairErr) console.error("Error fetching pair tracks:", pairErr);
-
-      const tracksToUpdate = pairTracks && pairTracks.length > 0 ? pairTracks : [{ id: trackId, title: null, description: null }];
-
-      console.log(`Storing task_id ${taskId} in ${tracksToUpdate.length} tracks [${allTrackIds.join(", ")}]`);
-
-      for (const track of tracksToUpdate) {
-        if (track.description?.includes("[task_id:")) {
-          console.log(`Track ${track.id} (${track.title}) already has task_id, skipping`);
-          continue;
-        }
-
-        const existingDesc = track.description || "";
-        const newDesc = existingDesc
-          ? `${existingDesc}\n\n[task_id: ${taskId}]`
-          : `[task_id: ${taskId}]`;
-
-        const { error: updErr } = await supabaseAdmin
-          .from("tracks")
-          .update({ description: newDesc })
-          .eq("id", track.id);
-
-        if (updErr) console.error(`Failed to store task_id in track ${track.id}:`, updErr);
-        else console.log(`Stored task_id ${taskId} in track ${track.id} (${track.title})`);
-      }
-    }
+    if (taskId) await saveSunoTask(supabaseAdmin, user.id, allTrackIds, taskId);
 
     return new Response(
       JSON.stringify({
@@ -376,7 +256,6 @@ serve(async (req) => {
 
   } catch (error) {
     console.error("Error in suno-generate:", error);
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
     return new Response(
       JSON.stringify({ error: "Произошла непредвиденная ошибка. Попробуйте позже." }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

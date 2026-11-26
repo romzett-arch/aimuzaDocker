@@ -43,8 +43,7 @@ const USER_TRACK_PROTECTED_COLUMNS = new Set([
   'audio_url', 'cover_url', 'source_type', 'content_sha256',
   'copyright_check_status', 'copyright_check_result', 'copyright_checked_at',
   'plagiarism_check_status', 'plagiarism_check_result',
-  'voting_result', 'voting_likes_count', 'voting_dislikes_count', 'voting_started_at',
-  'voting_ends_at', 'voting_type', 'distribution_status', 'distribution_submitted_at',
+  'distribution_status', 'distribution_submitted_at',
   'distribution_reviewed_at', 'distribution_rejection_reason', 'distribution_platforms',
   'processing_stage', 'processing_progress', 'master_audio_url', 'isrc_code', 'upc_code',
   'provider_task_id', 'suno_audio_id', 'normalized_audio_url', 'original_audio_url',
@@ -120,16 +119,10 @@ export function getMusicReadScope(table, user, startIndex = 1) {
 
   if (table === 'tracks') {
     if (isTrackStaff(user)) return { sql: '', params: [] };
-    const activePublicVoting = `(
-      "moderation_status" = 'voting'
-      AND "voting_type" = 'public'
-      AND "voting_result" = 'pending'
-      AND "voting_ends_at" > now()
-    )`;
     const publicTrack = `(
       "is_public" IS TRUE
       AND "status" = 'completed'
-      AND (COALESCE("is_in_my_releases", FALSE) IS FALSE OR ${activePublicVoting})
+      AND COALESCE("is_in_my_releases", FALSE) IS FALSE
     )`;
     if (!user?.id) return { sql: publicTrack, params: [] };
     return {

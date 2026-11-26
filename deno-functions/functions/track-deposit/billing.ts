@@ -1,5 +1,5 @@
 interface SupabaseClient {
-  rpc: (name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { message?: string } | null }>;
+  rpc: (name: string, args: Record<string, unknown>) => PromiseLike<{ data: unknown; error: { message?: string } | null }>;
 }
 
 export interface BillingResult {
@@ -19,9 +19,10 @@ export async function beginTrackDeposit(
     metadataHash: string;
     performerName: string;
     lyricsAuthor: string;
+    usePromo?: boolean;
   },
 ): Promise<BillingResult> {
-  const { data, error } = await supabase.rpc("begin_track_deposit", {
+  const { data, error } = await supabase.rpc(params.usePromo ? "begin_track_deposit_with_promo" : "begin_track_deposit", {
     p_deposit_id: params.depositId,
     p_track_id: params.trackId,
     p_user_id: params.userId,
@@ -30,7 +31,9 @@ export async function beginTrackDeposit(
     p_metadata_hash: params.metadataHash,
     p_performer_name: params.performerName,
     p_lyrics_author: params.lyricsAuthor,
+    ...(params.usePromo ? { p_use_promo: true } : {}),
   });
+  if (error?.message === "promo_unavailable") throw new Error("Бонус на депонирование закончился. Обновите остаток и подтвердите новую цену.");
   if (error) throw new Error(error.message || "Не удалось начать депонирование");
   const result = data as { price: number; balance_before: number; balance_after: number };
   return {

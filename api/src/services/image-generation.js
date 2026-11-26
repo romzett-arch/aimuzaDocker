@@ -1,7 +1,7 @@
 import { pool } from '../db.js';
 
 const service = 'generate_image';
-const metadata = 'id, prompt, aspect_ratio, resolution, status, price_rub, mime_type, created_at, release_track_id';
+const metadata = 'id, prompt, aspect_ratio, resolution, status, price_rub, mime_type, created_at, release_track_id, promo_applied';
 
 export async function imageHistory(userId, limit = 20, offset = 0) {
   return (await pool.query(
@@ -26,7 +26,7 @@ export async function imageGallery(userId, cursor) {
 
 export async function getGeneratedImage(userId, id) {
   return (await pool.query(
-    'SELECT image, mime_type, resolution, status, price_rub, release_track_id FROM public.image_generation_jobs WHERE user_id=$1 AND id=$2 AND status=\'completed\'',
+    'SELECT image, mime_type, resolution, status, price_rub, release_track_id, promo_applied FROM public.image_generation_jobs WHERE user_id=$1 AND id=$2 AND status=\'completed\'',
     [userId, id],
   )).rows[0];
 }
@@ -64,14 +64,26 @@ export async function reserveImage(userId, input) {
       return { problem };
     }
 
-    const { rows: [debit] } = await db.query(
-      'SELECT * FROM public.debit_addon_service($1,$2,$3,$4)',
-      [userId, service, 'Создание картинки', { request_id: input.id }],
-    );
+    let priceCharged = 0;
+    if (input.usePromo) {
+      const { rows: [reservation] } = await db.query(
+        "SELECT promotions.reserve($1,'image',$2,$3) AS reserved", [userId, input.id, input.resolution],
+      );
+      if (!reservation.reserved) {
+        await db.query('ROLLBACK');
+        return { problem: 'PROMO_UNAVAILABLE' };
+      }
+    } else {
+      const { rows: [debit] } = await db.query(
+        'SELECT * FROM public.debit_addon_service($1,$2,$3,$4)',
+        [userId, service, 'Создание картинки', { request_id: input.id }],
+      );
+      priceCharged = debit.amount_debited;
+    }
     const { rows: [job] } = await db.query(
-      `INSERT INTO public.image_generation_jobs (user_id,id,prompt,aspect_ratio,resolution,price_rub,release_track_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ${metadata}`,
-      [userId, input.id, input.prompt, input.ratio, input.resolution, debit.amount_debited, input.releaseTrackId ?? null],
+      `INSERT INTO public.image_generation_jobs (user_id,id,prompt,aspect_ratio,resolution,price_rub,release_track_id,promo_applied)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING ${metadata}`,
+      [userId, input.id, input.prompt, input.ratio, input.resolution, priceCharged, input.releaseTrackId ?? null, input.usePromo],
     );
     await db.query('COMMIT');
     return { job, isNew: true };

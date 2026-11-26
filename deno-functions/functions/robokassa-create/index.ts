@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { buildHostedCheckoutUrl } from "./hosted-checkout.ts";
+import { createTopupPayment } from "../_shared/promo-topup.ts";
 
 const ALLOWED_ORIGINS = [
   "https://aimuza.ru",
@@ -204,26 +205,11 @@ serve(async (req) => {
     // --- Generate unique InvId ---
     const invId = generateInvId();
 
-    // --- Create payment record ---
-    const { data: payment, error: paymentError } = await supabase
-      .from("payments")
-      .insert({
-        user_id: user.id,
-        amount,
-        currency: "RUB",
-        status: "pending",
-        payment_system: "robokassa",
-        description,
-        external_id: invId,
-        metadata: { method: paymentMethod },
-      })
-      .select()
-      .single();
-
-    if (paymentError) {
-      console.error("DB insert error:", paymentError);
-      return json(cors, 500, { error: "Ошибка создания платежа" });
-    }
+    const payment = await createTopupPayment(supabase, {
+      userId: user.id, amount, system: "robokassa", description,
+      externalId: invId, method: paymentMethod, promoCode: body.promo_code,
+    });
+    if ("error" in payment) return json(cors, payment.status, { error: payment.error });
 
     // --- Receipt для фискализации 54-ФЗ ---
     const receipt = JSON.stringify({
@@ -247,11 +233,13 @@ serve(async (req) => {
       `${ROBOKASSA_MERCHANT_LOGIN}:${outSum}:${invId}:${receiptForSignature}:${ROBOKASSA_PASSWORD1}`;
     const signature = computeMD5(signatureString);
 
-    if (paymentMethod === "all") {
+    if (paymentMethod === "all" || paymentMethod === "bank_card") {
+      const bankCard = paymentMethod === "bank_card";
       return json(cors, 200, {
         success: true,
-        payment_id: payment.id,
-        payment_method: "all",
+        payment_id: payment.paymentId,
+        bonus: payment.offer,
+        payment_method: paymentMethod,
         payment_url: buildHostedCheckoutUrl({
           merchantLogin: ROBOKASSA_MERCHANT_LOGIN,
           outSum,
@@ -261,17 +249,9 @@ serve(async (req) => {
           signature,
           isTest: ROBOKASSA_TEST_MODE,
           email: user.email || undefined,
+          preferredMethod: bankCard ? "BankCard" : undefined,
         }),
-      });
-    }
-
-    if (paymentMethod === "bank_card") {
-      return json(cors, 200, {
-        success: true,
-        payment_id: payment.id,
-        payment_method: "bank_card",
-        // The official Robokassa iFrame keeps the user in Studio/WebView.
-        iframe_options: {
+        ...(bankCard && { iframe_options: {
           MerchantLogin: ROBOKASSA_MERCHANT_LOGIN,
           OutSum: outSum,
           InvId: Number(invId),
@@ -282,13 +262,14 @@ serve(async (req) => {
           SignatureValue: signature,
           IsTest: ROBOKASSA_TEST_MODE ? 1 : 0,
           Settings: JSON.stringify({ PaymentMethods: ["BankCard"], Mode: "modal" }),
-        },
+        } }),
       });
     }
 
     return json(cors, 200, {
       success: true,
-      payment_id: payment.id,
+      payment_id: payment.paymentId,
+      bonus: payment.offer,
       payment_method: "sbp",
       qr_options: {
         paymentMethod: "SBP",

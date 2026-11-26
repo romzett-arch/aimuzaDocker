@@ -8,6 +8,7 @@ const fingerprint = value => crypto.createHash('sha256').update(JSON.stringify(v
 
 export async function createStudioGeneration(req, res, next) {
   const authorization = req.get('authorization');
+  const denoUrl = process.env.DENO_FUNCTIONS_URL;
   let client;
   try {
     const input = normalizeInput(req.body);
@@ -15,7 +16,10 @@ export async function createStudioGeneration(req, res, next) {
       return res.status(400).json({ error: 'Выберите подтверждённый голос' });
     }
     const voiceSecret = process.env.SERVICE_ROLE_KEY;
-    if (input.voiceProfileId && (!voiceSecret || !process.env.DENO_FUNCTIONS_URL || !authorization)) {
+    if (!denoUrl || !authorization) {
+      return res.status(503).json({ error: 'Генератор временно недоступен' });
+    }
+    if (input.voiceProfileId && !voiceSecret) {
       return res.status(503).json({ error: 'Генерация с голосом временно недоступна' });
     }
     const payloadHash = fingerprint({ ...input, requestId: undefined });
@@ -79,15 +83,6 @@ export async function createStudioGeneration(req, res, next) {
       }
     }
 
-    let debit;
-    try {
-      debit = await client.query("SELECT * FROM public.debit_for_generation_v6($1, '{}'::uuid[], $2)", [req.user.id, `Музыкальная генерация: ${input.title || input.prompt.slice(0, 60)}`]);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      if (/Insufficient balance/i.test(error.message)) return res.status(402).json({ error: 'Недостаточно средств для генерации', code: 'INSUFFICIENT_FUNDS' });
-      throw error;
-    }
-    const billing = debit.rows[0];
     const description = input.mode === 'custom' ? input.lyrics || input.style : input.prompt;
     const created = await client.query(
       `INSERT INTO public.tracks (user_id, title, description, lyrics, status, is_public, audio_reference_url)
@@ -95,28 +90,37 @@ export async function createStudioGeneration(req, res, next) {
        RETURNING id, title, status, audio_url, cover_url, duration`,
       [req.user.id, input.title || 'Новый трек', description, input.instrumental ? null : input.lyrics || null, audioReferenceUrl ?? null],
     );
-    const generationParams = { ...input, audioReference: undefined, audio_reference_url: audioReferenceUrl, studio_payload_hash: payloadHash, dispatch_state: 'dispatching' };
-    const amount = Number(billing.amount_debited);
-    for (const [index, track] of created.rows.entries()) {
-      const trackCost = index === 0 ? Math.ceil(amount / 2) : Math.floor(amount / 2);
-      await client.query(
-        `INSERT INTO public.generation_logs (user_id, track_id, request_id, service_id, service_name, provider, provider_operation, provider_model, cost_rub, sale_price_rub, discount_rub, base_cost_credits, generation_params, status)
-         VALUES ($1,$2,$3,$4,'generate_music_v6','sunoapi',$10,'V6',$5,$6,$7,$8,$9,'pending')`,
-        [req.user.id, track.id, input.requestId, billing.generation_service_id, trackCost, Number(billing.generation_sale_price_rub) / 2, Number(billing.discount_amount) / 2, Number(billing.generation_base_cost_credits || 0) / 2, generationParams, audioReferenceUrl ? 'upload_cover' : 'generate'],
+    const generationParams = { ...input, use_promo: input.usePromo === true, audioReference: undefined, audio_reference_url: audioReferenceUrl, studio_payload_hash: payloadHash, dispatch_state: 'dispatching' };
+    const trackIds = created.rows.map((track) => track.id);
+    let billing;
+    try {
+      const debit = await client.query(
+        "SELECT * FROM public.debit_for_generation_v6($1, '{}'::uuid[], $2, $3, $4, $5, $6)",
+        [req.user.id, `Музыкальная генерация: ${input.title || input.prompt.slice(0, 60)}`,
+          input.requestId, trackIds, audioReferenceUrl ? 'upload_cover' : 'generate', generationParams],
       );
+      billing = debit.rows[0];
+    } catch (error) {
+      if (error.message === 'promo_unavailable') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Бонус на генерацию закончился. Проверьте остаток и выберите способ оплаты.' });
+      }
+      if (!/Insufficient balance/i.test(error.message)) throw error;
+      await client.query('ROLLBACK');
+      return res.status(402).json({ error: 'Недостаточно средств для генерации', code: 'INSUFFICIENT_FUNDS' });
+    }
+    for (const track of created.rows) {
       await client.query(
         `INSERT INTO public.user_prompts (user_id, track_id, title, description, lyrics, is_public, price)
          VALUES ($1,$2,$3,$4,$5,false,0)`, [req.user.id, track.id, track.title, description, input.instrumental ? null : input.lyrics || null],
       );
     }
     if (input.songIdeaId) {
-      await client.query('SELECT public.record_song_idea_generation($1, $2::uuid[])', [input.songIdeaId, created.rows.map((track) => track.id)]);
+      await client.query('SELECT public.record_song_idea_generation($1, $2::uuid[])', [input.songIdeaId, trackIds]);
     }
     await client.query('COMMIT');
     client.release(); client = null;
 
-    const denoUrl = process.env.DENO_FUNCTIONS_URL;
-    if (!denoUrl || !authorization) throw new Error('Генератор временно недоступен');
     const run = await fetch(`${denoUrl.replace(/\/$/, '')}/functions/v1/suno-generate`, {
       method: 'POST',
       headers: {

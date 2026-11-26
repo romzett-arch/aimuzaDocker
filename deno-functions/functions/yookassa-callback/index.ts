@@ -82,10 +82,11 @@ serve(async (req) => {
 
         // Атомарное зачисление через SQL-функцию
         const { data: result, error: rpcError } = await supabase.rpc(
-          "process_payment_completion",
+          "process_verified_payment_completion",
           {
             p_payment_id: payment.id,
             p_expected_amount: paidAmount,
+            p_provider_paid_at: typeof verified.captured_at === "string" ? verified.captured_at : null,
           }
         );
 

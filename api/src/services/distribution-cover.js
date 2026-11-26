@@ -6,7 +6,7 @@ export const distributionCoverResolution = '3000x3000';
 
 export function isPaidReleaseCover(cover, trackId) {
   return cover?.status === 'completed' && cover.resolution === distributionCoverResolution &&
-    cover.mime_type === 'image/jpeg' && cover.price_rub > 0 &&
+    cover.mime_type === 'image/jpeg' && (cover.price_rub > 0 || cover.promo_applied === true) &&
     (cover.release_track_id === null || cover.release_track_id === trackId);
 }
 

@@ -19,8 +19,8 @@ function normalizeFetchUrl(sourceUrl: string): string {
   return parsed.toString();
 }
 
-export async function generateHashFromBytes(data: BufferSource): Promise<string> {
-  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+export async function generateHashFromBytes(data: ArrayBuffer | Uint8Array): Promise<string> {
+  const bytes = new Uint8Array(data);
   const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
